@@ -19,6 +19,7 @@ const FLAG_HEX = { green: '#4ade80', red: '#f87171', black: '#6b6b7a' };
 let db = null;
 let ALL_ENTRIES = [];              // in-memory cache, synced with IndexedDB
 let DETAIL_EDIT_MODE = false;      // whether the detail page's top fields are in edit mode
+let TAG_EDIT_MODE = false;         // whether the Tags panel is showing its editable (toggle/add/save) UI
 let STATE = {
   view: 'home',            // 'home' | 'detail' | 'database' | 'review' | 'duplicates'
   entryId: null,
@@ -207,6 +208,7 @@ function navigate(view, entryId) {
   STATE.view = view;
   STATE.entryId = entryId || null;
   DETAIL_EDIT_MODE = false;
+  TAG_EDIT_MODE = false;
   window.scrollTo(0, 0);
   render();
 }
@@ -296,6 +298,14 @@ function renderHome() {
 
   let body = '';
   if (STATE.shelf === 'ALL' && !STATE.tagFilter && !STATE.search && !STATE.showFavoritesOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
+    // Suggested-matches row sits above the shelf rows, same section-title +
+    // horizontal-scroll treatment, so unconfirmed matches are easy to spot
+    // and jump into without leaving the homepage.
+    const suggestedGroup = entries.filter((e) => e.suggestedMatch);
+    if (suggestedGroup.length > 0) {
+      body += `<div class="section-title">🔎 Suggested Matches <span style="opacity:.6">(${suggestedGroup.length})</span></div>`;
+      body += `<div class="cover-row-scroll">${suggestedGroup.map(renderCoverCard).join('')}</div>`;
+    }
     // grouped by shelf, each group scrolls horizontally so hundreds of entries
     // don't turn into an endless vertical scroll.
     const shelvesToShow = STATE.format === 'reading' ? SHELVES_READING : ['Completed'];
@@ -322,11 +332,6 @@ function renderHome() {
   const qualityChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.qualityFilter && n <= STATE.qualityFilter ? 'active' : ''}" data-quality-filter="${n}" title="${n}+ hearts">❤️</span>`).join('');
   const flagChips = FLAG_COLORS.map((c) => `<span class="rating-pick-icon flag-filter-icon ${STATE.flagFilter === c ? 'active' : ''}" data-flag-filter="${c}" style="color:${FLAG_HEX[c]}" title="${c} flag">&#9873;</span>`).join('');
 
-  const pendingReviewCount = ALL_ENTRIES.filter((e) => e.suggestedMatch).length;
-  const reviewBanner = pendingReviewCount > 0
-    ? `<div class="review-banner" data-nav="review">🔎 <strong>${pendingReviewCount}</strong> of ${ALL_ENTRIES.length} titles need review <span class="review-banner-arrow">→</span></div>`
-    : '';
-
   return `
     <div class="app-header">
       <div class="brand-row">
@@ -350,7 +355,6 @@ function renderHome() {
       <div class="filter-section-label">Ratings &amp; Flags</div>
       <div class="rating-pick-row">${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${flagChips}</div>
     </div>
-    ${reviewBanner}
     <main>${body}</main>
     <button class="fab" data-add-entry="1">+</button>
     ${renderBottomNav('home')}
@@ -421,46 +425,63 @@ function renderTagCloud(e) {
   return existingChips.concat(addedChips).join('') || '<span style="color:var(--text-dim);font-size:12.5px;">No tags yet.</span>';
 }
 
+// Plain, non-interactive tag display shown when the Tags panel isn't in edit mode.
+function renderTagCloudReadOnly(e) {
+  const all = (e.tags || []).map((t) => ({ t, custom: false }))
+    .concat((e.customTags || []).map((t) => ({ t, custom: true })));
+  if (!all.length) return '<span style="color:var(--text-dim);font-size:12.5px;">No tags yet.</span>';
+  return all.map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}">${escapeHtml(t)}</div>`).join('');
+}
+
 function renderDetail(e) {
   if (!e) return `<div class="empty-state">Entry not found.</div>${renderBottomNav('home')}`;
   const isReading = e.format === 'reading';
 
-  let referencePanel;
+  // Unconfirmed matching workflow (suggested-match preview, or the plain
+  // "not linked yet" cross-reference prompt) lives with the cover image.
+  // Once a match is confirmed, that same information becomes the Summary
+  // block and moves into the head/details column instead.
+  let matchColumnHtml = '';
+  let confirmedSummaryHtml = '';
   if (e.referenceUrl && e.referenceStatus === 'confirmed') {
-    referencePanel = `
-      <div class="summary-text">${escapeHtml(e.summaryCache) || '<em>No summary cached — tap refresh.</em>'}</div>
-      <div class="summary-source">
-        <a href="${escapeHtml(e.referenceUrl)}" target="_blank">${escapeHtml(e.referenceSite || 'source')} ↗</a>
-        &nbsp;·&nbsp;
-        <button class="ref-btn" data-refresh-ref="1">↻ Refresh</button>
-        <button class="ref-btn" data-open-crossref="1">Change link</button>
+    confirmedSummaryHtml = `
+      <div class="field-row" style="margin-top:12px;">
+        <label>Summary</label>
+        <div class="summary-text">${escapeHtml(e.summaryCache) || '<em>No summary cached — tap refresh.</em>'}</div>
+        <div class="summary-source">
+          <a href="${escapeHtml(e.referenceUrl)}" target="_blank">${escapeHtml(e.referenceSite || 'source')} ↗</a>
+          &nbsp;·&nbsp;
+          <button class="ref-btn" data-refresh-ref="1">↻ Refresh</button>
+          <button class="ref-btn" data-open-crossref="1">Change link</button>
+        </div>
       </div>`;
   } else if (e.suggestedMatch) {
     const sm = e.suggestedMatch;
-    referencePanel = `
-      <div style="font-size:11.5px;color:var(--yellow);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px;">🔎 Suggested match (${escapeHtml(sm.confidence || 'unconfirmed')}) — not yet applied</div>
-      <div class="match-preview">
-        ${sm.coverUrl ? `<img src="${escapeHtml(sm.coverUrl)}" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
-        <div class="info">
-          <strong>${escapeHtml(sm.title || e.title)}</strong>
-          ${sm.altTitle ? escapeHtml(sm.altTitle) + '<br>' : ''}
-          ${sm.author ? 'By ' + escapeHtml(sm.author) + '<br>' : ''}
-          ${(sm.tags || []).slice(0, 6).join(', ')}
-          <p style="margin:6px 0 0;">${escapeHtml((sm.summary || '').slice(0, 220))}${(sm.summary || '').length > 220 ? '…' : ''}</p>
+    matchColumnHtml = `
+      <div class="match-suggest-box">
+        <div style="font-size:10.5px;color:var(--yellow);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px;">🔎 Suggested match (${escapeHtml(sm.confidence || 'unconfirmed')})</div>
+        <div class="match-preview compact">
+          ${sm.coverUrl ? `<img src="${escapeHtml(sm.coverUrl)}" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
+          <div class="info">
+            <strong>${escapeHtml(sm.title || e.title)}</strong>
+            ${sm.altTitle ? escapeHtml(sm.altTitle) + '<br>' : ''}
+            ${sm.author ? 'By ' + escapeHtml(sm.author) + '<br>' : ''}
+            <p style="margin:6px 0 0;">${escapeHtml((sm.summary || '').slice(0, 160))}${(sm.summary || '').length > 160 ? '…' : ''}</p>
+          </div>
         </div>
-      </div>
-      ${sm.notes ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">${escapeHtml(sm.notes)}</div>` : ''}
-      <div class="modal-actions" style="margin-top:0;">
-        <button class="btn-ghost" data-dismiss-suggested="1">Dismiss</button>
-        <button class="btn-primary" data-use-suggested="1">✓ Use this match</button>
-      </div>
-      ${sm.url ? `<div style="margin-top:8px;"><a href="${escapeHtml(sm.url)}" target="_blank" style="font-size:11.5px;">View on ${escapeHtml(sm.site || 'Anime-Planet')} ↗</a></div>` : ''}
-  `;
+        ${sm.notes ? `<div style="font-size:10.5px;color:var(--text-dim);margin-bottom:6px;">${escapeHtml(sm.notes)}</div>` : ''}
+        <div class="modal-actions" style="margin-top:0;">
+          <button class="btn-ghost" data-dismiss-suggested="1">Dismiss</button>
+          <button class="btn-primary" data-use-suggested="1">✓ Use match</button>
+        </div>
+        ${sm.url ? `<div style="margin-top:6px;"><a href="${escapeHtml(sm.url)}" target="_blank" style="font-size:11px;">View on ${escapeHtml(sm.site || 'Anime-Planet')} ↗</a></div>` : ''}
+      </div>`;
   } else {
-    referencePanel = `
-      <div style="color:var(--text-dim);font-size:12.5px;margin-bottom:8px;">Not linked to a reference page yet.</div>
-      <button class="ref-btn" data-open-crossref="1">🔗 Cross-reference from Anime-Planet</button>
-  `;
+    matchColumnHtml = `
+      <div class="match-suggest-box">
+        <div style="color:var(--text-dim);font-size:11.5px;margin-bottom:8px;">Not linked to a reference page yet.</div>
+        <button class="ref-btn" data-open-crossref="1">🔗 Cross-reference</button>
+      </div>`;
   }
 
   // Display vs. edit mode for the top fields (Title, Alt Title, Novel, Author,
@@ -528,14 +549,12 @@ function renderDetail(e) {
               <label class="upload-btn small">📷 ${e.coverUrl ? 'Change' : 'Upload'}<input type="file" accept="image/*" style="display:none" id="cover-upload-input"></label>
               ${shelfSelect}
             </div>
+            ${matchColumnHtml}
           </div>
           <div>
             ${topFieldsHtml}
+            ${confirmedSummaryHtml}
           </div>
-        </div>
-        <div class="field-row" style="margin-top:12px;">
-          <label>Summary</label>
-          ${referencePanel}
         </div>
       </div>
 
@@ -583,16 +602,24 @@ function renderDetail(e) {
 
       <!-- 4. Tags -->
       <div class="panel">
-        <div class="panel-title">Tags</div>
-        <div style="color:var(--text-dim);font-size:11px;margin-bottom:6px;">Tap a tag to mark it for removal, add new ones below, then Save.</div>
-        <div class="tag-cloud">${renderTagCloud(e)}</div>
-        <div class="add-tag-row">
-          <input type="text" id="new-tag-input" placeholder="Add your own tag...">
-          <button data-add-tag="1">Add</button>
+        <div class="panel-title-row">
+          <div class="panel-title" style="margin:0;">Tags</div>
+          ${!TAG_EDIT_MODE ? `<button class="icon-btn-inline" data-tag-edit-toggle="1" title="Edit tags">✏️</button>` : ''}
         </div>
-        <div class="modal-actions" style="margin-top:10px;">
-          <button class="btn-primary" data-save-tags="1">Save Tags</button>
-        </div>
+        ${TAG_EDIT_MODE ? `
+          <div style="color:var(--text-dim);font-size:11px;margin-bottom:6px;">Tap a tag to mark it for removal, add new ones below, then Save.</div>
+          <div class="tag-cloud">${renderTagCloud(e)}</div>
+          <div class="add-tag-row">
+            <input type="text" id="new-tag-input" placeholder="Add your own tag...">
+            <button data-add-tag="1">Add</button>
+          </div>
+          <div class="modal-actions" style="margin-top:10px;">
+            <button class="btn-ghost" data-cancel-tag-edit="1">Cancel</button>
+            <button class="btn-primary" data-save-tags="1">Save Tags</button>
+          </div>
+        ` : `
+          <div class="tag-cloud">${renderTagCloudReadOnly(e)}</div>
+        `}
       </div>
 
       <!-- 6. User notes -->
@@ -1100,6 +1127,14 @@ function attachRootHandlers() {
     showToast('Saved!');
     render();
   };
+  const tagEditToggleBtn = root.querySelector('[data-tag-edit-toggle]');
+  if (tagEditToggleBtn) tagEditToggleBtn.onclick = () => { TAG_EDIT_MODE = true; render(); };
+  const cancelTagEditBtn = root.querySelector('[data-cancel-tag-edit]');
+  if (cancelTagEditBtn) cancelTagEditBtn.onclick = () => {
+    TAG_EDIT_MODE = false;
+    TAG_EDIT_STATE = { entryId: null, removed: new Set(), added: [] };
+    render();
+  };
   const addTagBtn = root.querySelector('[data-add-tag]');
   if (addTagBtn) addTagBtn.onclick = () => {
     const input = document.getElementById('new-tag-input');
@@ -1136,6 +1171,7 @@ function attachRootHandlers() {
     e.customTags = (e.customTags || []).filter((t) => !ts.removed.has(t)).concat(ts.added);
     await saveEntry(e);
     TAG_EDIT_STATE = { entryId: null, removed: new Set(), added: [] };
+    TAG_EDIT_MODE = false;
     showToast('Tags saved!');
     render();
   };
@@ -1272,6 +1308,11 @@ function renderHomeInPlace() {
   const entries = filteredEntries();
   let body = '';
   if (STATE.shelf === 'ALL' && !STATE.tagFilter && !STATE.search && !STATE.showFavoritesOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
+    const suggestedGroup = entries.filter((e) => e.suggestedMatch);
+    if (suggestedGroup.length > 0) {
+      body += `<div class="section-title">🔎 Suggested Matches <span style="opacity:.6">(${suggestedGroup.length})</span></div>`;
+      body += `<div class="cover-row-scroll">${suggestedGroup.map(renderCoverCard).join('')}</div>`;
+    }
     const shelvesToShow = STATE.format === 'reading' ? SHELVES_READING : ['Completed'];
     shelvesToShow.forEach((shelf) => {
       const group = entries.filter((e) => e.shelf === shelf);
