@@ -20,13 +20,15 @@ let db = null;
 let ALL_ENTRIES = [];              // in-memory cache, synced with IndexedDB
 let DETAIL_EDIT_MODE = false;      // whether the detail page's top fields are in edit mode
 let TAG_EDIT_MODE = false;         // whether the Tags panel is showing its editable (toggle/add/save) UI
+let TAG_FILTER_OPEN = false;       // whether the homepage tag multi-select dropdown panel is open
+let FILTERS_COLLAPSED = false;     // whether the homepage Status/Tags/Ratings&Flags block is tucked away
 let STATE = {
   view: 'home',            // 'home' | 'detail' | 'database' | 'review' | 'duplicates'
   entryId: null,
   format: 'reading',        // 'reading' | 'watching'
   showFavoritesOnly: false,
   shelf: 'ALL',             // 'ALL' or one of SHELVES_READING
-  tagFilter: null,
+  tagFilters: [],           // array of tag strings; entry matches if it has ANY of these
   smutFilter: null,         // null or 1-5, meaning "at least N eggplants"
   qualityFilter: null,      // null or 1-5, meaning "at least N hearts"
   flagFilter: null,         // null or 'green'|'red'|'black'
@@ -209,6 +211,7 @@ function navigate(view, entryId) {
   STATE.entryId = entryId || null;
   DETAIL_EDIT_MODE = false;
   TAG_EDIT_MODE = false;
+  TAG_FILTER_OPEN = false;
   window.scrollTo(0, 0);
   render();
 }
@@ -241,9 +244,9 @@ function filteredEntries() {
       return false;
     }
     if (STATE.shelf !== 'ALL' && e.shelf !== STATE.shelf) return false;
-    if (STATE.tagFilter) {
+    if (STATE.tagFilters.length) {
       const allTags = [...(e.tags || []), ...(e.customTags || [])];
-      if (!allTags.includes(STATE.tagFilter)) return false;
+      if (!STATE.tagFilters.some((t) => allTags.includes(t))) return false;
     }
     if (STATE.smutFilter && (e.smutRating || 0) < STATE.smutFilter) return false;
     if (STATE.qualityFilter && (e.qualityRating || 0) < STATE.qualityFilter) return false;
@@ -292,19 +295,30 @@ function renderCoverCard(e) {
     </div>`;
 }
 
+// Wraps a horizontal-scroll row with left/right arrow buttons so it can be
+// navigated by click as well as by touch/swipe.
+function scrollRow(rowId, innerHtml) {
+  return `
+    <div class="scroll-row-wrap">
+      <button class="scroll-arrow left" data-scroll-target="${rowId}" data-dir="-1" aria-label="Scroll left">‹</button>
+      <div class="cover-row-scroll" id="${rowId}">${innerHtml}</div>
+      <button class="scroll-arrow right" data-scroll-target="${rowId}" data-dir="1" aria-label="Scroll right">›</button>
+    </div>`;
+}
+
 function renderHome() {
   const entries = filteredEntries();
   const tags = topTags(ALL_ENTRIES.filter((e) => e.format === STATE.format));
 
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilter && !STATE.search && !STATE.showFavoritesOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
     // Suggested-matches row sits above the shelf rows, same section-title +
     // horizontal-scroll treatment, so unconfirmed matches are easy to spot
     // and jump into without leaving the homepage.
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
       body += `<div class="section-title">🔎 Suggested Matches <span style="opacity:.6">(${suggestedGroup.length})</span></div>`;
-      body += `<div class="cover-row-scroll">${suggestedGroup.map(renderCoverCard).join('')}</div>`;
+      body += scrollRow('row-suggested', suggestedGroup.map(renderCoverCard).join(''));
     }
     // grouped by shelf, each group scrolls horizontally so hundreds of entries
     // don't turn into an endless vertical scroll.
@@ -312,8 +326,9 @@ function renderHome() {
     shelvesToShow.forEach((shelf) => {
       const group = entries.filter((e) => e.shelf === shelf);
       if (group.length === 0) return;
+      const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
       body += `<div class="section-title">${escapeHtml(shelf)} <span style="opacity:.6">(${group.length})</span></div>`;
-      body += `<div class="cover-row-scroll">${group.map(renderCoverCard).join('')}</div>`;
+      body += scrollRow(rowId, group.map(renderCoverCard).join(''));
     });
     if (!body) body = `<div class="empty-state">Nothing here yet. Tap + to add a ${STATE.format === 'reading' ? 'manhwa/manga' : 'anime'}.</div>`;
   } else {
@@ -326,7 +341,17 @@ function renderHome() {
     ? ['ALL', ...SHELVES_READING].map((s) => `<div class="chip ${STATE.shelf === s ? 'active' : ''}" data-shelf="${escapeHtml(s)}">${s === 'ALL' ? 'All' : escapeHtml(s)}</div>`).join('')
     : '';
 
-  const tagChips = tags.map((t) => `<div class="chip ${STATE.tagFilter === t ? 'active' : ''}" data-tag="${escapeHtml(t)}">${escapeHtml(t)}</div>`).join('');
+  const tagMsPanel = tags.map((t) => `
+    <label class="tag-ms-item"><input type="checkbox" data-tag-ms-item="${escapeHtml(t)}" ${STATE.tagFilters.includes(t) ? 'checked' : ''}> ${escapeHtml(t)}</label>
+  `).join('');
+  const tagMultiselect = `
+    <div class="tag-multiselect">
+      <button class="tag-ms-toggle" data-tag-ms-toggle="1">🏷️ Tags${STATE.tagFilters.length ? ` (${STATE.tagFilters.length})` : ''} <span class="chevron">${TAG_FILTER_OPEN ? '▴' : '▾'}</span></button>
+      <div class="tag-ms-panel ${TAG_FILTER_OPEN ? 'open' : ''}" id="tag-ms-panel">
+        ${tagMsPanel || '<div style="color:var(--text-dim);font-size:12px;padding:4px;">No tags yet.</div>'}
+        ${STATE.tagFilters.length ? `<button class="ref-btn" style="width:100%;margin-top:6px;" data-tag-ms-clear="1">Clear selected</button>` : ''}
+      </div>
+    </div>`;
 
   const smutChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.smutFilter && n <= STATE.smutFilter ? 'active' : ''}" data-smut-filter="${n}" title="${n}+ eggplants">🍆</span>`).join('');
   const qualityChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.qualityFilter && n <= STATE.qualityFilter ? 'active' : ''}" data-quality-filter="${n}" title="${n}+ hearts">❤️</span>`).join('');
@@ -350,10 +375,14 @@ function renderHome() {
         <div class="format-btn ${STATE.format === 'reading' ? 'active' : ''}" data-format="reading">📖 Reading (Manhwa/Manga)</div>
         <div class="format-btn ${STATE.format === 'watching' ? 'active' : ''}" data-format="watching">📺 Watching (Anime)</div>
       </div>
-      ${shelfChips ? `<div class="filter-section-label">Status</div><div class="shelf-row">${shelfChips}</div>` : ''}
-      ${tagChips ? `<div class="filter-section-label">Tags</div><div class="tag-row">${tagChips}</div>` : ''}
-      <div class="filter-section-label">Ratings &amp; Flags</div>
-      <div class="rating-pick-row">${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${flagChips}</div>
+      <button class="filters-toggle-btn" data-toggle-filters="1">${FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
+      <div class="filters-collapsible ${FILTERS_COLLAPSED ? 'collapsed' : ''}" id="filters-collapsible">
+        ${shelfChips ? `<div class="filter-section-label">Status</div><div class="shelf-row">${shelfChips}</div>` : ''}
+        <div class="filter-section-label">Tags</div>
+        ${tagMultiselect}
+        <div class="filter-section-label">Ratings &amp; Flags</div>
+        <div class="rating-pick-row">${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${flagChips}</div>
+      </div>
     </div>
     <main>${body}</main>
     <button class="fab" data-add-entry="1">+</button>
@@ -459,7 +488,8 @@ function renderDetail(e) {
     const sm = e.suggestedMatch;
     matchColumnHtml = `
       <div class="match-suggest-box">
-        <div style="font-size:10.5px;color:var(--yellow);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px;">🔎 Suggested match (${escapeHtml(sm.confidence || 'unconfirmed')})</div>
+        <button class="ref-btn" style="width:100%;margin-bottom:8px;" data-generate-match="1">🔎 Generate Suggested Match</button>
+        <div style="font-size:10.5px;color:var(--yellow);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px;">🔎 Suggested match (${escapeHtml(sm.confidence || 'unconfirmed')})${sm.site ? ' — ' + escapeHtml(sm.site) : ''}</div>
         <div class="match-preview compact">
           ${sm.coverUrl ? `<img src="${escapeHtml(sm.coverUrl)}" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
           <div class="info">
@@ -479,8 +509,9 @@ function renderDetail(e) {
   } else {
     matchColumnHtml = `
       <div class="match-suggest-box">
+        <button class="ref-btn" style="width:100%;margin-bottom:8px;" data-generate-match="1">🔎 Generate Suggested Match</button>
         <div style="color:var(--text-dim);font-size:11.5px;margin-bottom:8px;">Not linked to a reference page yet.</div>
-        <button class="ref-btn" data-open-crossref="1">🔗 Cross-reference</button>
+        <button class="ref-btn" data-open-crossref="1">🔗 Cross-reference manually</button>
       </div>`;
   }
 
@@ -854,13 +885,17 @@ function exportCsv() {
 function openCrossRefModal(entryId) {
   const e = getEntry(entryId);
   const proxy = getProxyUrl();
-  const searchUrl = 'https://www.anime-planet.com/manga/all?name=' + encodeURIComponent(e.title);
+  const apSearchUrl = 'https://www.anime-planet.com/manga/all?name=' + encodeURIComponent(e.title);
+  const mgSearchUrl = 'https://www.mangago.me/r/l_search/?name=' + encodeURIComponent(e.title);
   openModal(`
     <h3>Cross-reference "${escapeHtml(e.title)}"</h3>
     ${proxy ? '' : `<div style="background:var(--pink-soft);color:var(--pink);padding:8px 10px;border-radius:8px;font-size:12px;margin-bottom:10px;">No proxy URL set yet. Add one in Settings (⚙️) to enable live fetching — see the setup notes I gave you.</div>`}
-    <p style="font-size:12.5px;color:var(--text-dim);">1. Find the title on Anime-Planet, then paste its page URL below.</p>
-    <a class="ref-btn" href="${searchUrl}" target="_blank" style="display:inline-block;margin-bottom:10px;text-decoration:none;">🔍 Search Anime-Planet for this title ↗</a>
-    <div class="field-row"><label>Anime-Planet URL</label><input type="text" id="crossref-url" placeholder="https://www.anime-planet.com/manga/..."></div>
+    <p style="font-size:12.5px;color:var(--text-dim);">1. Find the title on Anime-Planet or MangaGo, then paste its page URL below.</p>
+    <div style="display:flex;gap:8px;margin-bottom:10px;">
+      <a class="ref-btn" href="${apSearchUrl}" target="_blank" style="flex:1;text-align:center;text-decoration:none;">🔍 Anime-Planet ↗</a>
+      <a class="ref-btn" href="${mgSearchUrl}" target="_blank" style="flex:1;text-align:center;text-decoration:none;">🔍 MangaGo ↗</a>
+    </div>
+    <div class="field-row"><label>Anime-Planet or MangaGo URL</label><input type="text" id="crossref-url" placeholder="https://www.anime-planet.com/manga/... or https://www.mangago.me/..."></div>
     <div class="modal-actions">
       <button class="btn-ghost" data-close-modal="1">Cancel</button>
       <button class="btn-primary" data-fetch-ref="${entryId}">Preview</button>
@@ -902,6 +937,42 @@ async function fetchReferencePreview(entryId) {
   } catch (err) {
     previewEl.innerHTML = `<div style="color:var(--red-flag);font-size:12.5px;padding:8px 0;">Couldn't fetch: ${escapeHtml(err.message)}</div>`;
   }
+}
+
+// Tries to find this entry on Anime-Planet first, then falls back to
+// MangaGo, so the user doesn't have to hunt down and paste a URL manually.
+async function generateSuggestedMatch(entryId) {
+  const e = getEntry(entryId);
+  const proxy = getProxyUrl();
+  if (!proxy) { showToast('Set your proxy URL in Settings first'); return; }
+  showToast('Searching Anime-Planet & MangaGo…');
+  const trySite = async (site) => {
+    try {
+      const resp = await fetch(proxy + '?action=searchMatch&site=' + site + '&title=' + encodeURIComponent(e.title));
+      const data = await resp.json();
+      if (data.error) return null;
+      return data;
+    } catch (err) {
+      return null;
+    }
+  };
+  let data = await trySite('anime-planet');
+  if (!data) data = await trySite('mangago');
+  if (!data) { showToast('No match found on either site'); return; }
+  e.suggestedMatch = {
+    title: data.title,
+    altTitle: data.altTitle,
+    coverUrl: data.coverUrl,
+    summary: data.summary,
+    tags: data.tags,
+    author: data.author,
+    url: data.sourceUrl,
+    site: data.site,
+    confidence: data.confidence || 'auto',
+  };
+  await saveEntry(e);
+  showToast('Suggested match found!');
+  render();
 }
 
 async function confirmReference(entryId) {
@@ -1007,16 +1078,38 @@ function attachRootHandlers() {
     el.onclick = () => { STATE.showFavoritesOnly = el.getAttribute('data-fav') === '1'; render(); };
   });
   root.querySelectorAll('[data-format]').forEach((el) => {
-    el.onclick = () => { STATE.format = el.getAttribute('data-format'); STATE.shelf = 'ALL'; STATE.tagFilter = null; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.flagFilter = null; render(); };
+    el.onclick = () => { STATE.format = el.getAttribute('data-format'); STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.flagFilter = null; render(); };
   });
   root.querySelectorAll('[data-shelf]').forEach((el) => {
     el.onclick = () => { STATE.shelf = el.getAttribute('data-shelf'); render(); };
   });
-  root.querySelectorAll('[data-tag]').forEach((el) => {
-    el.onclick = () => {
-      const t = el.getAttribute('data-tag');
-      STATE.tagFilter = STATE.tagFilter === t ? null : t;
+  const tagMsToggle = root.querySelector('[data-tag-ms-toggle]');
+  if (tagMsToggle) tagMsToggle.onclick = () => { TAG_FILTER_OPEN = !TAG_FILTER_OPEN; render(); };
+  root.querySelectorAll('[data-tag-ms-item]').forEach((el) => {
+    el.onchange = () => {
+      const t = el.getAttribute('data-tag-ms-item');
+      if (el.checked) {
+        if (!STATE.tagFilters.includes(t)) STATE.tagFilters.push(t);
+      } else {
+        STATE.tagFilters = STATE.tagFilters.filter((x) => x !== t);
+      }
       render();
+    };
+  });
+  const tagMsClear = root.querySelector('[data-tag-ms-clear]');
+  if (tagMsClear) tagMsClear.onclick = () => { STATE.tagFilters = []; render(); };
+  const filtersToggleBtn = root.querySelector('[data-toggle-filters]');
+  if (filtersToggleBtn) filtersToggleBtn.onclick = () => {
+    FILTERS_COLLAPSED = !FILTERS_COLLAPSED;
+    const filtersEl = document.getElementById('filters-collapsible');
+    if (filtersEl) filtersEl.classList.toggle('collapsed', FILTERS_COLLAPSED);
+    filtersToggleBtn.textContent = FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters';
+  };
+  root.querySelectorAll('[data-scroll-target]').forEach((btn) => {
+    btn.onclick = () => {
+      const target = document.getElementById(btn.getAttribute('data-scroll-target'));
+      if (!target) return;
+      target.scrollBy({ left: Number(btn.getAttribute('data-dir')) * 300, behavior: 'smooth' });
     };
   });
   root.querySelectorAll('[data-smut-filter]').forEach((el) => {
@@ -1208,6 +1301,8 @@ function attachRootHandlers() {
   });
   const crossRefBtn = root.querySelector('[data-open-crossref]');
   if (crossRefBtn) crossRefBtn.onclick = () => openCrossRefModal(STATE.entryId);
+  const generateMatchBtn = root.querySelector('[data-generate-match]');
+  if (generateMatchBtn) generateMatchBtn.onclick = () => generateSuggestedMatch(STATE.entryId);
   const useSuggestedBtn = root.querySelector('[data-use-suggested]');
   if (useSuggestedBtn) useSuggestedBtn.onclick = async () => {
     const e = getEntry(STATE.entryId);
@@ -1307,18 +1402,19 @@ function renderHomeInPlace() {
   const main = root.querySelector('main');
   const entries = filteredEntries();
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilter && !STATE.search && !STATE.showFavoritesOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
       body += `<div class="section-title">🔎 Suggested Matches <span style="opacity:.6">(${suggestedGroup.length})</span></div>`;
-      body += `<div class="cover-row-scroll">${suggestedGroup.map(renderCoverCard).join('')}</div>`;
+      body += scrollRow('row-suggested', suggestedGroup.map(renderCoverCard).join(''));
     }
     const shelvesToShow = STATE.format === 'reading' ? SHELVES_READING : ['Completed'];
     shelvesToShow.forEach((shelf) => {
       const group = entries.filter((e) => e.shelf === shelf);
       if (group.length === 0) return;
+      const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
       body += `<div class="section-title">${escapeHtml(shelf)} <span style="opacity:.6">(${group.length})</span></div>`;
-      body += `<div class="cover-row-scroll">${group.map(renderCoverCard).join('')}</div>`;
+      body += scrollRow(rowId, group.map(renderCoverCard).join(''));
     });
     if (!body) body = `<div class="empty-state">Nothing here yet.</div>`;
   } else {
@@ -1331,6 +1427,13 @@ function renderHomeInPlace() {
     main.querySelectorAll('[data-open-entry]').forEach((el) => {
       el.onclick = () => navigate('detail', el.getAttribute('data-open-entry'));
     });
+    main.querySelectorAll('[data-scroll-target]').forEach((btn) => {
+      btn.onclick = () => {
+        const target = document.getElementById(btn.getAttribute('data-scroll-target'));
+        if (!target) return;
+        target.scrollBy({ left: Number(btn.getAttribute('data-dir')) * 300, behavior: 'smooth' });
+      };
+    });
   }
 }
 
@@ -1341,6 +1444,11 @@ function renderHomeInPlace() {
 
 document.addEventListener('click', (ev) => {
   const t = ev.target;
+  if (TAG_FILTER_OPEN && !t.closest('.tag-multiselect') && STATE.view === 'home') {
+    TAG_FILTER_OPEN = false;
+    render();
+    return;
+  }
   if (t.matches('[data-close-modal]')) closeModal();
   if (t.matches('[data-save-settings]')) {
     const val = document.getElementById('proxy-url-input').value;
@@ -1357,22 +1465,10 @@ document.getElementById('overlay').addEventListener('click', (ev) => {
 });
 
 /* ---------------------------------------------------------------------- */
-/* Scroll-away filter header (home view only)                             */
+/* Filter section collapse (home view) — manual arrow toggle only, no     */
+/* longer tied to scroll direction. See attachRootHandlers for the click  */
+/* handler on [data-toggle-filters].                                     */
 /* ---------------------------------------------------------------------- */
-
-let _lastScrollY = 0;
-window.addEventListener('scroll', () => {
-  if (STATE.view !== 'home') return;
-  const header = document.querySelector('.app-header');
-  if (!header) return;
-  const y = window.scrollY;
-  if (y > _lastScrollY && y > 90) {
-    header.classList.add('header-hidden');
-  } else {
-    header.classList.remove('header-hidden');
-  }
-  _lastScrollY = y;
-}, { passive: true });
 
 /* ---------------------------------------------------------------------- */
 /* Boot                                                                    */
