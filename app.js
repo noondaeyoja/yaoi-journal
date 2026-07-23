@@ -18,6 +18,7 @@ const FLAG_HEX = { green: '#4ade80', red: '#f87171', black: '#6b6b7a' };
 
 let db = null;
 let ALL_ENTRIES = [];              // in-memory cache, synced with IndexedDB
+let DETAIL_EDIT_MODE = false;      // whether the detail page's top fields are in edit mode
 let STATE = {
   view: 'home',            // 'home' | 'detail' | 'database' | 'review' | 'duplicates'
   entryId: null,
@@ -27,6 +28,7 @@ let STATE = {
   tagFilter: null,
   smutFilter: null,         // null or 1-5, meaning "at least N eggplants"
   qualityFilter: null,      // null or 1-5, meaning "at least N hearts"
+  flagFilter: null,         // null or 'green'|'red'|'black'
   search: '',
 };
 
@@ -204,6 +206,7 @@ function setProxyUrl(url) {
 function navigate(view, entryId) {
   STATE.view = view;
   STATE.entryId = entryId || null;
+  DETAIL_EDIT_MODE = false;
   window.scrollTo(0, 0);
   render();
 }
@@ -242,6 +245,10 @@ function filteredEntries() {
     }
     if (STATE.smutFilter && (e.smutRating || 0) < STATE.smutFilter) return false;
     if (STATE.qualityFilter && (e.qualityRating || 0) < STATE.qualityFilter) return false;
+    if (STATE.flagFilter) {
+      const hasFlag = (e.semi && e.semi.flag === STATE.flagFilter) || (e.uke && e.uke.flag === STATE.flagFilter);
+      if (!hasFlag) return false;
+    }
     if (q) {
       const hay = [e.title, e.altTitle, e.author, e.artist, e.notes, ...(e.tags || []), ...(e.customTags || [])]
         .filter(Boolean).join(' ').toLowerCase();
@@ -288,14 +295,15 @@ function renderHome() {
   const tags = topTags(ALL_ENTRIES.filter((e) => e.format === STATE.format));
 
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilter && !STATE.search && !STATE.showFavoritesOnly && !STATE.smutFilter && !STATE.qualityFilter) {
-    // grouped by shelf
+  if (STATE.shelf === 'ALL' && !STATE.tagFilter && !STATE.search && !STATE.showFavoritesOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
+    // grouped by shelf, each group scrolls horizontally so hundreds of entries
+    // don't turn into an endless vertical scroll.
     const shelvesToShow = STATE.format === 'reading' ? SHELVES_READING : ['Completed'];
     shelvesToShow.forEach((shelf) => {
       const group = entries.filter((e) => e.shelf === shelf);
       if (group.length === 0) return;
       body += `<div class="section-title">${escapeHtml(shelf)} <span style="opacity:.6">(${group.length})</span></div>`;
-      body += `<div class="cover-grid">${group.map(renderCoverCard).join('')}</div>`;
+      body += `<div class="cover-row-scroll">${group.map(renderCoverCard).join('')}</div>`;
     });
     if (!body) body = `<div class="empty-state">Nothing here yet. Tap + to add a ${STATE.format === 'reading' ? 'manhwa/manga' : 'anime'}.</div>`;
   } else {
@@ -311,7 +319,13 @@ function renderHome() {
   const tagChips = tags.map((t) => `<div class="chip ${STATE.tagFilter === t ? 'active' : ''}" data-tag="${escapeHtml(t)}">${escapeHtml(t)}</div>`).join('');
 
   const smutChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.smutFilter && n <= STATE.smutFilter ? 'active' : ''}" data-smut-filter="${n}" title="${n}+ eggplants">🍆</span>`).join('');
-  const qualityChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.qualityFilter && n <= STATE.qualityFilter ? 'active' : ''}" data-quality-filter="${n}" title="${n}+ hearts">💗</span>`).join('');
+  const qualityChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.qualityFilter && n <= STATE.qualityFilter ? 'active' : ''}" data-quality-filter="${n}" title="${n}+ hearts">❤️</span>`).join('');
+  const flagChips = FLAG_COLORS.map((c) => `<span class="rating-pick-icon flag-filter-icon ${STATE.flagFilter === c ? 'active' : ''}" data-flag-filter="${c}" style="color:${FLAG_HEX[c]}" title="${c} flag">&#9873;</span>`).join('');
+
+  const pendingReviewCount = ALL_ENTRIES.filter((e) => e.suggestedMatch).length;
+  const reviewBanner = pendingReviewCount > 0
+    ? `<div class="review-banner" data-nav="review">🔎 <strong>${pendingReviewCount}</strong> of ${ALL_ENTRIES.length} titles need review <span class="review-banner-arrow">→</span></div>`
+    : '';
 
   return `
     <div class="app-header">
@@ -333,10 +347,10 @@ function renderHome() {
       </div>
       ${shelfChips ? `<div class="filter-section-label">Status</div><div class="shelf-row">${shelfChips}</div>` : ''}
       ${tagChips ? `<div class="filter-section-label">Tags</div><div class="tag-row">${tagChips}</div>` : ''}
-      <div class="filter-section-label">Ratings</div>
-      <div class="rating-pick-row">${smutChips}</div>
-      <div class="rating-pick-row">${qualityChips}</div>
+      <div class="filter-section-label">Ratings &amp; Flags</div>
+      <div class="rating-pick-row">${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${flagChips}</div>
     </div>
+    ${reviewBanner}
     <main>${body}</main>
     <button class="fab" data-add-entry="1">+</button>
     ${renderBottomNav('home')}
@@ -371,50 +385,45 @@ function renderCharPhoto(photo) {
   return photo ? `<img src="${photo}" alt="">` : '📷';
 }
 
+// Yaoi/BL titles are notorious for having several names (English, romanized,
+// native-script) floating around. When a reference-platform match gives us a
+// different (usually more "official") title, keep every prior name around by
+// folding them into Alt Title instead of just discarding them.
+function applyTitleSwap(e, sm) {
+  if (sm.title && sm.title.trim() && sm.title.trim() !== e.title) {
+    const parts = [e.altTitle, e.title, sm.altTitle].map((t) => (t || '').trim()).filter(Boolean);
+    e.altTitle = Array.from(new Set(parts)).join(' / ');
+    e.title = sm.title.trim();
+  } else if (sm.altTitle && !e.altTitle) {
+    e.altTitle = sm.altTitle;
+  }
+}
+
+// Pending (unsaved) tag edits for whichever entry is currently open. Clicking a
+// tag just toggles it here; nothing is written to the entry until Save Tags.
+let TAG_EDIT_STATE = { entryId: null, removed: new Set(), added: [] };
+function getTagEditState(entryId) {
+  if (TAG_EDIT_STATE.entryId !== entryId) {
+    TAG_EDIT_STATE = { entryId, removed: new Set(), added: [] };
+  }
+  return TAG_EDIT_STATE;
+}
+
 function renderTagCloud(e) {
-  const auto = (e.tags || []).map((t) => `<div class="tag-chip">${escapeHtml(t)}</div>`);
-  const custom = (e.customTags || []).map((t) => `<div class="tag-chip custom">${escapeHtml(t)} <button data-remove-tag="${escapeHtml(t)}">✕</button></div>`);
-  return auto.concat(custom).join('') || '<span style="color:var(--text-dim);font-size:12.5px;">No tags yet.</span>';
+  const ts = getTagEditState(e.id);
+  const existing = (e.tags || []).map((t) => ({ t, custom: false }))
+    .concat((e.customTags || []).map((t) => ({ t, custom: true })));
+  const existingChips = existing.map(({ t, custom }) => {
+    const removed = ts.removed.has(t);
+    return `<div class="tag-chip ${custom ? 'custom' : ''} ${removed ? 'tag-removed' : ''}" data-toggle-tag="${escapeHtml(t)}" title="Tap to ${removed ? 'keep' : 'remove'}">${escapeHtml(t)}</div>`;
+  });
+  const addedChips = ts.added.map((t) => `<div class="tag-chip custom" data-toggle-added="${escapeHtml(t)}" title="Tap to undo">${escapeHtml(t)} ✕</div>`);
+  return existingChips.concat(addedChips).join('') || '<span style="color:var(--text-dim);font-size:12.5px;">No tags yet.</span>';
 }
 
 function renderDetail(e) {
   if (!e) return `<div class="empty-state">Entry not found.</div>${renderBottomNav('home')}`;
   const isReading = e.format === 'reading';
-
-  // Summary pulled live from the reference platform — prefer a confirmed reference's
-  // cached summary, fall back to a not-yet-applied suggested match's summary.
-  const topSummaryText = (e.referenceUrl && e.referenceStatus === 'confirmed' && e.summaryCache)
-    ? e.summaryCache
-    : (e.suggestedMatch && e.suggestedMatch.summary) ? e.suggestedMatch.summary : '';
-  const topSummaryUnconfirmed = !(e.referenceUrl && e.referenceStatus === 'confirmed') && e.suggestedMatch;
-
-  const detailsHtml = isReading ? `
-      <div class="field-row"><label>Author</label><div class="value plain">${escapeHtml(e.author) || '—'}</div></div>
-      <div class="field-row"><label>Artist</label><div class="value plain">${escapeHtml(e.artist) || '—'}</div></div>
-      ${e.totalChapters ? `<div class="field-row"><label>Chapters</label><div class="value plain">${e.totalChapters}</div></div>` : ''}
-      ${e.totalSeasons ? `<div class="field-row"><label>Seasons</label><div class="value plain">${e.totalSeasons}</div></div>` : ''}
-      <div class="field-row"><label>Status</label><div class="value plain">${escapeHtml(e.status) || '—'}</div></div>
-      ${topSummaryText ? `
-        <div class="field-row">
-          <label>Summary ${topSummaryUnconfirmed ? '(unconfirmed match)' : ''}</label>
-          <div class="value plain">${escapeHtml(topSummaryText.slice(0, 260))}${topSummaryText.length > 260 ? '…' : ''}</div>
-        </div>` : ''}
-  ` : `
-      <div class="field-row"><label>Notes (legacy)</label><div class="value plain">${escapeHtml(e.legacyNote) || '—'}</div></div>
-      ${topSummaryText ? `
-        <div class="field-row">
-          <label>Summary ${topSummaryUnconfirmed ? '(unconfirmed match)' : ''}</label>
-          <div class="value plain">${escapeHtml(topSummaryText.slice(0, 260))}${topSummaryText.length > 260 ? '…' : ''}</div>
-        </div>` : ''}
-  `;
-
-  const shelfToggles = isReading ? `
-    <div class="field-row" style="margin-top:4px;">
-      <label>Shelf</label>
-      <div class="status-toggle-row">
-        ${SHELVES_READING.map((s) => `<div class="status-toggle ${e.shelf === s ? 'active' : ''}" data-set-shelf="${s}">${s}</div>`).join('')}
-      </div>
-    </div>` : '';
 
   let referencePanel;
   if (e.referenceUrl && e.referenceStatus === 'confirmed') {
@@ -454,6 +463,54 @@ function renderDetail(e) {
   `;
   }
 
+  // Display vs. edit mode for the top fields (Title, Alt Title, Novel, Author,
+  // Artist, Chapters/Seasons, Status) — toggled by the pencil icon.
+  let topFieldsHtml;
+  if (DETAIL_EDIT_MODE) {
+    topFieldsHtml = isReading ? `
+      <div class="field-row"><label>Title</label><input type="text" id="edit-title" value="${escapeHtml(e.title)}"></div>
+      <div class="field-row"><label>Alt title</label><input type="text" id="edit-altTitle" placeholder="Other names this goes by..." value="${escapeHtml(e.altTitle || '')}"></div>
+      <div class="field-row"><label>Novel (author)</label><input type="text" id="edit-novelAuthor" placeholder="Original novel's author, if adapted" value="${escapeHtml(e.novelAuthor || '')}"></div>
+      <div class="field-row"><label>Author</label><input type="text" id="edit-author" value="${escapeHtml(e.author || '')}"></div>
+      <div class="field-row"><label>Artist</label><input type="text" id="edit-artist" value="${escapeHtml(e.artist || '')}"></div>
+      <div class="field-row"><label>Chapters</label><input type="number" id="edit-chapters" value="${e.totalChapters || ''}"></div>
+      <div class="field-row"><label>Seasons</label><input type="number" id="edit-seasons" value="${e.totalSeasons || ''}"></div>
+      <div class="field-row"><label>Status</label><input type="text" id="edit-status" value="${escapeHtml(e.status || '')}"></div>
+      <div class="modal-actions" style="margin-top:6px;">
+        <button class="btn-ghost" data-cancel-edit="1">Cancel</button>
+        <button class="btn-primary" data-save-edit="1">Save</button>
+      </div>
+    ` : `
+      <div class="field-row"><label>Title</label><input type="text" id="edit-title" value="${escapeHtml(e.title)}"></div>
+      <div class="field-row"><label>Alt title</label><input type="text" id="edit-altTitle" placeholder="Other names this goes by..." value="${escapeHtml(e.altTitle || '')}"></div>
+      <div class="field-row"><label>Notes (legacy)</label><input type="text" id="edit-legacyNote" value="${escapeHtml(e.legacyNote || '')}"></div>
+      <div class="modal-actions" style="margin-top:6px;">
+        <button class="btn-ghost" data-cancel-edit="1">Cancel</button>
+        <button class="btn-primary" data-save-edit="1">Save</button>
+      </div>
+    `;
+  } else {
+    topFieldsHtml = isReading ? `
+      <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)} <button class="icon-btn-inline" data-edit-toggle="1" title="Edit details">✏️</button></div></div>
+      ${e.altTitle ? `<div class="field-row"><label>Alt title</label><div class="value plain">${escapeHtml(e.altTitle)}</div></div>` : ''}
+      ${(e.isNovel || e.novelAuthor) ? `<div class="field-row"><label>Novel</label><div class="value plain">${escapeHtml(e.novelAuthor) || '—'}</div></div>` : ''}
+      <div class="field-row"><label>Author</label><div class="value plain">${escapeHtml(e.author) || '—'}</div></div>
+      <div class="field-row"><label>Artist</label><div class="value plain">${escapeHtml(e.artist) || '—'}</div></div>
+      ${e.totalChapters ? `<div class="field-row"><label>Chapters</label><div class="value plain">${e.totalChapters}</div></div>` : ''}
+      ${e.totalSeasons ? `<div class="field-row"><label>Seasons</label><div class="value plain">${e.totalSeasons}</div></div>` : ''}
+      <div class="field-row"><label>Status</label><div class="value plain">${escapeHtml(e.status) || '—'}</div></div>
+    ` : `
+      <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)} <button class="icon-btn-inline" data-edit-toggle="1" title="Edit details">✏️</button></div></div>
+      ${e.altTitle ? `<div class="field-row"><label>Alt title</label><div class="value plain">${escapeHtml(e.altTitle)}</div></div>` : ''}
+      <div class="field-row"><label>Notes (legacy)</label><div class="value plain">${escapeHtml(e.legacyNote) || '—'}</div></div>
+    `;
+  }
+
+  const shelfSelect = isReading ? `
+    <select class="shelf-select" data-shelf-select="1">
+      ${SHELVES_READING.map((s) => `<option value="${escapeHtml(s)}" ${e.shelf === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+    </select>` : '';
+
   return `
     <div class="detail-header">
       <button class="back-btn" data-nav="home">← Back</button>
@@ -467,15 +524,19 @@ function renderDetail(e) {
         <div class="split-row">
           <div>
             <div class="cover-slot">${e.coverUrl ? `<img src="${escapeHtml(e.coverUrl)}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='🍆'">` : '🍆'}</div>
-            <label class="upload-btn" style="margin-top:6px;display:block;text-align:center;font-size:11px;padding:6px 4px;cursor:pointer;">📷 ${e.coverUrl ? 'Change cover' : 'Upload cover'}<input type="file" accept="image/*" style="display:none" id="cover-upload-input"></label>
+            <div class="cover-actions-row">
+              <label class="upload-btn small">📷 ${e.coverUrl ? 'Change' : 'Upload'}<input type="file" accept="image/*" style="display:none" id="cover-upload-input"></label>
+              ${shelfSelect}
+            </div>
           </div>
           <div>
-            <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)}</div></div>
-            ${e.altTitle ? `<div class="field-row"><label>Alt title</label><div class="value plain">${escapeHtml(e.altTitle)}</div></div>` : ''}
-            ${detailsHtml}
+            ${topFieldsHtml}
           </div>
         </div>
-        ${shelfToggles}
+        <div class="field-row" style="margin-top:12px;">
+          <label>Summary</label>
+          ${referencePanel}
+        </div>
       </div>
 
       <!-- 2. Ratings -->
@@ -523,17 +584,15 @@ function renderDetail(e) {
       <!-- 4. Tags -->
       <div class="panel">
         <div class="panel-title">Tags</div>
+        <div style="color:var(--text-dim);font-size:11px;margin-bottom:6px;">Tap a tag to mark it for removal, add new ones below, then Save.</div>
         <div class="tag-cloud">${renderTagCloud(e)}</div>
         <div class="add-tag-row">
           <input type="text" id="new-tag-input" placeholder="Add your own tag...">
           <button data-add-tag="1">Add</button>
         </div>
-      </div>
-
-      <!-- 5. Summary (from reference) -->
-      <div class="panel">
-        <div class="panel-title">Summary</div>
-        ${referencePanel}
+        <div class="modal-actions" style="margin-top:10px;">
+          <button class="btn-primary" data-save-tags="1">Save Tags</button>
+        </div>
       </div>
 
       <!-- 6. User notes -->
@@ -882,7 +941,7 @@ async function submitAdd() {
   const author = document.getElementById('add-author').value.trim();
   const entry = {
     id: uid(STATE.format === 'reading' ? 'manhwa' : 'anime'),
-    format: STATE.format, title, altTitle: '', author, artist: '', isNovel: false,
+    format: STATE.format, title, altTitle: '', novelAuthor: '', author, artist: '', isNovel: false,
     totalSeasons: null, totalChapters: null, epilogue: '', officialLink: '', released: null,
     status: '', currentlyReadingRaw: '', downloaded: '',
     shelf: STATE.format === 'reading' ? 'Plan to Read' : 'Completed',
@@ -921,7 +980,7 @@ function attachRootHandlers() {
     el.onclick = () => { STATE.showFavoritesOnly = el.getAttribute('data-fav') === '1'; render(); };
   });
   root.querySelectorAll('[data-format]').forEach((el) => {
-    el.onclick = () => { STATE.format = el.getAttribute('data-format'); STATE.shelf = 'ALL'; STATE.tagFilter = null; STATE.smutFilter = null; STATE.qualityFilter = null; render(); };
+    el.onclick = () => { STATE.format = el.getAttribute('data-format'); STATE.shelf = 'ALL'; STATE.tagFilter = null; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.flagFilter = null; render(); };
   });
   root.querySelectorAll('[data-shelf]').forEach((el) => {
     el.onclick = () => { STATE.shelf = el.getAttribute('data-shelf'); render(); };
@@ -947,6 +1006,13 @@ function attachRootHandlers() {
       render();
     };
   });
+  root.querySelectorAll('[data-flag-filter]').forEach((el) => {
+    el.onclick = () => {
+      const c = el.getAttribute('data-flag-filter');
+      STATE.flagFilter = STATE.flagFilter === c ? null : c;
+      render();
+    };
+  });
   const addBtn = root.querySelector('[data-add-entry]');
   if (addBtn) addBtn.onclick = openAddModal;
   const settingsBtn = root.querySelector('[data-open-settings]');
@@ -957,11 +1023,14 @@ function attachRootHandlers() {
   if (favBtn) favBtn.onclick = async () => {
     const e = getEntry(STATE.entryId); e.favorite = !e.favorite; await saveEntry(e); render();
   };
-  root.querySelectorAll('[data-set-shelf]').forEach((el) => {
-    el.onclick = async () => {
-      const e = getEntry(STATE.entryId); e.shelf = el.getAttribute('data-set-shelf'); await saveEntry(e); render(); showToast('Shelf updated');
-    };
-  });
+  const shelfSelectEl = root.querySelector('[data-shelf-select]');
+  if (shelfSelectEl) shelfSelectEl.onchange = async () => {
+    const e = getEntry(STATE.entryId);
+    e.shelf = shelfSelectEl.value;
+    await saveEntry(e);
+    showToast('Shelf updated');
+    render();
+  };
   root.querySelectorAll('[data-rating]').forEach((container) => {
     const field = container.getAttribute('data-rating');
     container.querySelectorAll('[data-rate]').forEach((star) => {
@@ -1009,24 +1078,67 @@ function attachRootHandlers() {
     showToast('Cover updated!');
     render();
   };
+  const editToggleBtn = root.querySelector('[data-edit-toggle]');
+  if (editToggleBtn) editToggleBtn.onclick = () => { DETAIL_EDIT_MODE = true; render(); };
+  const cancelEditBtn = root.querySelector('[data-cancel-edit]');
+  if (cancelEditBtn) cancelEditBtn.onclick = () => { DETAIL_EDIT_MODE = false; render(); };
+  const saveEditBtn = root.querySelector('[data-save-edit]');
+  if (saveEditBtn) saveEditBtn.onclick = async () => {
+    const e = getEntry(STATE.entryId);
+    const grab = (id) => document.getElementById(id);
+    if (grab('edit-title')) e.title = grab('edit-title').value.trim() || e.title;
+    if (grab('edit-altTitle')) e.altTitle = grab('edit-altTitle').value.trim();
+    if (grab('edit-novelAuthor')) e.novelAuthor = grab('edit-novelAuthor').value.trim();
+    if (grab('edit-author')) e.author = grab('edit-author').value.trim();
+    if (grab('edit-artist')) e.artist = grab('edit-artist').value.trim();
+    if (grab('edit-chapters')) e.totalChapters = grab('edit-chapters').value ? Number(grab('edit-chapters').value) : null;
+    if (grab('edit-seasons')) e.totalSeasons = grab('edit-seasons').value ? Number(grab('edit-seasons').value) : null;
+    if (grab('edit-status')) e.status = grab('edit-status').value.trim();
+    if (grab('edit-legacyNote')) e.legacyNote = grab('edit-legacyNote').value.trim();
+    await saveEntry(e);
+    DETAIL_EDIT_MODE = false;
+    showToast('Saved!');
+    render();
+  };
   const addTagBtn = root.querySelector('[data-add-tag]');
-  if (addTagBtn) addTagBtn.onclick = async () => {
+  if (addTagBtn) addTagBtn.onclick = () => {
     const input = document.getElementById('new-tag-input');
     const val = input.value.trim();
     if (!val) return;
+    const ts = getTagEditState(STATE.entryId);
     const e = getEntry(STATE.entryId);
-    e.customTags = e.customTags || [];
-    if (!e.customTags.includes(val)) e.customTags.push(val);
-    await saveEntry(e); render();
+    const already = [...(e.tags || []), ...(e.customTags || []), ...ts.added].some((t) => t.toLowerCase() === val.toLowerCase());
+    if (!already) ts.added.push(val);
+    input.value = '';
+    render();
   };
-  root.querySelectorAll('[data-remove-tag]').forEach((el) => {
-    el.onclick = async () => {
-      const t = el.getAttribute('data-remove-tag');
-      const e = getEntry(STATE.entryId);
-      e.customTags = (e.customTags || []).filter((x) => x !== t);
-      await saveEntry(e); render();
+  root.querySelectorAll('[data-toggle-tag]').forEach((el) => {
+    el.onclick = () => {
+      const t = el.getAttribute('data-toggle-tag');
+      const ts = getTagEditState(STATE.entryId);
+      if (ts.removed.has(t)) ts.removed.delete(t); else ts.removed.add(t);
+      render();
     };
   });
+  root.querySelectorAll('[data-toggle-added]').forEach((el) => {
+    el.onclick = () => {
+      const t = el.getAttribute('data-toggle-added');
+      const ts = getTagEditState(STATE.entryId);
+      ts.added = ts.added.filter((x) => x !== t);
+      render();
+    };
+  });
+  const saveTagsBtn = root.querySelector('[data-save-tags]');
+  if (saveTagsBtn) saveTagsBtn.onclick = async () => {
+    const e = getEntry(STATE.entryId);
+    const ts = getTagEditState(STATE.entryId);
+    e.tags = (e.tags || []).filter((t) => !ts.removed.has(t));
+    e.customTags = (e.customTags || []).filter((t) => !ts.removed.has(t)).concat(ts.added);
+    await saveEntry(e);
+    TAG_EDIT_STATE = { entryId: null, removed: new Set(), added: [] };
+    showToast('Tags saved!');
+    render();
+  };
   const notesArea = root.querySelector('#user-notes');
   if (notesArea) {
     const autoGrow = () => { notesArea.style.height = 'auto'; notesArea.style.height = (notesArea.scrollHeight + 2) + 'px'; };
@@ -1073,7 +1185,7 @@ function attachRootHandlers() {
       e.tags = Array.from(merged);
     }
     if (!e.author && sm.author) e.author = sm.author;
-    if (!e.altTitle && sm.altTitle) e.altTitle = sm.altTitle;
+    applyTitleSwap(e, sm);
     e.suggestedMatch = null;
     await saveEntry(e);
     showToast('Applied!');
@@ -1120,7 +1232,7 @@ function attachRootHandlers() {
         e.tags = Array.from(merged);
       }
       if (!e.author && sm.author) e.author = sm.author;
-      if (!e.altTitle && sm.altTitle) e.altTitle = sm.altTitle;
+      applyTitleSwap(e, sm);
       e.suggestedMatch = null;
       await saveEntry(e);
       showToast('Applied!');
@@ -1159,13 +1271,13 @@ function renderHomeInPlace() {
   const main = root.querySelector('main');
   const entries = filteredEntries();
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilter && !STATE.search && !STATE.showFavoritesOnly && !STATE.smutFilter && !STATE.qualityFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilter && !STATE.search && !STATE.showFavoritesOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
     const shelvesToShow = STATE.format === 'reading' ? SHELVES_READING : ['Completed'];
     shelvesToShow.forEach((shelf) => {
       const group = entries.filter((e) => e.shelf === shelf);
       if (group.length === 0) return;
       body += `<div class="section-title">${escapeHtml(shelf)} <span style="opacity:.6">(${group.length})</span></div>`;
-      body += `<div class="cover-grid">${group.map(renderCoverCard).join('')}</div>`;
+      body += `<div class="cover-row-scroll">${group.map(renderCoverCard).join('')}</div>`;
     });
     if (!body) body = `<div class="empty-state">Nothing here yet.</div>`;
   } else {
