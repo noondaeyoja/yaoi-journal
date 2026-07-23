@@ -310,8 +310,8 @@ function renderHome() {
 
   const tagChips = tags.map((t) => `<div class="chip ${STATE.tagFilter === t ? 'active' : ''}" data-tag="${escapeHtml(t)}">${escapeHtml(t)}</div>`).join('');
 
-  const smutChips = [1, 2, 3, 4, 5].map((n) => `<div class="chip ${STATE.smutFilter === n ? 'active' : ''}" data-smut-filter="${n}" title="${n}+ eggplants">${'🍆'.repeat(n)}</div>`).join('');
-  const qualityChips = [1, 2, 3, 4, 5].map((n) => `<div class="chip ${STATE.qualityFilter === n ? 'active' : ''}" data-quality-filter="${n}" title="${n}+ hearts">${'💗'.repeat(n)}</div>`).join('');
+  const smutChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.smutFilter && n <= STATE.smutFilter ? 'active' : ''}" data-smut-filter="${n}" title="${n}+ eggplants">🍆</span>`).join('');
+  const qualityChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.qualityFilter && n <= STATE.qualityFilter ? 'active' : ''}" data-quality-filter="${n}" title="${n}+ hearts">💗</span>`).join('');
 
   return `
     <div class="app-header">
@@ -334,8 +334,8 @@ function renderHome() {
       ${shelfChips ? `<div class="filter-section-label">Status</div><div class="shelf-row">${shelfChips}</div>` : ''}
       ${tagChips ? `<div class="filter-section-label">Tags</div><div class="tag-row">${tagChips}</div>` : ''}
       <div class="filter-section-label">Ratings</div>
-      <div class="shelf-row">${smutChips}</div>
-      <div class="shelf-row">${qualityChips}</div>
+      <div class="rating-pick-row">${smutChips}</div>
+      <div class="rating-pick-row">${qualityChips}</div>
     </div>
     <main>${body}</main>
     <button class="fab" data-add-entry="1">+</button>
@@ -397,20 +397,20 @@ function renderDetail(e) {
       ${topSummaryText ? `
         <div class="field-row">
           <label>Summary ${topSummaryUnconfirmed ? '(unconfirmed match)' : ''}</label>
-          <div class="value plain" style="font-size:12px;line-height:1.4;color:var(--text-dim);">${escapeHtml(topSummaryText.slice(0, 260))}${topSummaryText.length > 260 ? '…' : ''}</div>
+          <div class="value plain">${escapeHtml(topSummaryText.slice(0, 260))}${topSummaryText.length > 260 ? '…' : ''}</div>
         </div>` : ''}
   ` : `
       <div class="field-row"><label>Notes (legacy)</label><div class="value plain">${escapeHtml(e.legacyNote) || '—'}</div></div>
       ${topSummaryText ? `
         <div class="field-row">
           <label>Summary ${topSummaryUnconfirmed ? '(unconfirmed match)' : ''}</label>
-          <div class="value plain" style="font-size:12px;line-height:1.4;color:var(--text-dim);">${escapeHtml(topSummaryText.slice(0, 260))}${topSummaryText.length > 260 ? '…' : ''}</div>
+          <div class="value plain">${escapeHtml(topSummaryText.slice(0, 260))}${topSummaryText.length > 260 ? '…' : ''}</div>
         </div>` : ''}
   `;
 
   const shelfToggles = isReading ? `
-    <div class="panel">
-      <div class="panel-title">Shelf</div>
+    <div class="field-row" style="margin-top:4px;">
+      <label>Shelf</label>
       <div class="status-toggle-row">
         ${SHELVES_READING.map((s) => `<div class="status-toggle ${e.shelf === s ? 'active' : ''}" data-set-shelf="${s}">${s}</div>`).join('')}
       </div>
@@ -467,6 +467,7 @@ function renderDetail(e) {
         <div class="split-row">
           <div>
             <div class="cover-slot">${e.coverUrl ? `<img src="${escapeHtml(e.coverUrl)}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='🍆'">` : '🍆'}</div>
+            <label class="upload-btn" style="margin-top:6px;display:block;text-align:center;font-size:11px;padding:6px 4px;cursor:pointer;">📷 ${e.coverUrl ? 'Change cover' : 'Upload cover'}<input type="file" accept="image/*" style="display:none" id="cover-upload-input"></label>
           </div>
           <div>
             <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)}</div></div>
@@ -474,17 +475,18 @@ function renderDetail(e) {
             ${detailsHtml}
           </div>
         </div>
+        ${shelfToggles}
       </div>
 
       <!-- 2. Ratings -->
       <div class="panel">
         <div class="rating-row">
           <div class="rating-block">
-            <div class="label">🍆 Smut level</div>
+            <div class="label">Smut Level</div>
             <div class="rating-icons" data-rating="smutRating">${renderRatingIcons(e.smutRating, '🍆')}</div>
           </div>
           <div class="rating-block">
-            <div class="label">💗 Overall</div>
+            <div class="label">Overall</div>
             <div class="rating-icons" data-rating="qualityRating">${renderRatingIcons(e.qualityRating, '💗')}</div>
           </div>
         </div>
@@ -492,24 +494,27 @@ function renderDetail(e) {
 
       <!-- 3. Uke / Semi -->
       <div class="panel">
-        <div class="panel-title">Semi &amp; Uke</div>
         <div class="char-cols">
           <div class="char-col">
-            <h4>Semi (Top)</h4>
+            <div class="char-col-head">
+              <h4>Semi (Top)</h4>
+              <div class="flag-picker">${renderFlagPicker(e.semi.flag, 'semi')}</div>
+            </div>
             <label class="char-photo-slot" style="cursor:pointer;">
               ${renderCharPhoto(e.semi.photo)}
               <input type="file" accept="image/*" style="display:none" data-char-photo="semi">
             </label>
-            <div class="flag-picker">${renderFlagPicker(e.semi.flag, 'semi')}</div>
             <textarea placeholder="Notes on the semi..." data-char-notes="semi">${escapeHtml(e.semi.notes)}</textarea>
           </div>
           <div class="char-col">
-            <h4>Uke (Bottom)</h4>
+            <div class="char-col-head">
+              <h4>Uke (Bottom)</h4>
+              <div class="flag-picker">${renderFlagPicker(e.uke.flag, 'uke')}</div>
+            </div>
             <label class="char-photo-slot" style="cursor:pointer;">
               ${renderCharPhoto(e.uke.photo)}
               <input type="file" accept="image/*" style="display:none" data-char-photo="uke">
             </label>
-            <div class="flag-picker">${renderFlagPicker(e.uke.flag, 'uke')}</div>
             <textarea placeholder="Notes on the uke..." data-char-notes="uke">${escapeHtml(e.uke.notes)}</textarea>
           </div>
         </div>
@@ -548,14 +553,12 @@ function renderDetail(e) {
 
       <!-- PDF / read link -->
       <div class="panel">
-        <div class="panel-title">Read link (online URL or Panels reference)</div>
+        <div class="panel-title">Read Link</div>
         <div class="pdf-row">
           <input type="text" id="pdf-link" placeholder="https:// or a note like 'Panels > BL folder'" value="${escapeHtml(e.pdfLink)}">
-          ${e.pdfLink && /^https?:\/\//.test(e.pdfLink) ? `<a class="open-link" href="${escapeHtml(e.pdfLink)}" target="_blank">Open</a>` : ''}
         </div>
+        ${e.pdfLink && /^https?:\/\//.test(e.pdfLink) ? `<a class="open-link" href="${escapeHtml(e.pdfLink)}" target="_blank" style="display:inline-block;margin-top:8px;">Open</a>` : ''}
       </div>
-
-      ${shelfToggles}
 
     </div>
     ${renderBottomNav('home')}
@@ -996,6 +999,16 @@ function attachRootHandlers() {
       await saveEntry(e); render();
     };
   });
+  const coverUploadInput = root.querySelector('#cover-upload-input');
+  if (coverUploadInput) coverUploadInput.onchange = async () => {
+    if (!coverUploadInput.files[0]) return;
+    const dataUrl = await fileToCompressedDataUrl(coverUploadInput.files[0], 700);
+    const e = getEntry(STATE.entryId);
+    e.coverUrl = dataUrl;
+    await saveEntry(e);
+    showToast('Cover updated!');
+    render();
+  };
   const addTagBtn = root.querySelector('[data-add-tag]');
   if (addTagBtn) addTagBtn.onclick = async () => {
     const input = document.getElementById('new-tag-input');
@@ -1015,9 +1028,14 @@ function attachRootHandlers() {
     };
   });
   const notesArea = root.querySelector('#user-notes');
-  if (notesArea) notesArea.onblur = async () => {
-    const e = getEntry(STATE.entryId); e.notes = notesArea.value; await saveEntry(e);
-  };
+  if (notesArea) {
+    const autoGrow = () => { notesArea.style.height = 'auto'; notesArea.style.height = (notesArea.scrollHeight + 2) + 'px'; };
+    autoGrow();
+    notesArea.oninput = autoGrow;
+    notesArea.onblur = async () => {
+      const e = getEntry(STATE.entryId); e.notes = notesArea.value; await saveEntry(e);
+    };
+  }
   const pdfInput = root.querySelector('#pdf-link');
   if (pdfInput) pdfInput.onblur = async () => {
     const e = getEntry(STATE.entryId); e.pdfLink = pdfInput.value.trim(); await saveEntry(e); render();
@@ -1184,6 +1202,24 @@ document.addEventListener('click', (ev) => {
 document.getElementById('overlay').addEventListener('click', (ev) => {
   if (ev.target.id === 'overlay') closeModal();
 });
+
+/* ---------------------------------------------------------------------- */
+/* Scroll-away filter header (home view only)                             */
+/* ---------------------------------------------------------------------- */
+
+let _lastScrollY = 0;
+window.addEventListener('scroll', () => {
+  if (STATE.view !== 'home') return;
+  const header = document.querySelector('.app-header');
+  if (!header) return;
+  const y = window.scrollY;
+  if (y > _lastScrollY && y > 90) {
+    header.classList.add('header-hidden');
+  } else {
+    header.classList.remove('header-hidden');
+  }
+  _lastScrollY = y;
+}, { passive: true });
 
 /* ---------------------------------------------------------------------- */
 /* Boot                                                                    */

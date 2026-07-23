@@ -50,7 +50,10 @@ a { color: var(--pink); }
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
   padding: 10px 12px 8px;
+  transform: translateY(0);
+  transition: transform .22s ease;
 }
+.app-header.header-hidden { transform: translateY(-100%); }
 .brand-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .brand-row h1 { font-size: 18px; margin: 0; letter-spacing: .01em; }
 .brand-row h1 .egg { margin-right: 4px; }
@@ -97,8 +100,15 @@ a { color: var(--pink); }
 }
 .chip.active { background: var(--yellow); color: #241c02; border-color: var(--yellow); }
 
+.rating-pick-row { display: flex; gap: 4px; margin-bottom: 6px; }
+.rating-pick-icon {
+  font-size: 20px; opacity: .35; cursor: pointer; filter: grayscale(.6);
+  padding: 2px; line-height: 1;
+}
+.rating-pick-icon.active { opacity: 1; filter: none; }
+
 /* ---------- Main / grid ---------- */
-main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: 100px; }
+main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150px + env(safe-area-inset-bottom, 0px)); }
 .section-title { font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em; margin: 14px 4px 8px; }
 
 .cover-grid {
@@ -181,14 +191,15 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: 100px; }
 
 .char-cols { display: flex; gap: 12px; }
 .char-col { flex: 1; text-align: center; }
-.char-col h4 { font-size: 12.5px; margin: 0 0 8px; color: var(--text); }
+.char-col-head { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.char-col-head h4 { font-size: 12.5px; margin: 0; color: var(--text); }
 .char-photo-slot {
-  width: 100%; aspect-ratio: 1/1; border-radius: var(--radius-sm); background: var(--navy-2);
+  width: 78%; margin: 0 auto 8px; aspect-ratio: 1/1; border-radius: var(--radius-sm); background: var(--navy-2);
   border: 1px dashed var(--border); display: flex; align-items: center; justify-content: center; overflow: hidden;
-  font-size: 26px; color: var(--text-dim); margin-bottom: 8px;
+  font-size: 22px; color: var(--text-dim);
 }
 .char-photo-slot img { width: 100%; height: 100%; object-fit: cover; }
-.flag-picker { display: flex; justify-content: center; gap: 8px; margin-bottom: 8px; }
+.flag-picker { display: flex; justify-content: center; gap: 6px; }
 .review-card-row { display: flex; gap: 10px; }
 .review-card-info { flex: 1; min-width: 0; font-size: 12.5px; }
 .review-card-info strong { display: block; font-size: 13.5px; margin-bottom: 2px; }
@@ -196,11 +207,11 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: 100px; }
 .dup-item { display: flex; gap: 10px; align-items: center; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .dup-item .review-card-info { flex: 1; }
 
-.flag-dot { width: 34px; height: 34px; border-radius: 8px; border: 2px solid var(--border); background: var(--card); cursor: pointer; display:flex; align-items:center; justify-content:center; }
-.flag-dot .flag-glyph { font-size: 18px; line-height: 1; opacity: .45; }
+.flag-dot { width: 30px; height: 30px; border-radius: 8px; border: 2px solid var(--border); background: var(--card); cursor: pointer; display:flex; align-items:center; justify-content:center; }
+.flag-dot .flag-glyph { font-size: 17px; line-height: 1; opacity: .8; filter: brightness(1.35) saturate(1.4); }
 .flag-dot.selected { border-color: var(--text); box-shadow: 0 0 0 2px rgba(255,255,255,.15); }
-.flag-dot.selected .flag-glyph { opacity: 1; }
-.char-col textarea { width: 100%; min-height: 54px; font-size: 12.5px; }
+.flag-dot.selected .flag-glyph { opacity: 1; filter: brightness(1.6) saturate(1.6); text-shadow: 0 0 6px currentColor; }
+.char-col textarea { width: 100%; min-height: 96px; font-size: 12.5px; }
 
 .tag-cloud { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .tag-chip {
@@ -236,7 +247,11 @@ textarea {
 .upload-btn input { display: none; }
 
 .pdf-row { display: flex; gap: 8px; align-items: center; }
-.pdf-row a.open-link {
+.pdf-row input {
+  width: 100%; font-size: 13.5px; color: var(--text); background: var(--navy-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; box-sizing: border-box;
+}
+.pdf-row a.open-link, .panel > a.open-link {
   background: var(--pink); color: #170b26; font-weight: 700; border-radius: 8px; padding: 8px 12px; font-size: 12.5px; text-decoration: none; white-space: nowrap;
 }
 
