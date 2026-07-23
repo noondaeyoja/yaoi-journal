@@ -23,7 +23,7 @@ let TAG_EDIT_MODE = false;         // whether the Tags panel is showing its edit
 let TAG_FILTER_OPEN = false;       // whether the homepage tag multi-select dropdown panel is open
 let FILTERS_COLLAPSED = false;     // whether the homepage Status/Tags/Ratings&Flags block is tucked away
 let STATE = {
-  view: 'home',            // 'home' | 'detail' | 'database' | 'review' | 'duplicates'
+  view: 'home',            // 'home' | 'detail' | 'tags' | 'database' | 'review' | 'duplicates'
   entryId: null,
   format: 'reading',        // 'reading' | 'watching'
   showFavoritesOnly: false,
@@ -232,6 +232,7 @@ function render() {
   const root = document.getElementById('view-root');
   if (STATE.view === 'home') root.innerHTML = renderHome();
   else if (STATE.view === 'detail') root.innerHTML = renderDetail(getEntry(STATE.entryId));
+  else if (STATE.view === 'tags') root.innerHTML = renderTagManager();
   else if (STATE.view === 'database') root.innerHTML = renderDatabase();
   else if (STATE.view === 'review') root.innerHTML = renderReviewQueue();
   else if (STATE.view === 'duplicates') root.innerHTML = renderDuplicates();
@@ -410,8 +411,51 @@ function renderBottomNav(active) {
   return `
     <div class="bottom-nav">
       <button data-nav="home" class="${active === 'home' ? 'active' : ''}"><span class="icon">🏠</span>Journal</button>
+      <button data-nav="tags" class="${active === 'tags' ? 'active' : ''}"><span class="icon">🏷️</span>Tags</button>
       <button data-nav="database" class="${active === 'database' ? 'active' : ''}"><span class="icon">🗂️</span>Database</button>
     </div>`;
+}
+
+/* ---------------------------------------------------------------------- */
+/* TAG MANAGEMENT VIEW                                                    */
+/* ---------------------------------------------------------------------- */
+
+function allTagCounts() {
+  const counts = {};
+  ALL_ENTRIES.forEach((e) => (e.tags || []).concat(e.customTags || []).forEach((t) => {
+    const v = String(t || '').trim();
+    if (!v || v.toLowerCase() === 'nan' || v.toLowerCase() === 'none') return;
+    counts[v] = (counts[v] || 0) + 1;
+  }));
+  return counts;
+}
+
+function renderTagManager() {
+  const counts = allTagCounts();
+  const names = Object.keys(counts).sort((a, b) => a.localeCompare(b));
+  const rows = names.map((t) => `
+    <div class="tagmgr-row" data-tag-name="${escapeHtml(t)}">
+      <div class="tagmgr-name">${escapeHtml(t)}${isHiddenTag(t) ? ' <span style="color:var(--text-dim);font-size:10.5px;">(hidden from filters)</span>' : ''}</div>
+      <div class="tagmgr-count">${counts[t]} entr${counts[t] === 1 ? 'y' : 'ies'}</div>
+      <div class="tagmgr-actions">
+        <button class="icon-btn-inline" data-tagmgr-rename="${escapeHtml(t)}" title="Rename this tag everywhere">✏️</button>
+        <button class="icon-btn-inline" data-tagmgr-delete="${escapeHtml(t)}" title="Delete this tag everywhere">🗑️</button>
+      </div>
+    </div>`).join('');
+
+  return `
+    <div class="app-header">
+      <div class="brand-row"><h1>🏷️ Manage Tags</h1></div>
+      <div class="search-bar"><span>🔍</span><input type="search" id="tagmgr-search" placeholder="Filter tags..."></div>
+    </div>
+    <main>
+      <div style="color:var(--text-dim);font-size:12px;margin-bottom:10px;">
+        ${names.length} unique tag${names.length === 1 ? '' : 's'} across ${ALL_ENTRIES.length} entries. Renaming applies everywhere the tag is used — rename to an existing tag name to merge two tags together. Deleting removes it from every entry (can't be undone).
+      </div>
+      <div id="tagmgr-list">${rows || '<div class="empty-state">No tags yet.</div>'}</div>
+    </main>
+    ${renderBottomNav('tags')}
+  `;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -955,27 +999,29 @@ async function fetchReferencePreview(entryId) {
   }
 }
 
-// Tries to find this entry on Anime-Planet first, then falls back to
-// MangaGo, so the user doesn't have to hunt down and paste a URL manually.
-async function generateSuggestedMatch(entryId) {
-  const e = getEntry(entryId);
-  const proxy = getProxyUrl();
-  if (!proxy) { showToast('Set your proxy URL in Settings first'); return; }
-  showToast('Searching Anime-Planet & MangaGo…');
-  const trySite = async (site) => {
-    try {
-      const resp = await fetch(proxy + '?action=searchMatch&site=' + site + '&title=' + encodeURIComponent(e.title));
-      const data = await resp.json();
-      if (data.error) return null;
-      return data;
-    } catch (err) {
-      return null;
-    }
-  };
-  let data = await trySite('anime-planet');
-  if (!data) data = await trySite('mangago');
-  if (!data) { showToast('No match found on either site'); return; }
-  e.suggestedMatch = {
+// Shared by the manual "Generate Suggested Match" button and the automatic
+// background sweep. `kind` tells Anime-Planet whether to search its manga
+// or anime catalog — MangaGo only has manga, so it's skipped for anime kind.
+async function trySearchSite(proxy, title, site, kind) {
+  try {
+    const resp = await fetch(proxy + '?action=searchMatch&site=' + site + '&kind=' + kind + '&title=' + encodeURIComponent(title));
+    const data = await resp.json();
+    if (data.error) return null;
+    return data;
+  } catch (err) {
+    return null;
+  }
+}
+
+async function findSuggestedMatchData(proxy, entry) {
+  const kind = entry.format === 'watching' ? 'anime' : 'manga';
+  let data = await trySearchSite(proxy, entry.title, 'anime-planet', kind);
+  if (!data && kind === 'manga') data = await trySearchSite(proxy, entry.title, 'mangago', kind);
+  return data;
+}
+
+function dataToSuggestedMatch(data) {
+  return {
     title: data.title,
     altTitle: data.altTitle,
     coverUrl: data.coverUrl,
@@ -986,6 +1032,19 @@ async function generateSuggestedMatch(entryId) {
     site: data.site,
     confidence: data.confidence || 'auto',
   };
+}
+
+// Tries to find this entry on Anime-Planet first, then falls back to
+// MangaGo (manga only), so the user doesn't have to hunt down and paste a
+// URL manually.
+async function generateSuggestedMatch(entryId) {
+  const e = getEntry(entryId);
+  const proxy = getProxyUrl();
+  if (!proxy) { showToast('Set your proxy URL in Settings first'); return; }
+  showToast(e.format === 'watching' ? 'Searching Anime-Planet…' : 'Searching Anime-Planet & MangaGo…');
+  const data = await findSuggestedMatchData(proxy, e);
+  if (!data) { showToast('No match found'); return; }
+  e.suggestedMatch = dataToSuggestedMatch(data);
   await saveEntry(e);
   showToast('Suggested match found!');
   render();
@@ -1353,6 +1412,51 @@ function attachRootHandlers() {
     document.getElementById('crossref-url').value = e.referenceUrl;
   };
 
+  // Tag management view
+  const tagmgrSearch = root.querySelector('#tagmgr-search');
+  if (tagmgrSearch) tagmgrSearch.oninput = () => {
+    const q = tagmgrSearch.value.toLowerCase();
+    root.querySelectorAll('.tagmgr-row').forEach((row) => {
+      row.style.display = row.getAttribute('data-tag-name').toLowerCase().includes(q) ? '' : 'none';
+    });
+  };
+  root.querySelectorAll('[data-tagmgr-rename]').forEach((el) => {
+    el.onclick = async () => {
+      const oldName = el.getAttribute('data-tagmgr-rename');
+      const newName = prompt('Rename tag "' + oldName + '" to:', oldName);
+      if (!newName || !newName.trim() || newName.trim() === oldName) return;
+      const nn = newName.trim();
+      for (const e of ALL_ENTRIES) {
+        let changed = false;
+        if ((e.tags || []).includes(oldName)) {
+          e.tags = Array.from(new Set(e.tags.map((t) => (t === oldName ? nn : t))));
+          changed = true;
+        }
+        if ((e.customTags || []).includes(oldName)) {
+          e.customTags = Array.from(new Set(e.customTags.map((t) => (t === oldName ? nn : t))));
+          changed = true;
+        }
+        if (changed) await saveEntry(e);
+      }
+      showToast('Renamed');
+      render();
+    };
+  });
+  root.querySelectorAll('[data-tagmgr-delete]').forEach((el) => {
+    el.onclick = async () => {
+      const name = el.getAttribute('data-tagmgr-delete');
+      if (!confirm('Delete tag "' + name + '" from every entry? This can\'t be undone.')) return;
+      for (const e of ALL_ENTRIES) {
+        let changed = false;
+        if ((e.tags || []).includes(name)) { e.tags = e.tags.filter((t) => t !== name); changed = true; }
+        if ((e.customTags || []).includes(name)) { e.customTags = e.customTags.filter((t) => t !== name); changed = true; }
+        if (changed) await saveEntry(e);
+      }
+      showToast('Deleted');
+      render();
+    };
+  });
+
   // Database view
   const exportBtn = root.querySelector('[data-export-csv]');
   if (exportBtn) exportBtn.onclick = exportCsv;
@@ -1490,6 +1594,54 @@ document.getElementById('overlay').addEventListener('click', (ev) => {
 /* Boot                                                                    */
 /* ---------------------------------------------------------------------- */
 
+// Once a day (per device), quietly try to find suggested matches for a
+// small batch of entries that don't have one yet — so the Suggested
+// Matches row on the homepage keeps filling in on its own over time,
+// without the user having to open every single entry and tap the button.
+// Capped and paced with a short delay between requests so this doesn't
+// hammer Anime-Planet/MangaGo or blow through Apps Script's quota.
+const AUTO_MATCH_BATCH_SIZE = 20;
+const AUTO_MATCH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+async function autoMatchSweepIfDue() {
+  try {
+    const proxy = getProxyUrl();
+    if (!proxy) return; // nothing to do until a proxy URL is configured
+
+    const meta = await idbGet(STORE_META, 'lastAutoMatchRun');
+    const lastRun = meta && meta.value ? new Date(meta.value).getTime() : 0;
+    if (Date.now() - lastRun < AUTO_MATCH_INTERVAL_MS) return;
+
+    // Record the attempt now, so a reload mid-sweep (or a very large
+    // backlog that takes several days of batches to clear) doesn't
+    // re-trigger another sweep later today.
+    await idbPut(STORE_META, { key: 'lastAutoMatchRun', value: new Date().toISOString() });
+
+    const candidates = ALL_ENTRIES
+      .filter((e) => !e.suggestedMatch && e.referenceStatus !== 'confirmed')
+      .slice(0, AUTO_MATCH_BATCH_SIZE);
+    if (!candidates.length) return;
+
+    let foundCount = 0;
+    for (const e of candidates) {
+      const data = await findSuggestedMatchData(proxy, e);
+      if (data) {
+        e.suggestedMatch = dataToSuggestedMatch(data);
+        await saveEntry(e);
+        foundCount++;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+    }
+    if (foundCount > 0) {
+      showToast(`Found ${foundCount} new suggested match${foundCount === 1 ? '' : 'es'}`);
+      if (STATE.view === 'home') render();
+    }
+  } catch (err) {
+    // Best-effort background task — a failure here shouldn't disrupt the user.
+    console.error('Auto-match sweep failed:', err);
+  }
+}
+
 async function boot() {
   try {
     db = await openDB();
@@ -1499,6 +1651,7 @@ async function boot() {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('./sw.js').catch(() => {});
     }
+    autoMatchSweepIfDue();
   } catch (err) {
     const isFileProtocol = location.protocol === 'file:';
     document.getElementById('view-root').innerHTML = `
