@@ -143,6 +143,14 @@ function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// Some author/artist fields came in as comma-joined names with no space
+// after the comma (e.g. "Paengyibuhseot,Solanine") — a data artifact from
+// the original import. This just fixes the display spacing; stored data is
+// untouched.
+function formatNames(s) {
+  return String(s == null ? '' : s).replace(/,(?!\s)/g, ', ');
+}
+
 function showToast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg;
@@ -263,11 +271,19 @@ function filteredEntries() {
   });
 }
 
+// "BL" and "Yaoi" are redundant on every single entry in this journal (the
+// whole app is BL/yaoi), so they're hidden from every tag display — cloud,
+// homepage dropdown, and the database table — without touching stored data.
+const HIDDEN_TAGS = new Set(['bl', 'yaoi']);
+function isHiddenTag(t) {
+  return HIDDEN_TAGS.has(String(t || '').trim().toLowerCase());
+}
+
 function topTags(entries) {
   const counts = {};
   entries.forEach((e) => (e.tags || []).concat(e.customTags || []).forEach((t) => {
     const v = String(t || '').trim();
-    if (!v || v.toLowerCase() === 'nan' || v.toLowerCase() === 'none') return;
+    if (!v || v.toLowerCase() === 'nan' || v.toLowerCase() === 'none' || isHiddenTag(v)) return;
     counts[v] = (counts[v] || 0) + 1;
   }));
   // Show every real tag, alphabetically, so nothing is hidden behind a top-N cutoff.
@@ -291,7 +307,7 @@ function renderCoverCard(e) {
         ${flagColor ? `<div class="cover-flag-dot"><span style="color:${flagColor}">&#9873;</span></div>` : ''}
       </div>
       <div class="cover-title">${escapeHtml(e.title)}</div>
-      ${e.author ? `<div class="cover-sub">${escapeHtml(e.author)}</div>` : ''}
+      ${e.author ? `<div class="cover-sub">${escapeHtml(formatNames(e.author))}</div>` : ''}
     </div>`;
 }
 
@@ -342,7 +358,7 @@ function renderHome() {
     : '';
 
   const tagMsPanel = tags.map((t) => `
-    <label class="tag-ms-item"><input type="checkbox" data-tag-ms-item="${escapeHtml(t)}" ${STATE.tagFilters.includes(t) ? 'checked' : ''}> ${escapeHtml(t)}</label>
+    <label class="tag-ms-item"><input type="checkbox" data-tag-ms-item="${escapeHtml(t)}" ${STATE.tagFilters.includes(t) ? 'checked' : ''}><span>${escapeHtml(t)}</span></label>
   `).join('');
   const tagMultiselect = `
     <div class="tag-multiselect">
@@ -444,8 +460,8 @@ function getTagEditState(entryId) {
 
 function renderTagCloud(e) {
   const ts = getTagEditState(e.id);
-  const existing = (e.tags || []).map((t) => ({ t, custom: false }))
-    .concat((e.customTags || []).map((t) => ({ t, custom: true })));
+  const existing = (e.tags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: false }))
+    .concat((e.customTags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: true })));
   const existingChips = existing.map(({ t, custom }) => {
     const removed = ts.removed.has(t);
     return `<div class="tag-chip ${custom ? 'custom' : ''} ${removed ? 'tag-removed' : ''}" data-toggle-tag="${escapeHtml(t)}" title="Tap to ${removed ? 'keep' : 'remove'}">${escapeHtml(t)}</div>`;
@@ -456,8 +472,8 @@ function renderTagCloud(e) {
 
 // Plain, non-interactive tag display shown when the Tags panel isn't in edit mode.
 function renderTagCloudReadOnly(e) {
-  const all = (e.tags || []).map((t) => ({ t, custom: false }))
-    .concat((e.customTags || []).map((t) => ({ t, custom: true })));
+  const all = (e.tags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: false }))
+    .concat((e.customTags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: true })));
   if (!all.length) return '<span style="color:var(--text-dim);font-size:12.5px;">No tags yet.</span>';
   return all.map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}">${escapeHtml(t)}</div>`).join('');
 }
@@ -545,9 +561,9 @@ function renderDetail(e) {
     topFieldsHtml = isReading ? `
       <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)} <button class="icon-btn-inline" data-edit-toggle="1" title="Edit details">✏️</button></div></div>
       ${e.altTitle ? `<div class="field-row"><label>Alt title</label><div class="value plain">${escapeHtml(e.altTitle)}</div></div>` : ''}
-      ${(e.isNovel || e.novelAuthor) ? `<div class="field-row"><label>Novel</label><div class="value plain">${escapeHtml(e.novelAuthor) || '—'}</div></div>` : ''}
-      <div class="field-row"><label>Author</label><div class="value plain">${escapeHtml(e.author) || '—'}</div></div>
-      <div class="field-row"><label>Artist</label><div class="value plain">${escapeHtml(e.artist) || '—'}</div></div>
+      ${(e.isNovel || e.novelAuthor) ? `<div class="field-row"><label>Novel</label><div class="value plain">${escapeHtml(formatNames(e.novelAuthor)) || '—'}</div></div>` : ''}
+      <div class="field-row"><label>Author</label><div class="value plain">${escapeHtml(formatNames(e.author)) || '—'}</div></div>
+      <div class="field-row"><label>Artist</label><div class="value plain">${escapeHtml(formatNames(e.artist)) || '—'}</div></div>
       ${e.totalChapters ? `<div class="field-row"><label>Chapters</label><div class="value plain">${e.totalChapters}</div></div>` : ''}
       ${e.totalSeasons ? `<div class="field-row"><label>Seasons</label><div class="value plain">${e.totalSeasons}</div></div>` : ''}
       <div class="field-row"><label>Status</label><div class="value plain">${escapeHtml(e.status) || '—'}</div></div>
@@ -580,11 +596,11 @@ function renderDetail(e) {
               <label class="upload-btn small">📷 ${e.coverUrl ? 'Change' : 'Upload'}<input type="file" accept="image/*" style="display:none" id="cover-upload-input"></label>
               ${shelfSelect}
             </div>
-            ${matchColumnHtml}
           </div>
           <div>
             ${topFieldsHtml}
             ${confirmedSummaryHtml}
+            ${matchColumnHtml}
           </div>
         </div>
       </div>
@@ -702,8 +718,8 @@ function renderDatabase() {
       <td>${escapeHtml(e.title)}</td>
       <td>${e.format}</td>
       <td>${escapeHtml(e.shelf)}</td>
-      <td>${escapeHtml(e.author)}</td>
-      <td>${escapeHtml((e.tags || []).concat(e.customTags || []).join(', '))}</td>
+      <td>${escapeHtml(formatNames(e.author))}</td>
+      <td>${escapeHtml((e.tags || []).concat(e.customTags || []).filter((t) => !isHiddenTag(t)).join(', '))}</td>
       <td>${e.semi.flag || ''}</td>
       <td>${e.uke.flag || ''}</td>
       <td>${e.smutRating || 0}</td>
@@ -755,7 +771,7 @@ function renderReviewCard(e) {
         <div class="cover-thumb" style="width:78px;flex:0 0 78px;">${cover}</div>
         <div class="review-card-info">
           <strong>${escapeHtml(e.title)}</strong>
-          <div style="font-size:11px;color:var(--text-dim);margin:2px 0 4px;">${e.format === 'reading' ? '📖' : '📺'} ${escapeHtml(e.shelf)}${e.author ? ' · ' + escapeHtml(e.author) : ''}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin:2px 0 4px;">${e.format === 'reading' ? '📖' : '📺'} ${escapeHtml(e.shelf)}${e.author ? ' · ' + escapeHtml(formatNames(e.author)) : ''}</div>
           ${sm ? `
             <div style="font-size:11.5px;color:var(--yellow);">Suggested: ${escapeHtml(sm.title || '')} <span style="opacity:.7">(${escapeHtml(sm.confidence || 'unconfirmed')})</span></div>
             ${sm.tags && sm.tags.length ? `<div style="font-size:11px;color:var(--text-dim);">${escapeHtml(sm.tags.slice(0, 5).join(', '))}</div>` : ''}
@@ -827,7 +843,7 @@ function renderDuplicateGroup(group) {
         <div class="cover-thumb" style="width:64px;flex:0 0 64px;">${cover}</div>
         <div class="review-card-info">
           <strong>${escapeHtml(e.title)}</strong>
-          <div style="font-size:11px;color:var(--text-dim);">${escapeHtml(e.shelf)}${e.author ? ' · ' + escapeHtml(e.author) : ''}</div>
+          <div style="font-size:11px;color:var(--text-dim);">${escapeHtml(e.shelf)}${e.author ? ' · ' + escapeHtml(formatNames(e.author)) : ''}</div>
           <div style="font-size:11px;color:var(--text-dim);">Updated ${e.updatedAt ? new Date(e.updatedAt).toLocaleDateString() : '—'}${e.favorite ? ' · 💜 favorite' : ''}</div>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;">
