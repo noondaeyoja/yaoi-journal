@@ -22,7 +22,7 @@ let DETAIL_EDIT_MODE = false;      // whether the detail page's top fields are i
 let TAG_EDIT_MODE = false;         // whether the Tags panel is showing its editable (toggle/add/save) UI
 let TAG_ENTRIES_FILTER = null;     // which tag name the "view entries with this tag" screen is showing
 let TAG_FILTER_OPEN = false;       // whether the homepage tag multi-select dropdown panel is open
-let FILTERS_COLLAPSED = false;     // whether the homepage Status/Tags/Ratings&Flags block is tucked away
+let FILTERS_COLLAPSED = false;     // whether the homepage search/tabs/format/Status/Tags/Ratings&Flags block is tucked away
 let STATE = {
   view: 'home',            // 'home' | 'detail' | 'tags' | 'database' | 'review' | 'duplicates'
   entryId: null,
@@ -383,20 +383,20 @@ function renderHome() {
         <h1><span class="egg">🍆</span>Yaoi Journal</h1>
         <button class="icon-btn" data-open-settings="1">⚙️</button>
       </div>
-      <div class="search-bar">
-        <span>🔍</span>
-        <input type="search" id="search-input" placeholder="Search all reads &amp; anime..." value="${escapeHtml(STATE.search)}">
-      </div>
-      <div class="tab-row">
-        <div class="tab-pill ${!STATE.showFavoritesOnly ? 'active' : ''}" data-fav="0">All</div>
-        <div class="tab-pill fav ${STATE.showFavoritesOnly ? 'active' : ''}" data-fav="1">💜 Favorites</div>
-      </div>
-      <div class="format-row">
-        <div class="format-btn ${STATE.format === 'reading' ? 'active' : ''}" data-format="reading">📖 Reading (Manhwa/Manga)</div>
-        <div class="format-btn ${STATE.format === 'watching' ? 'active' : ''}" data-format="watching">📺 Watching (Anime)</div>
-      </div>
       <button class="filters-toggle-btn" data-toggle-filters="1">${FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
       <div class="filters-collapsible ${FILTERS_COLLAPSED ? 'collapsed' : ''}" id="filters-collapsible">
+        <div class="search-bar">
+          <span>🔍</span>
+          <input type="search" id="search-input" placeholder="Search all reads &amp; anime..." value="${escapeHtml(STATE.search)}">
+        </div>
+        <div class="tab-row">
+          <div class="tab-pill ${!STATE.showFavoritesOnly ? 'active' : ''}" data-fav="0">All</div>
+          <div class="tab-pill fav ${STATE.showFavoritesOnly ? 'active' : ''}" data-fav="1">💜 Favorites</div>
+        </div>
+        <div class="format-row">
+          <div class="format-btn ${STATE.format === 'reading' ? 'active' : ''}" data-format="reading">📖 Reading (Manhwa/Manga)</div>
+          <div class="format-btn ${STATE.format === 'watching' ? 'active' : ''}" data-format="watching">📺 Watching (Anime)</div>
+        </div>
         ${shelfChips ? `<div class="filter-section-label">Status</div><div class="shelf-row">${shelfChips}</div>` : ''}
         <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
