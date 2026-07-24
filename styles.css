@@ -69,6 +69,19 @@ a { color: var(--pink); }
 .global-search-bar input { background: transparent; border: none; outline: none; color: var(--text); width: 100%; font-size: 13.5px; }
 .global-search-bar input::placeholder { color: var(--text-dim); }
 
+/* Not sticky on purpose — sits directly under the sticky global header and
+   scrolls away with the page, so it doesn't need its own entry in the
+   --global-header-h math that the sticky app/detail headers rely on. */
+.drive-reconnect-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: var(--yellow-soft); color: var(--yellow); border-bottom: 1px solid var(--border);
+  padding: 8px 14px; font-size: 12px;
+}
+.drive-reconnect-banner button {
+  background: var(--yellow); color: #170b26; border: none; border-radius: 999px;
+  padding: 5px 12px; font-size: 12px; font-weight: 700; cursor: pointer; flex-shrink: 0;
+}
+
 /* ---------- Sticky header (per-screen, sits just below the global one) ---------- */
 .app-header {
   position: sticky; top: var(--global-header-h); z-index: 30;

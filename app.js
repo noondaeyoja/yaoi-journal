@@ -40,10 +40,22 @@ try { fbStore.enablePersistence({ synchronizeTabs: true }).catch(() => {}); } ca
 
 let CURRENT_USER = null;         // signed-in Firebase user, or null = show the sign-in screen
 let FIRESTORE_UNSUB = null;      // unsubscribe fn for the live cross-device entries listener
-let AUTH_MODE = 'signin';        // 'signin' | 'signup'
 let AUTH_ERROR = '';
 let AUTH_BUSY = false;
 let SYNC_BUSY = false;           // true while the initial pull/push migration is running
+
+// Google Drive access token (for image upload/download), separate from the
+// Firebase Auth session above. Firebase keeps you signed in persistently,
+// but this token is only good for ~1hr and is NOT silently refreshed on
+// reload — so DRIVE_NEEDS_RECONNECT flips true whenever a Drive call fails
+// from an expired/missing token, and the UI offers a one-click reconnect
+// (re-running Google sign-in) rather than failing silently.
+let DRIVE_ACCESS_TOKEN = null;
+let DRIVE_TOKEN_EXPIRES_AT = 0;
+let DRIVE_NEEDS_RECONNECT = false;
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const DRIVE_FOLDER_NAME = 'Yaoi Journal Images';
+let DRIVE_FOLDER_ID = null; // cached once found/created, see ensureDriveFolder()
 
 // Raw HD-scan lines already fully handled (auto-tagged, manually confirmed,
 // or explicitly skipped) — see the HD-match tool. Prevents "re-matching the
@@ -248,13 +260,16 @@ function userReactionsCol() {
 function pushReactionToFirestore(reaction) {
   const col = userReactionsCol();
   if (!col) return;
-  const json = JSON.stringify(reaction);
+  // Once it's up on Drive, the base64 copy doesn't need to also ride along
+  // in Firestore — keeps this doc tiny regardless of image size.
+  const safe = (reaction.driveId && reaction.dataUrl) ? { ...reaction, dataUrl: null } : reaction;
+  const json = JSON.stringify(safe);
   if (json.length > 900 * 1024) {
     console.error(`Reaction image too large to sync to Firestore (kept locally on this device only).`);
     showToast(`That reaction image is too big to back up to the cloud — kept on this device only.`);
     return;
   }
-  col.doc(reaction.id).set(reaction).catch((err) => {
+  col.doc(reaction.id).set(safe).catch((err) => {
     console.error('Reaction sync failed:', err);
     showToast(`Couldn't back up that reaction to the cloud — saved locally, will retry later.`);
   });
@@ -264,6 +279,10 @@ function deleteReactionFromFirestore(id) {
   const col = userReactionsCol();
   if (!col) return;
   col.doc(id).delete().catch((err) => console.error('Reaction delete sync failed:', err));
+}
+
+function reactionSafeForFirestore(r) {
+  return (r.driveId && r.dataUrl) ? { ...r, dataUrl: null } : r;
 }
 
 // Same last-write-wins merge philosophy as syncWithFirestore, applied to the
@@ -277,7 +296,8 @@ async function syncReactionsWithFirestore(user) {
     if (ALL_REACTIONS.length) {
       const batch = fbStore.batch();
       ALL_REACTIONS.forEach((r) => {
-        if (JSON.stringify(r).length <= 900 * 1024) batch.set(col.doc(r.id), r);
+        const safe = reactionSafeForFirestore(r);
+        if (JSON.stringify(safe).length <= 900 * 1024) batch.set(col.doc(r.id), safe);
       });
       await batch.commit();
     }
@@ -311,13 +331,15 @@ async function syncReactionsWithFirestore(user) {
     const batch = fbStore.batch();
     let anySkipped = false;
     toRemote.forEach((r) => {
-      if (JSON.stringify(r).length <= 900 * 1024) batch.set(col.doc(r.id), r);
+      const safe = reactionSafeForFirestore(r);
+      if (JSON.stringify(safe).length <= 900 * 1024) batch.set(col.doc(r.id), safe);
       else anySkipped = true;
     });
     await batch.commit().catch((err) => console.error('Reaction bulk sync failed:', err));
     if (anySkipped) showToast('Some reaction images are too large to back up to the cloud — kept on this device only.');
   }
   ALL_REACTIONS = merged;
+  toLocal.forEach((r) => { hydrateDriveReaction(r).catch(() => {}); });
 }
 
 /* ---------------------------------------------------------------------- */
@@ -408,6 +430,22 @@ const FIRESTORE_DOC_SAFE_BYTES = 900 * 1024;
 // images stay fully intact in this device's own local IndexedDB.
 function firestoreSafeEntry(entry) {
   let candidate = entry;
+  // Images that have already made it to Drive don't need to ride along as
+  // base64 in Firestore at all anymore — drop them unconditionally (not
+  // just when oversized) so entries stay small no matter how many photos
+  // get added over time, instead of only trimming once already too big.
+  if (candidate.coverDriveId && candidate.coverUrl && candidate.coverUrl.startsWith('data:')) {
+    candidate = { ...candidate, coverUrl: null };
+  }
+  if (candidate.screencapDriveIds && candidate.screencapDriveIds.length && candidate.screencaps && candidate.screencaps.length) {
+    candidate = { ...candidate, screencaps: [] };
+  }
+  if (candidate.semi && candidate.semi.photoDriveId && candidate.semi.photo) {
+    candidate = { ...candidate, semi: { ...candidate.semi, photo: null } };
+  }
+  if (candidate.uke && candidate.uke.photoDriveId && candidate.uke.photo) {
+    candidate = { ...candidate, uke: { ...candidate.uke, photo: null } };
+  }
   const trimmedFields = [];
   if (JSON.stringify(candidate).length <= FIRESTORE_DOC_SAFE_BYTES) {
     return { safe: candidate, trimmedFields };
@@ -486,6 +524,183 @@ function restoreLocallyKeptImages(remote, local) {
   return patched;
 }
 
+/* ---------------------------------------------------------------------- */
+/* Google Drive image storage                                             */
+/* Images now live as real files in a dedicated "Yaoi Journal Images"     */
+/* folder in the signed-in Google account's own Drive, instead of being   */
+/* embedded as base64 inside Firestore documents. Entries/reactions keep  */
+/* a small Drive file id instead of the raw image data — Firestore docs   */
+/* stay tiny no matter how many photos an entry has, and there's no more  */
+/* per-document size ceiling to silently run into.                       */
+/*                                                                        */
+/* Local IndexedDB still caches the actual image bytes (as data: URLs)    */
+/* for instant, offline-friendly display — Drive is purely the transport  */
+/* used to get an image from the device that uploaded it to any other     */
+/* device signed into the same account (see hydrateDriveImages below).    */
+/* ---------------------------------------------------------------------- */
+
+function driveTokenValid() {
+  return !!DRIVE_ACCESS_TOKEN && Date.now() < DRIVE_TOKEN_EXPIRES_AT;
+}
+
+// Wraps every Drive REST call. On an expired/missing token this flips
+// DRIVE_NEEDS_RECONNECT (which shows a one-click "Reconnect Google Drive"
+// banner) instead of failing in a way that looks like another lost upload.
+async function driveFetch(url, options) {
+  if (!driveTokenValid()) {
+    DRIVE_NEEDS_RECONNECT = true;
+    throw new Error('No valid Google Drive access token — reconnect required.');
+  }
+  const resp = await fetch(url, {
+    ...options,
+    headers: { ...((options && options.headers) || {}), Authorization: `Bearer ${DRIVE_ACCESS_TOKEN}` }
+  });
+  if (resp.status === 401) {
+    DRIVE_NEEDS_RECONNECT = true;
+    throw new Error('Google Drive access expired — reconnect required.');
+  }
+  return resp;
+}
+
+function dataUrlToBlob(dataUrl) {
+  const [meta, base64] = dataUrl.split(',');
+  const mime = (meta.match(/data:(.*?);base64/) || [])[1] || 'image/jpeg';
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+// Finds (or creates, the very first time) the app's dedicated Drive folder.
+// Cached in memory for the session so this is only a network round-trip once.
+async function ensureDriveFolder() {
+  if (DRIVE_FOLDER_ID) return DRIVE_FOLDER_ID;
+  const q = encodeURIComponent(`name='${DRIVE_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+  const searchResp = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,name)`);
+  const searchData = await searchResp.json();
+  if (searchData.files && searchData.files.length) {
+    DRIVE_FOLDER_ID = searchData.files[0].id;
+    return DRIVE_FOLDER_ID;
+  }
+  const createResp = await driveFetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: DRIVE_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' })
+  });
+  const createData = await createResp.json();
+  if (!createData.id) throw new Error('Could not create Drive folder: ' + JSON.stringify(createData));
+  DRIVE_FOLDER_ID = createData.id;
+  return DRIVE_FOLDER_ID;
+}
+
+// Uploads a base64 data: URL image into the app's Drive folder (simple
+// multipart upload) and returns the new file's id.
+async function uploadToDrive(dataUrl, filename) {
+  const folderId = await ensureDriveFolder();
+  const blob = dataUrlToBlob(dataUrl);
+  const metadata = { name: filename, parents: [folderId] };
+  const boundary = 'yaoi_journal_' + Math.random().toString(36).slice(2);
+  const encoder = new TextEncoder();
+  const preamble = encoder.encode(
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\nContent-Type: ${blob.type}\r\n\r\n`
+  );
+  const closing = encoder.encode(`\r\n--${boundary}--`);
+  const arrayBuf = await blob.arrayBuffer();
+  const body = new Blob([preamble, arrayBuf, closing]);
+  const resp = await driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
+    method: 'POST',
+    headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+    body
+  });
+  const data = await resp.json();
+  if (!data.id) throw new Error('Drive upload did not return a file id: ' + JSON.stringify(data));
+  return data.id;
+}
+
+// Fetches an image's bytes back from Drive as a data: URL — same format
+// every existing render function already expects for images.
+async function downloadFromDrive(fileId) {
+  const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+  const blob = await resp.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+function deleteFromDrive(fileId) {
+  if (!fileId) return;
+  driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, { method: 'DELETE' }).catch((err) => console.error('Drive delete failed:', err));
+}
+
+// Best-effort wrapper for upload call sites: the image is already cached
+// locally and displaying fine regardless of whether this succeeds, so a
+// Drive failure here should never block or fail the save — it just means
+// this particular image stays local-only until the next successful upload
+// or reconnect, same as the existing "too large to sync" case.
+async function tryUploadImageToDrive(dataUrl, filename) {
+  try {
+    return await uploadToDrive(dataUrl, filename);
+  } catch (err) {
+    console.error('Drive image upload failed:', err);
+    if (DRIVE_NEEDS_RECONNECT) showToast('Google Drive needs reconnecting — this image is saved on this device only for now.');
+    return null;
+  }
+}
+
+// Called whenever a remote-sourced entry is accepted (boot sync or the live
+// listener) — if it references Drive files this device doesn't have a local
+// copy of yet (e.g. uploaded from her phone, this is the desktop seeing it
+// for the first time), fetch them from Drive and patch the LOCAL copy only.
+// Every existing render path already expects e.coverUrl/screencaps/photo to
+// just be data: URLs, so this is the only place that needs to know Drive
+// exists — nothing else has to change.
+async function hydrateDriveImages(entry) {
+  if (!entry) return;
+  const jobs = [];
+  if (entry.coverDriveId && !entry.coverUrl) {
+    jobs.push(downloadFromDrive(entry.coverDriveId).then((url) => { entry.coverUrl = url; }).catch((err) => console.error('Cover hydrate failed:', err)));
+  }
+  if (entry.semi && entry.semi.photoDriveId && !entry.semi.photo) {
+    jobs.push(downloadFromDrive(entry.semi.photoDriveId).then((url) => { entry.semi.photo = url; }).catch((err) => console.error('Semi photo hydrate failed:', err)));
+  }
+  if (entry.uke && entry.uke.photoDriveId && !entry.uke.photo) {
+    jobs.push(downloadFromDrive(entry.uke.photoDriveId).then((url) => { entry.uke.photo = url; }).catch((err) => console.error('Uke photo hydrate failed:', err)));
+  }
+  if (entry.screencapDriveIds && entry.screencapDriveIds.length && (!entry.screencaps || entry.screencaps.length < entry.screencapDriveIds.length)) {
+    jobs.push((async () => {
+      const urls = [];
+      for (const id of entry.screencapDriveIds) {
+        try { urls.push(await downloadFromDrive(id)); } catch (err) { console.error('Screencap hydrate failed:', err); }
+      }
+      if (urls.length) entry.screencaps = urls;
+    })());
+  }
+  if (!jobs.length) return;
+  await Promise.all(jobs);
+  await idbPut(STORE_ENTRIES, entry);
+  const idx = ALL_ENTRIES.findIndex((e) => e.id === entry.id);
+  if (idx > -1) ALL_ENTRIES[idx] = entry;
+  if (STATE.view === 'detail' && STATE.entryId === entry.id) render();
+}
+
+// Same idea as hydrateDriveImages, for the standalone reactions/meme library.
+async function hydrateDriveReaction(reaction) {
+  if (!reaction || !reaction.driveId || reaction.dataUrl) return;
+  try {
+    reaction.dataUrl = await downloadFromDrive(reaction.driveId);
+    await idbPut(STORE_REACTIONS, reaction);
+    const idx = ALL_REACTIONS.findIndex((r) => r.id === reaction.id);
+    if (idx > -1) ALL_REACTIONS[idx] = reaction;
+    if (['reactions', 'meme'].includes(STATE.view)) render();
+  } catch (err) {
+    console.error('Reaction hydrate failed:', err);
+  }
+}
+
 // Runs once right after sign-in. If this account has never synced before
 // (no entries in Firestore yet), push everything currently on this device
 // up as the starting point. Otherwise merge: newest updatedAt wins per
@@ -536,6 +751,12 @@ async function syncWithFirestore(user) {
   if (toLocal.length) await idbBulkPut(STORE_ENTRIES, toLocal);
   if (toRemote.length) await firestoreBulkWrite(col, toRemote);
   ALL_ENTRIES = merged;
+  // Fire-and-forget: pull actual image bytes down from Drive for anything
+  // that arrived from another device with a Drive id but no local copy yet.
+  // Not awaited so a big first sync doesn't block the whole app on however
+  // many images need fetching — each one patches itself in and re-renders
+  // if it's the entry currently on screen.
+  toLocal.forEach((e) => { hydrateDriveImages(e).catch(() => {}); });
 }
 
 async function firestoreBulkWrite(col, entries) {
@@ -585,6 +806,7 @@ function startFirestoreListener(user) {
         const patched = restoreLocallyKeptImages(data, local);
         if (idx > -1) ALL_ENTRIES[idx] = patched; else ALL_ENTRIES.push(patched);
         idbPut(STORE_ENTRIES, patched).catch(() => {});
+        hydrateDriveImages(patched).catch(() => {});
         changed = true;
       }
     });
@@ -717,94 +939,95 @@ function navigate(view, entryId) {
 /* ---------------------------------------------------------------------- */
 
 function renderAuthScreen() {
-  const isSignup = AUTH_MODE === 'signup';
   return `
     <div class="auth-screen">
       <div class="auth-card">
         <div class="auth-title">💜 Yaoi Journal</div>
-        <div class="auth-sub">Sign in to keep your journal in sync between your phone and desktop.</div>
-        <div class="auth-tabs">
-          <div class="auth-tab ${!isSignup ? 'active' : ''}" data-auth-tab="signin">Sign In</div>
-          <div class="auth-tab ${isSignup ? 'active' : ''}" data-auth-tab="signup">Create Account</div>
-        </div>
-        <div class="field-row">
-          <label>Email</label>
-          <input type="email" id="auth-email" class="value" autocomplete="username" placeholder="you@example.com">
-        </div>
-        <div class="field-row">
-          <label>Password</label>
-          <input type="password" id="auth-password" class="value" autocomplete="${isSignup ? 'new-password' : 'current-password'}" placeholder="${isSignup ? 'At least 6 characters' : 'Your password'}">
-        </div>
+        <div class="auth-sub">Sign in with Google to keep your journal — and your images, stored in your own Google Drive — in sync between your phone and desktop.</div>
         ${AUTH_ERROR ? `<div class="auth-error">${escapeHtml(AUTH_ERROR)}</div>` : ''}
-        <button class="btn-primary auth-submit-btn" data-auth-submit="1" ${AUTH_BUSY ? 'disabled' : ''}>
-          ${AUTH_BUSY ? 'Please wait…' : (isSignup ? 'Create Account' : 'Sign In')}
+        <button class="btn-primary auth-submit-btn" data-google-signin="1" ${AUTH_BUSY ? 'disabled' : ''}>
+          ${AUTH_BUSY ? 'Please wait…' : 'Continue with Google'}
         </button>
-        ${!isSignup ? `<div class="auth-forgot" data-auth-forgot="1">Forgot password?</div>` : ''}
+        <p style="font-size:11px;color:var(--text-dim);text-align:center;margin-top:12px;line-height:1.5;">
+          You'll be asked to grant access to a private app folder in your Drive — this app can only see files it creates itself, nothing else in your Drive.
+        </p>
       </div>
     </div>`;
 }
 
 function attachAuthHandlers() {
   const root = document.getElementById('view-root');
-  root.querySelectorAll('[data-auth-tab]').forEach((el) => {
-    el.onclick = () => {
-      AUTH_MODE = el.getAttribute('data-auth-tab');
-      AUTH_ERROR = '';
-      render();
-    };
-  });
-  const submitBtn = root.querySelector('[data-auth-submit]');
-  const emailInput = root.querySelector('#auth-email');
-  const passInput = root.querySelector('#auth-password');
-  const doSubmit = () => authSubmit(emailInput.value.trim(), passInput.value);
-  if (submitBtn) submitBtn.onclick = doSubmit;
-  [emailInput, passInput].forEach((el) => {
-    if (el) el.onkeydown = (ev) => { if (ev.key === 'Enter') doSubmit(); };
-  });
-  const forgotEl = root.querySelector('[data-auth-forgot]');
-  if (forgotEl) forgotEl.onclick = () => authForgotPassword((emailInput && emailInput.value.trim()) || '');
+  const googleBtn = root.querySelector('[data-google-signin]');
+  if (googleBtn) googleBtn.onclick = signInWithGoogle;
 }
 
-async function authSubmit(email, password) {
-  if (!email || !password) { AUTH_ERROR = 'Enter an email and password.'; render(); return; }
+async function signInWithGoogle() {
   AUTH_BUSY = true; AUTH_ERROR = ''; render();
   try {
-    if (AUTH_MODE === 'signup') {
-      await fbAuth.createUserWithEmailAndPassword(email, password);
-    } else {
-      await fbAuth.signInWithEmailAndPassword(email, password);
+    const provider = new firebase.auth.GoogleAuthProvider();
+    provider.addScope(DRIVE_SCOPE);
+    // Always show the consent screen rather than a silent re-auth — this is
+    // also how a lapsed/expired Drive token gets refreshed (see
+    // reconnectGoogleDrive()), since Firebase doesn't do that on its own.
+    provider.setCustomParameters({ prompt: 'consent' });
+    const result = await fbAuth.signInWithPopup(provider);
+    const credential = firebase.auth.GoogleAuthProvider.credentialFromResult(result);
+    if (credential && credential.accessToken) {
+      DRIVE_ACCESS_TOKEN = credential.accessToken;
+      DRIVE_TOKEN_EXPIRES_AT = Date.now() + 55 * 60 * 1000; // Google tokens last ~1hr; refresh a bit early
+      DRIVE_NEEDS_RECONNECT = false;
     }
     // onAuthStateChanged (wired in boot()) picks up the signed-in user from here.
   } catch (err) {
+    if (err && err.code === 'auth/popup-closed-by-user') {
+      AUTH_BUSY = false; render(); return;
+    }
     AUTH_ERROR = authErrorMessage(err);
     AUTH_BUSY = false;
     render();
   }
 }
 
-async function authForgotPassword(email) {
-  if (!email) { AUTH_ERROR = 'Enter your email above first, then tap "Forgot password?" again.'; render(); return; }
+// Re-runs Google sign-in purely to mint a fresh Drive access token (the
+// Firebase session itself never lapsed) — used both from the auth screen's
+// initial sign-in and from the "Reconnect Google Drive" banner that shows up
+// once the ~1hr token expires or a Drive call comes back 401.
+async function reconnectGoogleDrive() {
   try {
-    await fbAuth.sendPasswordResetEmail(email);
-    showToast(`Password reset email sent to ${email}`);
+    const provider = new firebase.auth.GoogleAuthProvider();
+    provider.addScope(DRIVE_SCOPE);
+    provider.setCustomParameters({ prompt: 'consent' });
+    const result = await fbAuth.signInWithPopup(provider);
+    const credential = firebase.auth.GoogleAuthProvider.credentialFromResult(result);
+    if (credential && credential.accessToken) {
+      DRIVE_ACCESS_TOKEN = credential.accessToken;
+      DRIVE_TOKEN_EXPIRES_AT = Date.now() + 55 * 60 * 1000;
+      DRIVE_NEEDS_RECONNECT = false;
+      showToast('Reconnected to Google Drive.');
+      render();
+      return true;
+    }
   } catch (err) {
-    AUTH_ERROR = authErrorMessage(err);
-    render();
+    console.error('Drive reconnect failed:', err);
+    showToast("Couldn't reconnect to Google Drive — try again.");
   }
+  return false;
 }
 
 function authErrorMessage(err) {
   const code = err && err.code || '';
-  if (code === 'auth/email-already-in-use') return 'That email already has an account — try Sign In instead.';
-  if (code === 'auth/invalid-email') return 'That doesn\'t look like a valid email address.';
-  if (code === 'auth/weak-password') return 'Password needs to be at least 6 characters.';
-  if (code === 'auth/user-not-found' || code === 'auth/wrong-password' || code === 'auth/invalid-credential') return 'Wrong email or password.';
+  if (code === 'auth/popup-blocked') return 'Your browser blocked the sign-in popup — allow popups for this site and try again.';
+  if (code === 'auth/cancelled-popup-request' || code === 'auth/popup-closed-by-user') return '';
   if (code === 'auth/too-many-requests') return 'Too many attempts — wait a bit and try again.';
+  if (code === 'auth/network-request-failed') return 'Network error — check your connection and try again.';
   return (err && err.message) || 'Something went wrong. Try again.';
 }
 
 async function signOutOfAccount() {
   if (FIRESTORE_UNSUB) { FIRESTORE_UNSUB(); FIRESTORE_UNSUB = null; }
+  DRIVE_ACCESS_TOKEN = null;
+  DRIVE_TOKEN_EXPIRES_AT = 0;
+  DRIVE_FOLDER_ID = null;
   await fbAuth.signOut();
 }
 
@@ -813,6 +1036,7 @@ async function signOutOfAccount() {
 /* ---------------------------------------------------------------------- */
 
 function renderGlobalHeader() {
+  const needsReconnect = DRIVE_NEEDS_RECONNECT || (CURRENT_USER && !driveTokenValid());
   return `
     <div class="global-header">
       <span class="global-header-brand" data-header-home="1">
@@ -822,7 +1046,12 @@ function renderGlobalHeader() {
         <span>🔍</span>
         <input type="search" id="search-input" placeholder="Search all reads &amp; anime..." value="${escapeHtml(STATE.search)}">
       </div>
-    </div>`;
+    </div>
+    ${needsReconnect ? `
+      <div class="drive-reconnect-banner">
+        <span>🔌 Google Drive needs reconnecting to sync images.</span>
+        <button data-reconnect-drive="1">Reconnect</button>
+      </div>` : ''}`;
 }
 
 function render() {
@@ -1770,6 +1999,13 @@ async function addReactionFiles(fileList) {
     const reaction = { id: uid('reaction'), dataUrl, hash, moodTags: [], note: '', createdAt: new Date().toISOString() };
     await saveReaction(reaction);
     added.push(reaction);
+    tryUploadImageToDrive(dataUrl, `reaction-${reaction.id}.jpg`).then((fileId) => {
+      if (!fileId) return;
+      const fresh = ALL_REACTIONS.find((r) => r.id === reaction.id);
+      if (!fresh) return;
+      fresh.driveId = fileId;
+      saveReaction(fresh);
+    });
   }
   return added;
 }
@@ -2891,6 +3127,9 @@ function attachRootHandlers() {
     if (confirm('Sign out of this account on this device?')) signOutOfAccount();
   };
 
+  const reconnectDriveBtn = root.querySelector('[data-reconnect-drive]');
+  if (reconnectDriveBtn) reconnectDriveBtn.onclick = () => reconnectGoogleDrive();
+
   root.querySelectorAll('[data-open-entry]').forEach((el) => {
     el.onclick = () => navigate('detail', el.getAttribute('data-open-entry'));
   });
@@ -3080,6 +3319,15 @@ function attachRootHandlers() {
       const e = getEntry(STATE.entryId);
       e[who].photo = dataUrl;
       await saveEntry(e); render();
+      // Local save/display already happened above — the Drive upload runs
+      // after, purely so this photo can cross-sync to her other device.
+      tryUploadImageToDrive(dataUrl, `${e.id}-${who}-photo.jpg`).then((fileId) => {
+        if (!fileId) return;
+        const fresh = getEntry(e.id);
+        if (!fresh) return;
+        fresh[who].photoDriveId = fileId;
+        saveEntry(fresh);
+      });
     };
   });
   const coverUploadInput = root.querySelector('#cover-upload-input');
@@ -3091,6 +3339,13 @@ function attachRootHandlers() {
     await saveEntry(e);
     showToast('Cover updated!');
     render();
+    tryUploadImageToDrive(dataUrl, `${e.id}-cover.jpg`).then((fileId) => {
+      if (!fileId) return;
+      const fresh = getEntry(e.id);
+      if (!fresh) return;
+      fresh.coverDriveId = fileId;
+      saveEntry(fresh);
+    });
   };
   const editToggleBtn = root.querySelector('[data-edit-toggle]');
   if (editToggleBtn) editToggleBtn.onclick = () => { DETAIL_EDIT_MODE = true; render(); };
@@ -3206,11 +3461,27 @@ function attachRootHandlers() {
   if (screencapInput) screencapInput.onchange = async () => {
     const e = getEntry(STATE.entryId);
     e.screencaps = e.screencaps || [];
+    e.screencapDriveIds = e.screencapDriveIds || [];
+    const newDataUrls = [];
     for (const file of screencapInput.files) {
       const dataUrl = await fileToCompressedDataUrl(file, 900);
       e.screencaps.push(dataUrl);
+      newDataUrls.push(dataUrl);
     }
     await saveEntry(e); render();
+    // Upload each new screencap to Drive in the background and append its
+    // id once it resolves — order isn't guaranteed against further edits in
+    // the meantime, so re-fetch the entry fresh before each append.
+    newDataUrls.forEach((dataUrl, i) => {
+      tryUploadImageToDrive(dataUrl, `${e.id}-screencap-${Date.now()}-${i}.jpg`).then((fileId) => {
+        if (!fileId) return;
+        const fresh = getEntry(e.id);
+        if (!fresh) return;
+        fresh.screencapDriveIds = fresh.screencapDriveIds || [];
+        fresh.screencapDriveIds.push(fileId);
+        saveEntry(fresh);
+      });
+    });
   };
   root.querySelectorAll('[data-del-screencap]').forEach((el) => {
     el.onclick = async (ev) => {
@@ -3218,6 +3489,10 @@ function attachRootHandlers() {
       const idx = Number(el.getAttribute('data-del-screencap'));
       const e = getEntry(STATE.entryId);
       e.screencaps.splice(idx, 1);
+      if (e.screencapDriveIds && e.screencapDriveIds[idx]) {
+        deleteFromDrive(e.screencapDriveIds[idx]);
+        e.screencapDriveIds.splice(idx, 1);
+      }
       await saveEntry(e); render();
     };
   });
