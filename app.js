@@ -16,6 +16,34 @@ const SHELVES_READING = ['Currently Reading', 'Completed', 'Plan to Read', 'Disc
 const FLAG_COLORS = ['green', 'red', 'black'];
 const FLAG_HEX = { green: '#4ade80', red: '#f87171', black: '#6b6b7a' };
 
+/* ---------------------------------------------------------------------- */
+/* Firebase (cross-device sync)                                          */
+/* Firestore is the cross-device source of truth; IndexedDB stays as a   */
+/* fast local cache so the app still works offline. Data lives under     */
+/* users/{uid}/entries/{entryId}, locked down to that uid by security    */
+/* rules — nobody else can read or write it.                              */
+/* ---------------------------------------------------------------------- */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCyBqSubWsKqBIUzPeSD_1DJcanZTe3byY",
+  authDomain: "yaoi-journal.firebaseapp.com",
+  projectId: "yaoi-journal",
+  storageBucket: "yaoi-journal.firebasestorage.app",
+  messagingSenderId: "831194325870",
+  appId: "1:831194325870:web:473e60f21f69e8ccae177f",
+  measurementId: "G-9BDDPEG94P"
+};
+firebase.initializeApp(FIREBASE_CONFIG);
+const fbAuth = firebase.auth();
+const fbStore = firebase.firestore();
+try { fbStore.enablePersistence({ synchronizeTabs: true }).catch(() => {}); } catch (e) {}
+
+let CURRENT_USER = null;         // signed-in Firebase user, or null = show the sign-in screen
+let FIRESTORE_UNSUB = null;      // unsubscribe fn for the live cross-device entries listener
+let AUTH_MODE = 'signin';        // 'signin' | 'signup'
+let AUTH_ERROR = '';
+let AUTH_BUSY = false;
+let SYNC_BUSY = false;           // true while the initial pull/push migration is running
+
 let db = null;
 let ALL_ENTRIES = [];              // in-memory cache, synced with IndexedDB
 let DETAIL_EDIT_MODE = false;      // whether the detail page's top fields are in edit mode
@@ -125,6 +153,7 @@ async function saveEntry(entry) {
   await idbPut(STORE_ENTRIES, entry);
   const idx = ALL_ENTRIES.findIndex((e) => e.id === entry.id);
   if (idx > -1) ALL_ENTRIES[idx] = entry; else ALL_ENTRIES.push(entry);
+  pushEntryToFirestore(entry);
 }
 
 function getEntry(id) {
@@ -134,6 +163,142 @@ function getEntry(id) {
 async function deleteEntry(id) {
   await idbDelete(STORE_ENTRIES, id);
   ALL_ENTRIES = ALL_ENTRIES.filter((e) => e.id !== id);
+  deleteEntryFromFirestore(id);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Firestore sync layer                                                   */
+/* Best-effort: these never block or throw into the caller. Firestore's   */
+/* own offline queue (enablePersistence above) means a write made while   */
+/* offline just sits queued and flushes once the connection comes back.   */
+/* ---------------------------------------------------------------------- */
+
+function userEntriesCol() {
+  if (!CURRENT_USER) return null;
+  return fbStore.collection('users').doc(CURRENT_USER.uid).collection('entries');
+}
+
+// Firestore caps each document at 1MiB. Manually-uploaded cover images are
+// stored as base64 data URLs and, on rare oversized uploads, could push a
+// single entry over that limit. Rather than fail the whole sync, drop just
+// the embedded image from the copy that goes to Firestore (it still lives
+// fine in local IndexedDB on this device) and warn once.
+const FIRESTORE_DOC_SAFE_BYTES = 900 * 1024;
+function firestoreSafeEntry(entry) {
+  const json = JSON.stringify(entry);
+  if (json.length <= FIRESTORE_DOC_SAFE_BYTES) return entry;
+  if (entry.coverUrl && entry.coverUrl.startsWith('data:')) {
+    const trimmed = { ...entry, coverUrl: null, coverTooLargeForSync: true };
+    if (JSON.stringify(trimmed).length <= FIRESTORE_DOC_SAFE_BYTES) {
+      console.warn(`Entry "${entry.title || entry.id}" cover image too large for Firestore sync — kept locally, not synced.`);
+      return trimmed;
+    }
+  }
+  console.error(`Entry "${entry.title || entry.id}" is too large to sync to Firestore even after trimming; skipping remote sync for this entry.`);
+  return null;
+}
+
+function pushEntryToFirestore(entry) {
+  const col = userEntriesCol();
+  if (!col) return;
+  const safe = firestoreSafeEntry(entry);
+  if (!safe) return;
+  col.doc(entry.id).set(safe).catch((err) => console.error('Firestore save failed:', err));
+}
+
+function deleteEntryFromFirestore(id) {
+  const col = userEntriesCol();
+  if (!col) return;
+  col.doc(id).delete().catch((err) => console.error('Firestore delete failed:', err));
+}
+
+// Runs once right after sign-in. If this account has never synced before
+// (no entries in Firestore yet), push everything currently on this device
+// up as the starting point. Otherwise merge: newest updatedAt wins per
+// entry, id-by-id, and any local-only or remote-only entries get copied
+// over so nothing is ever silently dropped.
+async function syncWithFirestore(user) {
+  const col = fbStore.collection('users').doc(user.uid).collection('entries');
+  const snap = await col.get();
+
+  if (snap.empty) {
+    if (ALL_ENTRIES.length) await firestoreBulkWrite(col, ALL_ENTRIES);
+    return;
+  }
+
+  const remoteEntries = snap.docs.map((d) => d.data());
+  const localById = new Map(ALL_ENTRIES.map((e) => [e.id, e]));
+  const merged = [];
+  const toLocal = [];
+  const toRemote = [];
+
+  remoteEntries.forEach((re) => {
+    const le = localById.get(re.id);
+    if (!le) {
+      merged.push(re);
+      toLocal.push(re);
+    } else {
+      const rt = new Date(re.updatedAt || 0).getTime();
+      const lt = new Date(le.updatedAt || 0).getTime();
+      if (rt > lt) { merged.push(re); toLocal.push(re); }
+      else { merged.push(le); if (lt > rt) toRemote.push(le); }
+    }
+    localById.delete(re.id);
+  });
+  // Anything left in localById exists only on this device — push it up.
+  localById.forEach((le) => { merged.push(le); toRemote.push(le); });
+
+  if (toLocal.length) await idbBulkPut(STORE_ENTRIES, toLocal);
+  if (toRemote.length) await firestoreBulkWrite(col, toRemote);
+  ALL_ENTRIES = merged;
+}
+
+async function firestoreBulkWrite(col, entries) {
+  const CHUNK = 400; // stay under Firestore's 500-writes-per-batch limit
+  for (let i = 0; i < entries.length; i += CHUNK) {
+    const batch = fbStore.batch();
+    entries.slice(i, i + CHUNK).forEach((e) => {
+      const safe = firestoreSafeEntry(e);
+      if (safe) batch.set(col.doc(e.id), safe);
+    });
+    await batch.commit();
+  }
+}
+
+// Live cross-device updates: if she edits on her phone while the desktop
+// tab is open, this picks up the change without a manual refresh. The
+// very first snapshot right after subscribing just echoes what
+// syncWithFirestore() already merged, so it's skipped to avoid redundant
+// work and a spurious re-render.
+function startFirestoreListener(user) {
+  if (FIRESTORE_UNSUB) { FIRESTORE_UNSUB(); FIRESTORE_UNSUB = null; }
+  const col = fbStore.collection('users').doc(user.uid).collection('entries');
+  let skippedFirst = false;
+  FIRESTORE_UNSUB = col.onSnapshot((snap) => {
+    if (!skippedFirst) { skippedFirst = true; return; }
+    let changed = false;
+    snap.docChanges().forEach((change) => {
+      const data = change.doc.data();
+      if (change.type === 'removed') {
+        if (ALL_ENTRIES.some((e) => e.id === data.id)) {
+          ALL_ENTRIES = ALL_ENTRIES.filter((e) => e.id !== data.id);
+          idbDelete(STORE_ENTRIES, data.id).catch(() => {});
+          changed = true;
+        }
+        return;
+      }
+      const idx = ALL_ENTRIES.findIndex((e) => e.id === data.id);
+      const local = idx > -1 ? ALL_ENTRIES[idx] : null;
+      const rt = new Date(data.updatedAt || 0).getTime();
+      const lt = local ? new Date(local.updatedAt || 0).getTime() : -1;
+      if (rt >= lt) {
+        if (idx > -1) ALL_ENTRIES[idx] = data; else ALL_ENTRIES.push(data);
+        idbPut(STORE_ENTRIES, data).catch(() => {});
+        changed = true;
+      }
+    });
+    if (changed && ['home', 'detail', 'tagEntries', 'tags', 'database'].includes(STATE.view)) render();
+  }, (err) => console.error('Firestore listener error:', err));
 }
 
 /* ---------------------------------------------------------------------- */
@@ -226,11 +391,113 @@ function navigate(view, entryId) {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Auth screen — gates the whole app behind a signed-in Firebase account  */
+/* so the same journal follows her across phone and desktop.              */
+/* ---------------------------------------------------------------------- */
+
+function renderAuthScreen() {
+  const isSignup = AUTH_MODE === 'signup';
+  return `
+    <div class="auth-screen">
+      <div class="auth-card">
+        <div class="auth-title">💜 Yaoi Journal</div>
+        <div class="auth-sub">Sign in to keep your journal in sync between your phone and desktop.</div>
+        <div class="auth-tabs">
+          <div class="auth-tab ${!isSignup ? 'active' : ''}" data-auth-tab="signin">Sign In</div>
+          <div class="auth-tab ${isSignup ? 'active' : ''}" data-auth-tab="signup">Create Account</div>
+        </div>
+        <div class="field-row">
+          <label>Email</label>
+          <input type="email" id="auth-email" class="value" autocomplete="username" placeholder="you@example.com">
+        </div>
+        <div class="field-row">
+          <label>Password</label>
+          <input type="password" id="auth-password" class="value" autocomplete="${isSignup ? 'new-password' : 'current-password'}" placeholder="${isSignup ? 'At least 6 characters' : 'Your password'}">
+        </div>
+        ${AUTH_ERROR ? `<div class="auth-error">${escapeHtml(AUTH_ERROR)}</div>` : ''}
+        <button class="btn-primary auth-submit-btn" data-auth-submit="1" ${AUTH_BUSY ? 'disabled' : ''}>
+          ${AUTH_BUSY ? 'Please wait…' : (isSignup ? 'Create Account' : 'Sign In')}
+        </button>
+        ${!isSignup ? `<div class="auth-forgot" data-auth-forgot="1">Forgot password?</div>` : ''}
+      </div>
+    </div>`;
+}
+
+function attachAuthHandlers() {
+  const root = document.getElementById('view-root');
+  root.querySelectorAll('[data-auth-tab]').forEach((el) => {
+    el.onclick = () => {
+      AUTH_MODE = el.getAttribute('data-auth-tab');
+      AUTH_ERROR = '';
+      render();
+    };
+  });
+  const submitBtn = root.querySelector('[data-auth-submit]');
+  const emailInput = root.querySelector('#auth-email');
+  const passInput = root.querySelector('#auth-password');
+  const doSubmit = () => authSubmit(emailInput.value.trim(), passInput.value);
+  if (submitBtn) submitBtn.onclick = doSubmit;
+  [emailInput, passInput].forEach((el) => {
+    if (el) el.onkeydown = (ev) => { if (ev.key === 'Enter') doSubmit(); };
+  });
+  const forgotEl = root.querySelector('[data-auth-forgot]');
+  if (forgotEl) forgotEl.onclick = () => authForgotPassword((emailInput && emailInput.value.trim()) || '');
+}
+
+async function authSubmit(email, password) {
+  if (!email || !password) { AUTH_ERROR = 'Enter an email and password.'; render(); return; }
+  AUTH_BUSY = true; AUTH_ERROR = ''; render();
+  try {
+    if (AUTH_MODE === 'signup') {
+      await fbAuth.createUserWithEmailAndPassword(email, password);
+    } else {
+      await fbAuth.signInWithEmailAndPassword(email, password);
+    }
+    // onAuthStateChanged (wired in boot()) picks up the signed-in user from here.
+  } catch (err) {
+    AUTH_ERROR = authErrorMessage(err);
+    AUTH_BUSY = false;
+    render();
+  }
+}
+
+async function authForgotPassword(email) {
+  if (!email) { AUTH_ERROR = 'Enter your email above first, then tap "Forgot password?" again.'; render(); return; }
+  try {
+    await fbAuth.sendPasswordResetEmail(email);
+    showToast(`Password reset email sent to ${email}`);
+  } catch (err) {
+    AUTH_ERROR = authErrorMessage(err);
+    render();
+  }
+}
+
+function authErrorMessage(err) {
+  const code = err && err.code || '';
+  if (code === 'auth/email-already-in-use') return 'That email already has an account — try Sign In instead.';
+  if (code === 'auth/invalid-email') return 'That doesn\'t look like a valid email address.';
+  if (code === 'auth/weak-password') return 'Password needs to be at least 6 characters.';
+  if (code === 'auth/user-not-found' || code === 'auth/wrong-password' || code === 'auth/invalid-credential') return 'Wrong email or password.';
+  if (code === 'auth/too-many-requests') return 'Too many attempts — wait a bit and try again.';
+  return (err && err.message) || 'Something went wrong. Try again.';
+}
+
+async function signOutOfAccount() {
+  if (FIRESTORE_UNSUB) { FIRESTORE_UNSUB(); FIRESTORE_UNSUB = null; }
+  await fbAuth.signOut();
+}
+
+/* ---------------------------------------------------------------------- */
 /* Render: root switch                                                    */
 /* ---------------------------------------------------------------------- */
 
 function render() {
   const root = document.getElementById('view-root');
+  if (!CURRENT_USER) {
+    root.innerHTML = renderAuthScreen();
+    attachAuthHandlers();
+    return;
+  }
   if (STATE.view === 'home') root.innerHTML = renderHome();
   else if (STATE.view === 'detail') root.innerHTML = renderDetail(getEntry(STATE.entryId));
   else if (STATE.view === 'tags') root.innerHTML = renderTagManager();
@@ -498,6 +765,13 @@ function renderTagManager() {
       <div class="search-bar"><span>🔍</span><input type="search" id="tagmgr-search" placeholder="Filter tags..."></div>
     </div>
     <main>
+      <div class="account-panel">
+        <div class="account-info">
+          <div class="account-label">Synced account</div>
+          <div class="account-email">${escapeHtml(CURRENT_USER ? CURRENT_USER.email : '')}</div>
+        </div>
+        <button class="icon-btn-inline" data-sign-out="1" title="Sign out">Sign Out</button>
+      </div>
       <button class="ref-btn" style="width:100%;margin-bottom:12px;" data-nav="hdMatch">💾 Match Owned Titles from a List</button>
       <div style="color:var(--text-dim);font-size:12px;margin-bottom:10px;">
         ${names.length} unique tag${names.length === 1 ? '' : 's'} across ${ALL_ENTRIES.length} entries. Tap a tag to see its entries. Renaming applies everywhere the tag is used — rename to an existing tag name to merge two tags together. Deleting removes it from every entry (can't be undone).
@@ -1359,6 +1633,11 @@ async function submitAdd() {
 function attachRootHandlers() {
   const root = document.getElementById('view-root');
 
+  const signOutBtn = root.querySelector('[data-sign-out]');
+  if (signOutBtn) signOutBtn.onclick = () => {
+    if (confirm('Sign out of this account on this device?')) signOutOfAccount();
+  };
+
   root.querySelectorAll('[data-open-entry]').forEach((el) => {
     el.onclick = () => navigate('detail', el.getAttribute('data-open-entry'));
   });
@@ -1954,11 +2233,25 @@ async function boot() {
     db = await openDB();
     await ensureSeeded();
     await loadAllEntries();
-    render();
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('./sw.js').catch(() => {});
     }
-    autoMatchSweepIfDue();
+    fbAuth.onAuthStateChanged(async (user) => {
+      CURRENT_USER = user;
+      if (user) {
+        SYNC_BUSY = true;
+        try {
+          await syncWithFirestore(user);
+          startFirestoreListener(user);
+        } catch (err) {
+          console.error('Firestore sync failed:', err);
+          showToast("Couldn't sync — check your connection");
+        }
+        SYNC_BUSY = false;
+        autoMatchSweepIfDue();
+      }
+      render();
+    });
   } catch (err) {
     const isFileProtocol = location.protocol === 'file:';
     document.getElementById('view-root').innerHTML = `

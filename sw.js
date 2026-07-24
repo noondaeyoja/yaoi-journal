@@ -1,4 +1,4 @@
-const CACHE_NAME = 'yaoi-journal-v14';
+const CACHE_NAME = 'yaoi-journal-v15';
 const SHELL_FILES = [
   './',
   './index.html',
