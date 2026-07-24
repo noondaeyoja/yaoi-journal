@@ -56,6 +56,7 @@ let STATE = {
   entryId: null,
   format: 'reading',        // 'reading' | 'watching'
   showFavoritesOnly: false,
+  showOnDriveOnly: false,   // "On Yaoi Drive" homepage tab — entries tagged as saved on the drive
   shelf: 'ALL',             // 'ALL' or one of SHELVES_READING
   tagFilters: [],           // array of tag strings; entry matches if it has ANY of these
   smutFilter: null,         // null or 1-5, meaning "at least N eggplants"
@@ -516,9 +517,12 @@ function render() {
 function filteredEntries() {
   const q = STATE.search.trim().toLowerCase();
   return ALL_ENTRIES.filter((e) => {
-    // Favorites tab pulls from both Reading and Watching, ignoring the format toggle.
+    // Favorites and On Yaoi Drive tabs both pull from Reading + Watching,
+    // ignoring the format toggle — same as each other.
     if (STATE.showFavoritesOnly) {
       if (!e.favorite) return false;
+    } else if (STATE.showOnDriveOnly) {
+      if (!isOnDrive(e)) return false;
     } else if (e.format !== STATE.format) {
       return false;
     }
@@ -550,6 +554,14 @@ function isHiddenTag(t) {
   return HIDDEN_TAGS.has(String(t || '').trim().toLowerCase());
 }
 
+// "On HD" is the tag the HD-match tool (and the HD-scan import) uses to mark
+// a title as physically saved on the Yaoi Drive. Matched case/spacing-agnostic
+// via normalizeTagKey so a rename like "on hd" or "On-HD" still counts.
+const ON_DRIVE_TAG_KEY = 'onhd';
+function isOnDrive(e) {
+  return [...(e.tags || []), ...(e.customTags || [])].some((t) => normalizeTagKey(t) === ON_DRIVE_TAG_KEY);
+}
+
 function topTags(entries) {
   const counts = {};
   entries.forEach((e) => (e.tags || []).concat(e.customTags || []).forEach((t) => {
@@ -574,7 +586,7 @@ function renderCoverCard(e) {
         ${cover}
         ${e.favorite ? '<div class="cover-fav-badge">💜</div>' : ''}
         ${isSuggested ? '<div class="cover-fav-badge" style="right:auto;left:5px;" title="Suggested match, unconfirmed">🔎</div>' : ''}
-        ${STATE.showFavoritesOnly ? `<div class="cover-format-badge">${e.format === 'reading' ? '📖' : '📺'}</div>` : ''}
+        ${(STATE.showFavoritesOnly || STATE.showOnDriveOnly) ? `<div class="cover-format-badge">${e.format === 'reading' ? '📖' : '📺'}</div>` : ''}
         ${flagColor ? `<div class="cover-flag-dot"><span style="color:${flagColor}">&#9873;</span></div>` : ''}
       </div>
       <div class="cover-title">${escapeHtml(e.title)}</div>
@@ -598,7 +610,7 @@ function renderHome() {
   const tags = topTags(ALL_ENTRIES.filter((e) => e.format === STATE.format));
 
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
     // Suggested-matches row sits above the shelf rows, same section-title +
     // horizontal-scroll treatment, so unconfirmed matches are easy to spot
     // and jump into without leaving the homepage.
@@ -657,8 +669,9 @@ function renderHome() {
           <input type="search" id="search-input" placeholder="Search all reads &amp; anime..." value="${escapeHtml(STATE.search)}">
         </div>
         <div class="tab-row">
-          <div class="tab-pill ${!STATE.showFavoritesOnly ? 'active' : ''}" data-fav="0">All</div>
-          <div class="tab-pill fav ${STATE.showFavoritesOnly ? 'active' : ''}" data-fav="1">💜 Favorites</div>
+          <div class="tab-pill ${!STATE.showFavoritesOnly && !STATE.showOnDriveOnly ? 'active' : ''}" data-home-filter="all">All</div>
+          <div class="tab-pill fav ${STATE.showFavoritesOnly ? 'active' : ''}" data-home-filter="favorites">💜 Favorites</div>
+          <div class="tab-pill drive ${STATE.showOnDriveOnly ? 'active' : ''}" data-home-filter="onDrive">💾 On Yaoi Drive</div>
         </div>
         <div class="format-row">
           <div class="format-btn ${STATE.format === 'reading' ? 'active' : ''}" data-format="reading">📖 Reading (Manhwa/Manga)</div>
@@ -1153,7 +1166,7 @@ function renderDetail(e) {
           </div>
           <div class="rating-block">
             <div class="label">Overall</div>
-            <div class="rating-icons" data-rating="qualityRating">${renderRatingIcons(e.qualityRating, '💗')}</div>
+            <div class="rating-icons" data-rating="qualityRating">${renderRatingIcons(e.qualityRating, '❤️')}</div>
           </div>
         </div>
       </div>
@@ -1220,17 +1233,8 @@ function renderDetail(e) {
         <div class="panel-title">Screencaps</div>
         <label class="upload-btn">📎 Add photo(s)<input type="file" accept="image/*" multiple id="screencap-input"></label>
         <div class="screencap-grid">
-          ${(e.screencaps || []).map((src, i) => `<div class="screencap-thumb"><img src="${src}"><button class="del" data-del-screencap="${i}">✕</button></div>`).join('')}
+          ${(e.screencaps || []).map((src, i) => `<div class="screencap-thumb"><img src="${src}" data-view-screencap="${i}"><button class="del" data-del-screencap="${i}">✕</button></div>`).join('')}
         </div>
-      </div>
-
-      <!-- PDF / read link -->
-      <div class="panel">
-        <div class="panel-title">Read Link</div>
-        <div class="pdf-row">
-          <input type="text" id="pdf-link" placeholder="https:// or a note like 'Panels > BL folder'" value="${escapeHtml(e.pdfLink)}">
-        </div>
-        ${e.pdfLink && /^https?:\/\//.test(e.pdfLink) ? `<a class="open-link" href="${escapeHtml(e.pdfLink)}" target="_blank" style="display:inline-block;margin-top:8px;">Open</a>` : ''}
       </div>
 
     </div>
@@ -1650,8 +1654,13 @@ function attachRootHandlers() {
     searchInput.focus();
     searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
   }
-  root.querySelectorAll('[data-fav]').forEach((el) => {
-    el.onclick = () => { STATE.showFavoritesOnly = el.getAttribute('data-fav') === '1'; render(); };
+  root.querySelectorAll('[data-home-filter]').forEach((el) => {
+    el.onclick = () => {
+      const which = el.getAttribute('data-home-filter');
+      STATE.showFavoritesOnly = which === 'favorites';
+      STATE.showOnDriveOnly = which === 'onDrive';
+      render();
+    };
   });
   root.querySelectorAll('[data-format]').forEach((el) => {
     el.onclick = () => { STATE.format = el.getAttribute('data-format'); STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.flagFilter = null; render(); };
@@ -1882,10 +1891,6 @@ function attachRootHandlers() {
       const e = getEntry(STATE.entryId); e.notes = notesArea.value; await saveEntry(e);
     };
   }
-  const pdfInput = root.querySelector('#pdf-link');
-  if (pdfInput) pdfInput.onblur = async () => {
-    const e = getEntry(STATE.entryId); e.pdfLink = pdfInput.value.trim(); await saveEntry(e); render();
-  };
   const screencapInput = root.querySelector('#screencap-input');
   if (screencapInput) screencapInput.onchange = async () => {
     const e = getEntry(STATE.entryId);
@@ -1897,11 +1902,21 @@ function attachRootHandlers() {
     await saveEntry(e); render();
   };
   root.querySelectorAll('[data-del-screencap]').forEach((el) => {
-    el.onclick = async () => {
+    el.onclick = async (ev) => {
+      ev.stopPropagation();
       const idx = Number(el.getAttribute('data-del-screencap'));
       const e = getEntry(STATE.entryId);
       e.screencaps.splice(idx, 1);
       await saveEntry(e); render();
+    };
+  });
+  root.querySelectorAll('[data-view-screencap]').forEach((imgEl) => {
+    imgEl.onclick = () => {
+      openModal(`
+        <div class="lightbox-wrap">
+          <img src="${imgEl.getAttribute('src')}" class="lightbox-img" alt="Screencap, tap and hold to save">
+          <button class="lightbox-close" data-close-modal="1">✕ Close</button>
+        </div>`);
     };
   });
   const crossRefBtn = root.querySelector('[data-open-crossref]');
@@ -2108,7 +2123,7 @@ function renderHomeInPlace() {
   const main = root.querySelector('main');
   const entries = filteredEntries();
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
       body += `<div class="section-title">🔎 Suggested Matches <span style="opacity:.6">(${suggestedGroup.length})</span></div>`;
