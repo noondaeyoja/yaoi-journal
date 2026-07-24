@@ -95,8 +95,25 @@ function openDB() {
         _db.createObjectStore(STORE_REACTIONS, { keyPath: 'id' });
       }
     };
-    req.onsuccess = (e) => resolve(e.target.result);
+    // If another tab/window has this same site open on an older version, the
+    // upgrade needed here would otherwise hang forever waiting for that other
+    // connection to close. onversionchange lets THIS connection release
+    // itself the moment a newer version is requested elsewhere (so an old
+    // tab doesn't block a new one), and onblocked surfaces a clear message
+    // instead of silently hanging if some other tab can't close itself.
+    req.onsuccess = (e) => {
+      const _db = e.target.result;
+      _db.onversionchange = () => { _db.close(); };
+      resolve(_db);
+    };
     req.onerror = (e) => reject(e.target.error);
+    req.onblocked = () => {
+      document.getElementById('view-root').innerHTML = `
+        <div style="max-width:480px;margin:80px auto;padding:20px;font-family:-apple-system,sans-serif;color:#f4f2ff;text-align:center;">
+          <h2 style="color:#ff4fc3;">Almost there</h2>
+          <p style="color:#a99fc0;font-size:14px;line-height:1.5;">Yaoi Journal is open in another tab or window somewhere on this device. Close it, then reload this page to finish updating.</p>
+        </div>`;
+    };
   });
 }
 
