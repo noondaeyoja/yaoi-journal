@@ -251,9 +251,13 @@ function pushReactionToFirestore(reaction) {
   const json = JSON.stringify(reaction);
   if (json.length > 900 * 1024) {
     console.error(`Reaction image too large to sync to Firestore (kept locally on this device only).`);
+    showToast(`That reaction image is too big to back up to the cloud — kept on this device only.`);
     return;
   }
-  col.doc(reaction.id).set(reaction).catch((err) => console.error('Reaction sync failed:', err));
+  col.doc(reaction.id).set(reaction).catch((err) => {
+    console.error('Reaction sync failed:', err);
+    showToast(`Couldn't back up that reaction to the cloud — saved locally, will retry later.`);
+  });
 }
 
 function deleteReactionFromFirestore(id) {
@@ -266,7 +270,9 @@ function deleteReactionFromFirestore(id) {
 // much smaller reactions library.
 async function syncReactionsWithFirestore(user) {
   const col = fbStore.collection('users').doc(user.uid).collection('reactions');
-  const snap = await col.get();
+  // See the matching comment in syncWithFirestore — force a real server
+  // read so this boot-time merge never acts on a stale multi-tab cache.
+  const snap = await col.get({ source: 'server' }).catch(() => col.get());
   if (snap.empty) {
     if (ALL_REACTIONS.length) {
       const batch = fbStore.batch();
@@ -281,6 +287,7 @@ async function syncReactionsWithFirestore(user) {
   const localById = new Map(ALL_REACTIONS.map((r) => [r.id, r]));
   const merged = [];
   const toLocal = [];
+  const toRemote = [];
   remote.forEach((rr) => {
     const lr = localById.get(rr.id);
     if (!lr) { merged.push(rr); toLocal.push(rr); }
@@ -289,11 +296,27 @@ async function syncReactionsWithFirestore(user) {
       const lt = new Date(lr.updatedAt || 0).getTime();
       merged.push(rt > lt ? rr : lr);
       if (rt > lt) toLocal.push(rr);
+      else if (lt > rt) toRemote.push(lr);
     }
     localById.delete(rr.id);
   });
-  localById.forEach((lr) => merged.push(lr));
+  // This used to just get added to `merged` and nothing else — a reaction
+  // that only existed locally (e.g. its very first upload never made it up,
+  // whether from being offline, an oversized image, or a dropped request)
+  // stayed local-only forever, because nothing ever retried the push on a
+  // later sync. Now every local-only reaction gets pushed up again here too.
+  localById.forEach((lr) => { merged.push(lr); toRemote.push(lr); });
   if (toLocal.length) await idbBulkPut(STORE_REACTIONS, toLocal);
+  if (toRemote.length) {
+    const batch = fbStore.batch();
+    let anySkipped = false;
+    toRemote.forEach((r) => {
+      if (JSON.stringify(r).length <= 900 * 1024) batch.set(col.doc(r.id), r);
+      else anySkipped = true;
+    });
+    await batch.commit().catch((err) => console.error('Reaction bulk sync failed:', err));
+    if (anySkipped) showToast('Some reaction images are too large to back up to the cloud — kept on this device only.');
+  }
   ALL_REACTIONS = merged;
 }
 
@@ -334,7 +357,7 @@ async function pullMetaState() {
   const ref = metaDocRef();
   if (!ref) return;
   try {
-    const snap = await ref.get();
+    const snap = await ref.get({ source: 'server' }).catch(() => ref.get());
     if (!snap.exists) return;
     const data = snap.data() || {};
     if (Array.isArray(data.deletedTagKeys) && data.deletedTagKeys.length) {
@@ -374,32 +397,93 @@ async function pullMetaState() {
 // the embedded image from the copy that goes to Firestore (it still lives
 // fine in local IndexedDB on this device) and warn once.
 const FIRESTORE_DOC_SAFE_BYTES = 900 * 1024;
+// Strips the heaviest fields one at a time (biggest offender first — usually
+// screencaps, since there can be several) until the doc fits, instead of
+// only ever trimming coverUrl. The old version gave up and returned null —
+// meaning the ENTIRE entry (title, tags, reference link, favorite status,
+// everything) silently never synced at all, not just the image — which is
+// exactly the "manual match doesn't show up, images don't show up" bug.
+// Now only the oversized image fields get dropped from the synced copy;
+// everything else about the entry still makes it to the cloud, and the
+// images stay fully intact in this device's own local IndexedDB.
 function firestoreSafeEntry(entry) {
-  const json = JSON.stringify(entry);
-  if (json.length <= FIRESTORE_DOC_SAFE_BYTES) return entry;
-  if (entry.coverUrl && entry.coverUrl.startsWith('data:')) {
-    const trimmed = { ...entry, coverUrl: null, coverTooLargeForSync: true };
-    if (JSON.stringify(trimmed).length <= FIRESTORE_DOC_SAFE_BYTES) {
-      console.warn(`Entry "${entry.title || entry.id}" cover image too large for Firestore sync — kept locally, not synced.`);
-      return trimmed;
-    }
+  let candidate = entry;
+  const trimmedFields = [];
+  if (JSON.stringify(candidate).length <= FIRESTORE_DOC_SAFE_BYTES) {
+    return { safe: candidate, trimmedFields };
   }
-  console.error(`Entry "${entry.title || entry.id}" is too large to sync to Firestore even after trimming; skipping remote sync for this entry.`);
-  return null;
+  if (candidate.screencaps && candidate.screencaps.length) {
+    candidate = { ...candidate, screencaps: [], screencapsTooLargeForSync: true };
+    trimmedFields.push('screencaps');
+  }
+  if (JSON.stringify(candidate).length > FIRESTORE_DOC_SAFE_BYTES && candidate.uke && candidate.uke.photo) {
+    candidate = { ...candidate, uke: { ...candidate.uke, photo: null }, ukePhotoTooLargeForSync: true };
+    trimmedFields.push('uke photo');
+  }
+  if (JSON.stringify(candidate).length > FIRESTORE_DOC_SAFE_BYTES && candidate.semi && candidate.semi.photo) {
+    candidate = { ...candidate, semi: { ...candidate.semi, photo: null }, semiPhotoTooLargeForSync: true };
+    trimmedFields.push('semi photo');
+  }
+  if (JSON.stringify(candidate).length > FIRESTORE_DOC_SAFE_BYTES && candidate.coverUrl && candidate.coverUrl.startsWith('data:')) {
+    candidate = { ...candidate, coverUrl: null, coverTooLargeForSync: true };
+    trimmedFields.push('cover image');
+  }
+  if (JSON.stringify(candidate).length <= FIRESTORE_DOC_SAFE_BYTES) {
+    console.warn(`Entry "${entry.title || entry.id}" trimmed for Firestore sync (too large otherwise): ${trimmedFields.join(', ')} — kept locally, not synced.`);
+    return { safe: candidate, trimmedFields };
+  }
+  console.error(`Entry "${entry.title || entry.id}" is too large to sync to Firestore even after trimming every image field; skipping remote sync for this entry entirely.`);
+  return { safe: null, trimmedFields };
 }
 
 function pushEntryToFirestore(entry) {
   const col = userEntriesCol();
   if (!col) return;
-  const safe = firestoreSafeEntry(entry);
-  if (!safe) return;
-  col.doc(entry.id).set(safe).catch((err) => console.error('Firestore save failed:', err));
+  const { safe, trimmedFields } = firestoreSafeEntry(entry);
+  if (!safe) {
+    showToast(`"${entry.title || 'This entry'}" is too large to back up to the cloud — it's saved on this device only.`);
+    return;
+  }
+  if (trimmedFields.length) {
+    showToast(`"${entry.title || 'This entry'}": ${trimmedFields.join(', ')} too large to sync — kept on this device only, rest saved to the cloud.`);
+  }
+  col.doc(entry.id).set(safe).catch((err) => {
+    console.error('Firestore save failed:', err);
+    showToast(`Couldn't back up "${entry.title || 'this entry'}" to the cloud — saved locally, will retry later.`);
+  });
 }
 
 function deleteEntryFromFirestore(id) {
   const col = userEntriesCol();
   if (!col) return;
   col.doc(id).delete().catch((err) => console.error('Firestore delete failed:', err));
+}
+
+// When a remote copy of an entry was trimmed by firestoreSafeEntry (marked
+// with the *TooLargeForSync flags), it's missing images this device may
+// already have in full. Without this, accepting that remote copy — which
+// happens constantly, including the live listener echoing back this same
+// device's OWN just-made write — would silently blank out images that were
+// only ever "too big for Firestore," never actually deleted. This was the
+// actual cause of images vanishing moments after upload: the write goes out
+// trimmed, Firestore echoes it straight back, and the echo used to win and
+// overwrite the fuller local copy this very save had just produced.
+function restoreLocallyKeptImages(remote, local) {
+  if (!local) return remote;
+  let patched = remote;
+  if (remote.screencapsTooLargeForSync && local.screencaps && local.screencaps.length) {
+    patched = { ...patched, screencaps: local.screencaps };
+  }
+  if (remote.ukePhotoTooLargeForSync && local.uke && local.uke.photo) {
+    patched = { ...patched, uke: { ...patched.uke, photo: local.uke.photo } };
+  }
+  if (remote.semiPhotoTooLargeForSync && local.semi && local.semi.photo) {
+    patched = { ...patched, semi: { ...patched.semi, photo: local.semi.photo } };
+  }
+  if (remote.coverTooLargeForSync && local.coverUrl && local.coverUrl.startsWith('data:')) {
+    patched = { ...patched, coverUrl: local.coverUrl };
+  }
+  return patched;
 }
 
 // Runs once right after sign-in. If this account has never synced before
@@ -409,7 +493,15 @@ function deleteEntryFromFirestore(id) {
 // over so nothing is ever silently dropped.
 async function syncWithFirestore(user) {
   const col = fbStore.collection('users').doc(user.uid).collection('entries');
-  const snap = await col.get();
+  // Force a real server read here, not Firestore's own (multi-tab) local
+  // cache. This runs once at boot and its result decides which side "wins"
+  // per entry — if it silently served a stale cached snapshot instead of
+  // what the server actually has, a genuinely newer edit from another
+  // device/tab could look older than it is and get skipped, which is
+  // exactly the kind of "sometimes it remembers, sometimes it doesn't"
+  // behavior that's been reported. Falls back to the default (cache-or-
+  // server) read if the device is genuinely offline.
+  const snap = await col.get({ source: 'server' }).catch(() => col.get());
 
   if (snap.empty) {
     if (ALL_ENTRIES.length) await firestoreBulkWrite(col, ALL_ENTRIES);
@@ -430,7 +522,10 @@ async function syncWithFirestore(user) {
     } else {
       const rt = new Date(re.updatedAt || 0).getTime();
       const lt = new Date(le.updatedAt || 0).getTime();
-      if (rt > lt) { merged.push(re); toLocal.push(re); }
+      if (rt > lt) {
+        const patched = restoreLocallyKeptImages(re, le);
+        merged.push(patched); toLocal.push(patched);
+      }
       else { merged.push(le); if (lt > rt) toRemote.push(le); }
     }
     localById.delete(re.id);
@@ -448,7 +543,7 @@ async function firestoreBulkWrite(col, entries) {
   for (let i = 0; i < entries.length; i += CHUNK) {
     const batch = fbStore.batch();
     entries.slice(i, i + CHUNK).forEach((e) => {
-      const safe = firestoreSafeEntry(e);
+      const { safe } = firestoreSafeEntry(e);
       if (safe) batch.set(col.doc(e.id), safe);
     });
     await batch.commit();
@@ -482,8 +577,14 @@ function startFirestoreListener(user) {
       const rt = new Date(data.updatedAt || 0).getTime();
       const lt = local ? new Date(local.updatedAt || 0).getTime() : -1;
       if (rt >= lt) {
-        if (idx > -1) ALL_ENTRIES[idx] = data; else ALL_ENTRIES.push(data);
-        idbPut(STORE_ENTRIES, data).catch(() => {});
+        // Patch back in any images this device already has that the
+        // incoming doc is only missing because it got trimmed for size —
+        // otherwise this listener firing on the echo of this device's OWN
+        // upload (rt === lt, since it's the same save) would immediately
+        // blank the image right back out of local storage.
+        const patched = restoreLocallyKeptImages(data, local);
+        if (idx > -1) ALL_ENTRIES[idx] = patched; else ALL_ENTRIES.push(patched);
+        idbPut(STORE_ENTRIES, patched).catch(() => {});
         changed = true;
       }
     });
