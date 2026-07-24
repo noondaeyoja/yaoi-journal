@@ -357,6 +357,12 @@ async function pullMetaState() {
       IGNORED_TAG_SUGGESTIONS = new Set([...IGNORED_TAG_SUGGESTIONS, ...data.ignoredTagSuggestions]);
       await idbPut(STORE_META, { key: 'ignoredTagSuggestions', value: Array.from(IGNORED_TAG_SUGGESTIONS) });
     }
+    // Only fill in the proxy URL from the cloud if this device doesn't
+    // already have one set locally — never overwrite a value someone just
+    // typed in on this device with an older/blank remote one.
+    if (typeof data.proxyUrl === 'string' && data.proxyUrl && !localStorage.getItem('yj_proxy_url')) {
+      localStorage.setItem('yj_proxy_url', data.proxyUrl);
+    }
   } catch (err) {
     console.error('Meta pull failed:', err);
   }
@@ -581,8 +587,13 @@ function fileToCompressedDataUrl(file, maxDim = 900, quality = 0.82) {
 function getProxyUrl() {
   return localStorage.getItem('yj_proxy_url') || '';
 }
+// Also mirrors to the Firestore meta doc so setting this once on desktop
+// means mobile has it too, instead of asking for the same Apps Script URL
+// on every device separately.
 function setProxyUrl(url) {
-  localStorage.setItem('yj_proxy_url', url.trim());
+  const trimmed = url.trim();
+  localStorage.setItem('yj_proxy_url', trimmed);
+  pushMetaField('proxyUrl', trimmed);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -892,13 +903,17 @@ function renderCoverCard(e, reviewMode) {
   const flagColor = e.semi && e.semi.flag ? FLAG_HEX[e.semi.flag] : (e.uke && e.uke.flag ? FLAG_HEX[e.uke.flag] : null);
   // Cards in the Suggested Matches row open the quick-review carousel modal
   // instead of the full detail page — that's the whole point of the row.
+  // Top-right badge stacks favorite + hentai together (instead of the old
+  // reading/watching format icon, which wasn't very useful at a glance);
+  // bottom-right now shows on-HD status instead.
+  const topBadges = `${e.favorite ? '💜' : ''}${isHentai(e) ? '💦' : ''}`;
   return `
     <div class="cover-card" ${reviewMode ? `data-review-match="${e.id}"` : `data-open-entry="${e.id}"`}>
       <div class="cover-thumb">
         ${cover}
-        ${e.favorite ? '<div class="cover-fav-badge">💜</div>' : ''}
+        ${topBadges ? `<div class="cover-fav-badge">${topBadges}</div>` : ''}
         ${isSuggested ? '<div class="cover-fav-badge" style="right:auto;left:5px;" title="Suggested match, unconfirmed">🔎</div>' : ''}
-        ${(STATE.showFavoritesOnly || STATE.showOnDriveOnly || STATE.showHentaiOnly) ? `<div class="cover-format-badge">${e.format === 'reading' ? '📖' : '📺'}</div>` : ''}
+        ${isOnDrive(e) ? '<div class="cover-format-badge" title="On HD">💾</div>' : ''}
         ${flagColor ? `<div class="cover-flag-dot"><span style="color:${flagColor}">&#9873;</span></div>` : ''}
       </div>
       <div class="cover-title">${escapeHtml(e.title)}</div>
@@ -971,7 +986,12 @@ function renderHome() {
   const smutChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.smutFilter && n <= STATE.smutFilter ? 'active' : ''}" data-smut-filter="${n}" title="${n}+ eggplants">🍆</span>`).join('');
   const qualityChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.qualityFilter && n <= STATE.qualityFilter ? 'active' : ''}" data-quality-filter="${n}" title="${n}+ hearts">❤️</span>`).join('');
   const flagChips = FLAG_COLORS.map((c) => `<span class="rating-pick-icon flag-filter-icon ${STATE.flagFilter === c ? 'active' : ''}" data-flag-filter="${c}" style="color:${FLAG_HEX[c]}" title="${c} flag">&#9873;</span>`).join('');
+  // Favorites/On HD used to be separate bottom-nav destinations; they're now
+  // toggle chips here instead (same nav-filter mechanism the hentai chip
+  // already used), so removing them from the bottom nav doesn't lose access.
   const hentaiChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showHentaiOnly ? 'active' : ''}" data-nav-filter="${STATE.showHentaiOnly ? 'home' : 'hentai'}" title="Hentai only">💦</span>`;
+  const favoritesChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showFavoritesOnly ? 'active' : ''}" data-nav-filter="${STATE.showFavoritesOnly ? 'home' : 'favorites'}" title="Favorites only">💜</span>`;
+  const onDriveChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showOnDriveOnly ? 'active' : ''}" data-nav-filter="${STATE.showOnDriveOnly ? 'home' : 'onDrive'}" title="On HD only">💾</span>`;
 
   return `
     <div class="app-header">
@@ -982,12 +1002,12 @@ function renderHome() {
         <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
         <div class="filter-section-label">Ratings &amp; Flags</div>
-        <div class="rating-pick-row">${formatIcons}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${flagChips}<span class="rating-pick-divider"></span>${hentaiChip}</div>
+        <div class="rating-pick-row">${formatIcons}${hentaiChip}${favoritesChip}${onDriveChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${flagChips}</div>
       </div>
     </div>
     <main>${body}</main>
     <button class="fab" data-add-entry="1">+</button>
-    ${renderBottomNav(STATE.showFavoritesOnly ? 'favorites' : (STATE.showOnDriveOnly ? 'onDrive' : 'home'))}
+    ${renderBottomNav('home')}
   `;
 }
 
@@ -995,8 +1015,6 @@ function renderBottomNav(active) {
   return `
     <div class="bottom-nav">
       <button data-nav="home" class="${active === 'home' ? 'active' : ''}"><span class="icon">🏠</span>Journal</button>
-      <button data-nav-filter="favorites" class="${active === 'favorites' ? 'active' : ''}"><span class="icon">💜</span>Favorites</button>
-      <button data-nav-filter="onDrive" class="${active === 'onDrive' ? 'active' : ''}"><span class="icon">💾</span>On HD</button>
       <button data-nav="tags" class="${active === 'tags' ? 'active' : ''}"><span class="icon">🏷️</span>Tags</button>
       <button data-nav="reactions" class="${active === 'reactions' ? 'active' : ''}"><span class="icon">🖼️</span>Images</button>
       <button data-nav="meme" class="${active === 'meme' ? 'active' : ''}"><span class="icon">🎭</span>Reactions</button>
@@ -1758,13 +1776,20 @@ async function applySuggestedMatch(entryId) {
   if (!e.author && sm.author) e.author = sm.author;
   applyTitleSwap(e, sm);
   e.suggestedMatch = null;
+  e.suggestedMatchDismissed = false;
   await saveEntry(e);
   return true;
 }
+// Marks the entry so the nightly/manual auto-match sweep won't just turn
+// around and re-suggest the exact same match again (this used to be the
+// cause of "why do I keep seeing the same suggested match" on other
+// devices — the sweep only checked `!e.suggestedMatch`, which a dismissal
+// satisfies, so it re-searched and found the same result next time it ran).
 async function dismissSuggestedMatch(entryId) {
   const e = getEntry(entryId);
   if (!e) return;
   e.suggestedMatch = null;
+  e.suggestedMatchDismissed = true;
   await saveEntry(e);
 }
 
@@ -2120,6 +2145,17 @@ function renderDatabase() {
           <button class="ref-btn" data-nav="review">🔎 Review missing cover/reference (${reviewCount})</button>
           <button class="ref-btn" data-nav="duplicates">🧬 Review duplicates (${dupCount})</button>
         </div>
+        ${BULK_SWEEP.running ? `
+          <div class="export-row" style="margin-top:8px;">
+            <div style="flex:1;font-size:12.5px;color:var(--text-dim);">🔄 Checking ${BULK_SWEEP.checked}/${BULK_SWEEP.total} against Anime-Planet/MangaGo — ${BULK_SWEEP.found} found so far</div>
+            <button class="ref-btn" data-stop-bulk-sweep="1">Stop</button>
+          </div>
+        ` : `
+          <div class="export-row" style="margin-top:8px;">
+            <button class="ref-btn" data-run-bulk-sweep="1">🚀 Run match sweep now (${bulkSweepCandidates().length} unmatched)</button>
+          </div>
+          <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">Searches Anime-Planet/MangaGo for every unmatched entry in one pass instead of the usual 20-a-day auto-sweep — paced to be gentle on the proxy, so it can take a while for a big backlog. Requires a proxy URL in Settings.</p>
+        `}
       </div>
       <div class="export-row">
         <button class="ref-btn" data-export-csv="1">⬇ Export CSV</button>
@@ -2626,6 +2662,7 @@ async function generateSuggestedMatch(entryId) {
   const data = await findSuggestedMatchData(proxy, e);
   if (!data) { showToast('No match found'); return; }
   e.suggestedMatch = dataToSuggestedMatch(data);
+  e.suggestedMatchDismissed = false;
   await saveEntry(e);
   showToast('Suggested match found!');
   render();
@@ -3349,6 +3386,10 @@ function attachRootHandlers() {
   // Database view
   const exportBtn = root.querySelector('[data-export-csv]');
   if (exportBtn) exportBtn.onclick = exportCsv;
+  const bulkSweepBtn = root.querySelector('[data-run-bulk-sweep]');
+  if (bulkSweepBtn) bulkSweepBtn.onclick = runBulkMatchSweep;
+  const stopSweepBtn = root.querySelector('[data-stop-bulk-sweep]');
+  if (stopSweepBtn) stopSweepBtn.onclick = cancelBulkMatchSweep;
   const dbSearch = root.querySelector('#db-search');
   if (dbSearch) dbSearch.oninput = () => {
     const q = dbSearch.value.toLowerCase();
@@ -3374,6 +3415,7 @@ function attachRootHandlers() {
       if (!e.author && sm.author) e.author = sm.author;
       applyTitleSwap(e, sm);
       e.suggestedMatch = null;
+      e.suggestedMatchDismissed = false;
       await saveEntry(e);
       showToast('Applied!');
       render();
@@ -3385,6 +3427,7 @@ function attachRootHandlers() {
       const e = getEntry(id);
       if (!e) return;
       e.suggestedMatch = null;
+      e.suggestedMatchDismissed = true;
       await saveEntry(e);
       showToast('Dismissed');
       render();
@@ -3598,7 +3641,7 @@ async function autoMatchSweepIfDue() {
     await idbPut(STORE_META, { key: 'lastAutoMatchRun', value: new Date().toISOString() });
 
     const candidates = ALL_ENTRIES
-      .filter((e) => !e.suggestedMatch && e.referenceStatus !== 'confirmed')
+      .filter((e) => !e.suggestedMatch && !e.suggestedMatchDismissed && e.referenceStatus !== 'confirmed')
       .slice(0, AUTO_MATCH_BATCH_SIZE);
     if (!candidates.length) return;
 
@@ -3620,6 +3663,55 @@ async function autoMatchSweepIfDue() {
     // Best-effort background task — a failure here shouldn't disrupt the user.
     console.error('Auto-match sweep failed:', err);
   }
+}
+
+// Manual, on-demand version of the sweep above — for pushing through a big
+// backlog (500+ unmatched entries) in one sitting instead of waiting for the
+// once-a-day/20-at-a-time automatic version. Runs every remaining candidate,
+// paced the same 1.2s apart so it doesn't hammer the proxy, and can be
+// stopped mid-run since a full pass can take several minutes.
+const BULK_SWEEP = { running: false, checked: 0, total: 0, found: 0, cancel: false };
+function bulkSweepCandidates() {
+  return ALL_ENTRIES.filter((e) => !e.suggestedMatch && !e.suggestedMatchDismissed && e.referenceStatus !== 'confirmed');
+}
+async function runBulkMatchSweep() {
+  if (BULK_SWEEP.running) return;
+  const proxy = getProxyUrl();
+  if (!proxy) { showToast('Set a proxy URL in Settings first'); return; }
+  const candidates = bulkSweepCandidates();
+  if (!candidates.length) { showToast('Nothing left to check — everything unmatched has already been searched.'); return; }
+  BULK_SWEEP.running = true;
+  BULK_SWEEP.checked = 0;
+  BULK_SWEEP.total = candidates.length;
+  BULK_SWEEP.found = 0;
+  BULK_SWEEP.cancel = false;
+  if (STATE.view === 'database') render();
+  for (const e of candidates) {
+    if (BULK_SWEEP.cancel) break;
+    try {
+      const data = await findSuggestedMatchData(proxy, e);
+      if (data) {
+        e.suggestedMatch = dataToSuggestedMatch(data);
+        e.suggestedMatchDismissed = false;
+        await saveEntry(e);
+        BULK_SWEEP.found++;
+      }
+    } catch (err) {
+      console.error('Bulk match sweep item failed:', err);
+    }
+    BULK_SWEEP.checked++;
+    if (STATE.view === 'database' && BULK_SWEEP.checked % 3 === 0) render();
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+  }
+  const wasCancelled = BULK_SWEEP.cancel;
+  BULK_SWEEP.running = false;
+  if (STATE.view === 'database') render();
+  showToast(wasCancelled
+    ? `Stopped — found ${BULK_SWEEP.found} of ${BULK_SWEEP.checked} checked`
+    : `Done — found ${BULK_SWEEP.found} new suggested match${BULK_SWEEP.found === 1 ? '' : 'es'} out of ${BULK_SWEEP.checked} checked`);
+}
+function cancelBulkMatchSweep() {
+  BULK_SWEEP.cancel = true;
 }
 
 // A stale service worker used to be able to get permanently stuck in the

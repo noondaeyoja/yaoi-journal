@@ -17,6 +17,10 @@
   --black-flag: #6b6b7a;
   --radius: 16px;
   --radius-sm: 10px;
+  /* Extra room at the very top on phones with a notch/status bar, so the
+     header doesn't sit flush against the physical edge of the screen. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --global-header-h: calc(58px + var(--safe-top));
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -48,8 +52,8 @@ a { color: var(--pink); }
    so it's reachable from any screen, not just the homepage. GLOBAL_HEADER_H
    below in JS-land (app-header/detail-header top offsets) must match this. */
 .global-header {
-  position: sticky; top: 0; z-index: 40; height: 58px; box-sizing: border-box;
-  display: flex; align-items: center; gap: 10px; padding: 0 14px;
+  position: sticky; top: 0; z-index: 40; height: var(--global-header-h); box-sizing: border-box;
+  display: flex; align-items: center; gap: 10px; padding: var(--safe-top) 14px 0;
   background: rgba(18,22,46,0.97); backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
 }
@@ -67,7 +71,7 @@ a { color: var(--pink); }
 
 /* ---------- Sticky header (per-screen, sits just below the global one) ---------- */
 .app-header {
-  position: sticky; top: 58px; z-index: 30;
+  position: sticky; top: var(--global-header-h); z-index: 30;
   background: rgba(18,22,46,0.92);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
@@ -292,7 +296,7 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 
 /* ---------- Detail / Journal screen ---------- */
 .detail-header {
-  display: flex; align-items: center; gap: 6px; padding: 10px 12px; position: sticky; top: 58px; z-index: 30;
+  display: flex; align-items: center; gap: 6px; padding: 10px 12px; position: sticky; top: var(--global-header-h); z-index: 30;
   background: rgba(18,22,46,0.92); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border);
 }
 .back-btn { background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 999px; padding: 7px 12px; font-size: 14px; flex-shrink: 0; }
@@ -551,4 +555,17 @@ table.db-table tr:hover td { background: rgba(255,255,255,.02); }
 .account-panel [data-sign-out] {
   flex-shrink: 0; font-size: 12px; color: var(--text-dim); border: 1px solid var(--border);
   border-radius: 999px; padding: 6px 12px;
+}
+
+/* ---------- Mobile: prevent iOS Safari's auto-zoom-on-focus ----------
+   Several inputs/textareas were sized under 16px for a tighter desktop
+   look, but iOS Safari zooms the whole page in the moment any of them get
+   focus if their computed font-size is below 16px — and on a standalone
+   PWA that zoom can stick around instead of resetting on blur, which is
+   what "the journal is always zoomed in on my phone" was actually caused
+   by. Bumping just the small ones to 16px on narrow viewports fixes it
+   without changing the compact desktop sizing. (The viewport meta tag
+   also now locks the scale as a second layer of defense.) */
+@media (max-width: 700px) {
+  input, textarea, select { font-size: 16px !important; }
 }
