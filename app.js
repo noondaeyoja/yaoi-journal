@@ -20,6 +20,7 @@ let db = null;
 let ALL_ENTRIES = [];              // in-memory cache, synced with IndexedDB
 let DETAIL_EDIT_MODE = false;      // whether the detail page's top fields are in edit mode
 let TAG_EDIT_MODE = false;         // whether the Tags panel is showing its editable (toggle/add/save) UI
+let TAG_ENTRIES_FILTER = null;     // which tag name the "view entries with this tag" screen is showing
 let TAG_FILTER_OPEN = false;       // whether the homepage tag multi-select dropdown panel is open
 let FILTERS_COLLAPSED = false;     // whether the homepage Status/Tags/Ratings&Flags block is tucked away
 let STATE = {
@@ -233,6 +234,8 @@ function render() {
   if (STATE.view === 'home') root.innerHTML = renderHome();
   else if (STATE.view === 'detail') root.innerHTML = renderDetail(getEntry(STATE.entryId));
   else if (STATE.view === 'tags') root.innerHTML = renderTagManager();
+  else if (STATE.view === 'tagEntries') root.innerHTML = renderTagEntries();
+  else if (STATE.view === 'hdMatch') root.innerHTML = renderHdMatch();
   else if (STATE.view === 'database') root.innerHTML = renderDatabase();
   else if (STATE.view === 'review') root.innerHTML = renderReviewQueue();
   else if (STATE.view === 'duplicates') root.innerHTML = renderDuplicates();
@@ -430,13 +433,59 @@ function allTagCounts() {
   return counts;
 }
 
+// Collapse a tag name down to just its letters/digits so "Crazy Bottom",
+// "crazy-bottom" and "CrazyBottom" all compare equal — used to catch subtle
+// near-duplicate tags as the user types a new one.
+function normalizeTagKey(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function levenshteinDistance(a, b) {
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+// Finds existing tags that look like they might be the same concept as
+// `query` — substring matches (either direction) plus a small edit-distance
+// tolerance for typos/spacing/casing differences. Exact matches (already
+// caught by the "already exists" check in the Add handler) are excluded.
+function findSimilarTags(query) {
+  const q = normalizeTagKey(query);
+  if (!q || q.length < 2) return [];
+  const names = Object.keys(allTagCounts());
+  const results = [];
+  for (const name of names) {
+    const norm = normalizeTagKey(name);
+    if (!norm || norm === q) continue;
+    let match = norm.includes(q) || q.includes(norm);
+    if (!match) {
+      const dist = levenshteinDistance(norm, q);
+      if (dist <= 2 && Math.max(norm.length, q.length) >= 4) match = true;
+    }
+    if (match) results.push(name);
+  }
+  return results.slice(0, 6);
+}
+
 function renderTagManager() {
   const counts = allTagCounts();
   const names = Object.keys(counts).sort((a, b) => a.localeCompare(b));
   const rows = names.map((t) => `
     <div class="tagmgr-row" data-tag-name="${escapeHtml(t)}">
-      <div class="tagmgr-name">${escapeHtml(t)}${isHiddenTag(t) ? ' <span style="color:var(--text-dim);font-size:10.5px;">(hidden from filters)</span>' : ''}</div>
-      <div class="tagmgr-count">${counts[t]} entr${counts[t] === 1 ? 'y' : 'ies'}</div>
+      <div class="tagmgr-click-area" data-tagmgr-view="${escapeHtml(t)}" title="View entries tagged &quot;${escapeHtml(t)}&quot;">
+        <div class="tagmgr-name">${escapeHtml(t)}${isHiddenTag(t) ? ' <span style="color:var(--text-dim);font-size:10.5px;">(hidden from filters)</span>' : ''}</div>
+        <div class="tagmgr-count">${counts[t]} entr${counts[t] === 1 ? 'y' : 'ies'}</div>
+      </div>
       <div class="tagmgr-actions">
         <button class="icon-btn-inline" data-tagmgr-rename="${escapeHtml(t)}" title="Rename this tag everywhere">✏️</button>
         <button class="icon-btn-inline" data-tagmgr-delete="${escapeHtml(t)}" title="Delete this tag everywhere">🗑️</button>
@@ -449,10 +498,182 @@ function renderTagManager() {
       <div class="search-bar"><span>🔍</span><input type="search" id="tagmgr-search" placeholder="Filter tags..."></div>
     </div>
     <main>
+      <button class="ref-btn" style="width:100%;margin-bottom:12px;" data-nav="hdMatch">💾 Match Owned Titles from a List</button>
       <div style="color:var(--text-dim);font-size:12px;margin-bottom:10px;">
-        ${names.length} unique tag${names.length === 1 ? '' : 's'} across ${ALL_ENTRIES.length} entries. Renaming applies everywhere the tag is used — rename to an existing tag name to merge two tags together. Deleting removes it from every entry (can't be undone).
+        ${names.length} unique tag${names.length === 1 ? '' : 's'} across ${ALL_ENTRIES.length} entries. Tap a tag to see its entries. Renaming applies everywhere the tag is used — rename to an existing tag name to merge two tags together. Deleting removes it from every entry (can't be undone).
       </div>
       <div id="tagmgr-list">${rows || '<div class="empty-state">No tags yet.</div>'}</div>
+    </main>
+    ${renderBottomNav('tags')}
+  `;
+}
+
+function renderTagEntries() {
+  const t = TAG_ENTRIES_FILTER;
+  const entries = t ? ALL_ENTRIES.filter((e) => (e.tags || []).concat(e.customTags || []).includes(t)) : [];
+  const body = entries.length
+    ? `<div class="cover-grid">${entries.map(renderCoverCard).join('')}</div>`
+    : `<div class="empty-state">No entries have this tag.</div>`;
+  return `
+    <div class="app-header">
+      <div class="brand-row">
+        <button class="back-btn" data-nav="tags">← Back</button>
+        <h1>🏷️ ${escapeHtml(t || '')}</h1>
+      </div>
+      <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} tagged "${escapeHtml(t || '')}"</div>
+    </div>
+    <main>${body}</main>
+    ${renderBottomNav('tags')}
+  `;
+}
+
+/* ---------------------------------------------------------------------- */
+/* MATCH OWNED TITLES FROM A LIST (e.g. folder/file names off a hard      */
+/* drive) — paste raw names, get them fuzzy-matched to journal entries,   */
+/* and confidently-matched ones auto-tagged. Reusable any time the drive  */
+/* gets new downloads.                                                    */
+/* ---------------------------------------------------------------------- */
+
+let HD_MATCH_STATE = { raw: '', tagName: 'On HD', results: null };
+
+// Strips the noise that owned-file/folder names tend to carry (uploader
+// credits, WIP/status flags, chapter/volume numbers, parentheticals) down
+// to (hopefully) just the title, so it can be compared against a journal
+// entry's title/alt title.
+function cleanCandidateTitle(raw) {
+  let s = String(raw || '');
+  s = s.replace(/\.(pdf|zip|cbz|cbr|epub|jpg|png)$/i, '');
+  s = s.replace(/\([^)]*\)/g, ' ');
+  s = s.replace(/\s+by\s+.+$/i, '');
+  const noiseRe = /\s*[-–—:]?\s*(w\.?i\.?p\.?|uncensored|complete(d)?|incomplete|discontinued|ongoing|not in eng|idk|ch\.?\s*\d+(\.\d+)?|chapter\s*\d+(\.\d+)?|vol\.?\s*\d+|s\d+|season\s*\d+|dj|\d{4})\s*$/i;
+  let prev;
+  do { prev = s; s = s.replace(noiseRe, ''); } while (s !== prev && s.trim());
+  s = s.replace(/^[\s\-–—:.,]+|[\s\-–—:.,]+$/g, '');
+  return s.trim();
+}
+
+// Some names bundle several alt names together ("Title A : Title B : 제목").
+// Try each chunk as its own candidate.
+function splitAltSegments(s) {
+  return String(s || '').split(/\s*[:|/]\s*/).map((x) => x.trim()).filter(Boolean);
+}
+
+function candidateKeysForRaw(raw) {
+  const cleaned = cleanCandidateTitle(raw);
+  const segs = splitAltSegments(cleaned);
+  const all = [cleaned, ...segs].filter(Boolean);
+  return Array.from(new Set(all.map((s) => normalizeTagKey(s)).filter((k) => k.length >= 3)));
+}
+
+function entryTitleKeys(e) {
+  const names = [e.title, ...String(e.altTitle || '').split(/\s*\/\s*/)].filter(Boolean);
+  const expanded = [];
+  names.forEach((n) => { expanded.push(n); splitAltSegments(n).forEach((x) => expanded.push(x)); });
+  return Array.from(new Set(expanded.map((s) => normalizeTagKey(s)).filter((k) => k.length >= 3)));
+}
+
+// Runs every pasted line against every journal entry's title/alt-title keys.
+// Exact (post-cleanup, post-normalization) matches are "confident" — safe to
+// auto-tag. Everything else that at least shares a meaningful substring is
+// "uncertain" and left for a manual tap-to-confirm; anything with no overlap
+// at all is "unmatched".
+function findHdMatches(rawText) {
+  const lines = String(rawText || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const entryKeyMap = new Map();
+  ALL_ENTRIES.forEach((e) => {
+    entryTitleKeys(e).forEach((k) => {
+      if (!entryKeyMap.has(k)) entryKeyMap.set(k, []);
+      if (!entryKeyMap.get(k).some((x) => x.id === e.id)) entryKeyMap.get(k).push(e);
+    });
+  });
+
+  const confidentMap = new Map();
+  const uncertain = [];
+  const unmatched = [];
+
+  lines.forEach((raw) => {
+    const keys = candidateKeysForRaw(raw);
+    if (!keys.length) { unmatched.push(raw); return; }
+    let exactEntries = [];
+    keys.forEach((k) => { if (entryKeyMap.has(k)) exactEntries.push(...entryKeyMap.get(k)); });
+    exactEntries = Array.from(new Set(exactEntries));
+    if (exactEntries.length) {
+      exactEntries.forEach((e) => {
+        if (!confidentMap.has(e.id)) confidentMap.set(e.id, { entry: e, matchedRaw: [] });
+        confidentMap.get(e.id).matchedRaw.push(raw);
+      });
+      return;
+    }
+    let possible = [];
+    for (const [k, entries] of entryKeyMap) {
+      for (const primaryKey of keys) {
+        if (primaryKey.length >= 5 && k.length >= 5 && (k.includes(primaryKey) || primaryKey.includes(k))) {
+          possible.push(...entries);
+          break;
+        }
+      }
+    }
+    possible = Array.from(new Set(possible)).slice(0, 3);
+    if (possible.length) uncertain.push({ raw, candidates: possible, confirmed: false });
+    else unmatched.push(raw);
+  });
+
+  return { confident: Array.from(confidentMap.values()), uncertain, unmatched };
+}
+
+function renderHdMatch() {
+  const r = HD_MATCH_STATE.results;
+  let resultsHtml = '';
+  if (r) {
+    resultsHtml = `
+      <div class="panel">
+        <div class="panel-title">✅ Will tag ${r.confident.length} entr${r.confident.length === 1 ? 'y' : 'ies'}</div>
+        ${r.confident.length ? `
+          <div style="max-height:220px;overflow-y:auto;font-size:12.5px;color:var(--text-dim);margin-bottom:8px;">
+            ${r.confident.map((c) => `<div>${escapeHtml(c.entry.title)}</div>`).join('')}
+          </div>
+          <button class="btn-primary" data-hdmatch-apply="1">Apply "${escapeHtml(HD_MATCH_STATE.tagName)}" tag to these</button>
+        ` : `<div style="color:var(--text-dim);font-size:12px;">No exact matches found.</div>`}
+      </div>
+      <div class="panel">
+        <div class="panel-title">🤔 Possible matches (${r.uncertain.length}) — tap to confirm</div>
+        ${r.uncertain.length ? r.uncertain.map((u, i) => `
+          <div class="tagmgr-row" style="flex-direction:column;align-items:stretch;gap:6px;">
+            <div style="font-size:12.5px;color:var(--text);">"${escapeHtml(u.raw)}"</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;">
+              ${u.confirmed
+                ? `<span style="font-size:11.5px;color:var(--yellow);">✓ Tagged as ${escapeHtml(u.confirmed)}</span>`
+                : u.candidates.map((c) => `<button class="ref-btn" data-hdmatch-confirm="${i}:${c.id}">${escapeHtml(c.title)}</button>`).join('')}
+            </div>
+          </div>
+        `).join('') : `<div style="color:var(--text-dim);font-size:12px;">Nothing in between — every line was either an exact match or no match.</div>`}
+      </div>
+      <div class="panel">
+        <div class="panel-title">❓ No match found (${r.unmatched.length})</div>
+        <div style="color:var(--text-dim);font-size:11.5px;margin-bottom:6px;">Not in your journal yet, or too different to recognize automatically.</div>
+        <div style="max-height:180px;overflow-y:auto;font-size:12px;color:var(--text-dim);">
+          ${r.unmatched.map((u) => `<div>${escapeHtml(u)}</div>`).join('') || '<div>—</div>'}
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <div class="app-header">
+      <div class="brand-row">
+        <button class="back-btn" data-nav="tags">← Back</button>
+        <h1>💾 Match Owned Titles</h1>
+      </div>
+    </div>
+    <main>
+      <div class="panel">
+        <div style="color:var(--text-dim);font-size:12px;margin-bottom:8px;">
+          Paste folder or file names from your hard drive below (one per line). Exact matches get auto-tagged; anything fuzzy gets a tap-to-confirm option instead.
+        </div>
+        <div class="field-row"><label>Tag to apply</label><input type="text" id="hdmatch-tagname" value="${escapeHtml(HD_MATCH_STATE.tagName)}"></div>
+        <div class="field-row"><label>Names (one per line)</label><textarea id="hdmatch-raw" rows="8" placeholder="Paste folder/file names here...">${escapeHtml(HD_MATCH_STATE.raw)}</textarea></div>
+        <button class="btn-primary" data-hdmatch-find="1">Find Matches</button>
+      </div>
+      ${resultsHtml}
     </main>
     ${renderBottomNav('tags')}
   `;
@@ -701,9 +922,10 @@ function renderDetail(e) {
           <div style="color:var(--text-dim);font-size:11px;margin-bottom:6px;">Tap a tag to mark it for removal, add new ones below, then Save.</div>
           <div class="tag-cloud">${renderTagCloud(e)}</div>
           <div class="add-tag-row">
-            <input type="text" id="new-tag-input" placeholder="Add your own tag...">
+            <input type="text" id="new-tag-input" placeholder="Add your own tag..." autocomplete="off">
             <button data-add-tag="1">Add</button>
           </div>
+          <div id="tag-similar-box"></div>
           <div class="modal-actions" style="margin-top:10px;">
             <button class="btn-ghost" data-cancel-tag-edit="1">Cancel</button>
             <button class="btn-primary" data-save-tags="1">Save Tags</button>
@@ -1313,8 +1535,37 @@ function attachRootHandlers() {
     const already = [...(e.tags || []), ...(e.customTags || []), ...ts.added].some((t) => t.toLowerCase() === val.toLowerCase());
     if (!already) ts.added.push(val);
     input.value = '';
+    const box = document.getElementById('tag-similar-box');
+    if (box) box.innerHTML = '';
     render();
   };
+  const newTagInput = root.querySelector('#new-tag-input');
+  const similarBox = root.querySelector('#tag-similar-box');
+  if (newTagInput && similarBox) {
+    newTagInput.oninput = () => {
+      const val = newTagInput.value.trim();
+      if (!val) { similarBox.innerHTML = ''; return; }
+      const similar = findSimilarTags(val);
+      if (!similar.length) { similarBox.innerHTML = ''; return; }
+      similarBox.innerHTML = `
+        <div class="tag-similar-box">
+          <div class="label">Similar tag${similar.length === 1 ? '' : 's'} already exist — tap to reuse instead of creating a near-duplicate</div>
+          ${similar.map((t) => `<span class="tag-similar-chip" data-use-similar-tag="${escapeHtml(t)}">${escapeHtml(t)}</span>`).join('')}
+        </div>`;
+    };
+    similarBox.onclick = (ev) => {
+      const chip = ev.target.closest('[data-use-similar-tag]');
+      if (!chip) return;
+      const name = chip.getAttribute('data-use-similar-tag');
+      const ts = getTagEditState(STATE.entryId);
+      const e = getEntry(STATE.entryId);
+      const already = [...(e.tags || []), ...(e.customTags || []), ...ts.added].some((t) => t.toLowerCase() === name.toLowerCase());
+      if (!already) ts.added.push(name);
+      newTagInput.value = '';
+      similarBox.innerHTML = '';
+      render();
+    };
+  }
   root.querySelectorAll('[data-toggle-tag]').forEach((el) => {
     el.onclick = () => {
       const t = el.getAttribute('data-toggle-tag');
@@ -1420,6 +1671,12 @@ function attachRootHandlers() {
       row.style.display = row.getAttribute('data-tag-name').toLowerCase().includes(q) ? '' : 'none';
     });
   };
+  root.querySelectorAll('[data-tagmgr-view]').forEach((el) => {
+    el.onclick = () => {
+      TAG_ENTRIES_FILTER = el.getAttribute('data-tagmgr-view');
+      navigate('tagEntries');
+    };
+  });
   root.querySelectorAll('[data-tagmgr-rename]').forEach((el) => {
     el.onclick = async () => {
       const oldName = el.getAttribute('data-tagmgr-rename');
@@ -1453,6 +1710,56 @@ function attachRootHandlers() {
         if (changed) await saveEntry(e);
       }
       showToast('Deleted');
+      render();
+    };
+  });
+
+  // HD-match / bulk tag-from-list view
+  const hdRaw = root.querySelector('#hdmatch-raw');
+  if (hdRaw) hdRaw.oninput = () => { HD_MATCH_STATE.raw = hdRaw.value; };
+  const hdTagName = root.querySelector('#hdmatch-tagname');
+  if (hdTagName) hdTagName.oninput = () => { HD_MATCH_STATE.tagName = hdTagName.value; };
+  const hdFindBtn = root.querySelector('[data-hdmatch-find]');
+  if (hdFindBtn) hdFindBtn.onclick = () => {
+    HD_MATCH_STATE.raw = hdRaw ? hdRaw.value : HD_MATCH_STATE.raw;
+    HD_MATCH_STATE.tagName = hdTagName ? hdTagName.value : HD_MATCH_STATE.tagName;
+    if (!HD_MATCH_STATE.raw.trim()) { showToast('Paste some names first'); return; }
+    if (!HD_MATCH_STATE.tagName.trim()) { showToast('Give the tag a name first'); return; }
+    HD_MATCH_STATE.results = findHdMatches(HD_MATCH_STATE.raw);
+    render();
+  };
+  const hdApplyBtn = root.querySelector('[data-hdmatch-apply]');
+  if (hdApplyBtn) hdApplyBtn.onclick = async () => {
+    const tagName = HD_MATCH_STATE.tagName.trim();
+    const r = HD_MATCH_STATE.results;
+    if (!r) return;
+    let count = 0;
+    for (const { entry } of r.confident) {
+      const already = [...(entry.tags || []), ...(entry.customTags || [])].some((t) => t.toLowerCase() === tagName.toLowerCase());
+      if (!already) {
+        entry.customTags = [...(entry.customTags || []), tagName];
+        await saveEntry(entry);
+        count++;
+      }
+    }
+    showToast(`Tagged ${count} entr${count === 1 ? 'y' : 'ies'} "${tagName}"`);
+    render();
+  };
+  root.querySelectorAll('[data-hdmatch-confirm]').forEach((el) => {
+    el.onclick = async () => {
+      const [idxStr, entryId] = el.getAttribute('data-hdmatch-confirm').split(':');
+      const idx = Number(idxStr);
+      const r = HD_MATCH_STATE.results;
+      if (!r || !r.uncertain[idx]) return;
+      const entry = getEntry(entryId);
+      const tagName = HD_MATCH_STATE.tagName.trim();
+      const already = [...(entry.tags || []), ...(entry.customTags || [])].some((t) => t.toLowerCase() === tagName.toLowerCase());
+      if (!already) {
+        entry.customTags = [...(entry.customTags || []), tagName];
+        await saveEntry(entry);
+      }
+      r.uncertain[idx].confirmed = entry.title;
+      showToast(`Tagged "${entry.title}"`);
       render();
     };
   });
