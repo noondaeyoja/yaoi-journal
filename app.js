@@ -1248,18 +1248,22 @@ function renderHdMatch() {
 // library PLUS any image uploaded straight onto an entry's own Images
 // panel. Images are keyed by their exact data-URL so the same picture
 // only shows once even if it's attached to several entries.
+function entryImageUrls(e) {
+  return [...(e.screencaps || []), e.semi && e.semi.photo, e.uke && e.uke.photo].filter(Boolean);
+}
+
 function allAppImages() {
   const map = new Map();
   ALL_REACTIONS.forEach((r) => {
     map.set(r.dataUrl, { dataUrl: r.dataUrl, reactionId: r.id, createdAt: r.createdAt });
   });
   ALL_ENTRIES.forEach((e) => {
-    (e.screencaps || []).forEach((src) => {
+    entryImageUrls(e).forEach((src) => {
       if (!map.has(src)) map.set(src, { dataUrl: src, reactionId: null, createdAt: e.updatedAt || e.createdAt });
     });
   });
   return Array.from(map.values())
-    .map((img) => ({ ...img, attachedEntries: ALL_ENTRIES.filter((e) => (e.screencaps || []).includes(img.dataUrl)) }))
+    .map((img) => ({ ...img, attachedEntries: ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(img.dataUrl)) }))
     .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 }
 
@@ -1285,7 +1289,7 @@ function renderReactionsLibrary() {
 }
 
 function openImageAttachmentsModal(dataUrl) {
-  const entries = ALL_ENTRIES.filter((e) => (e.screencaps || []).includes(dataUrl));
+  const entries = ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(dataUrl));
   openModal(`
     <h3>Attached to</h3>
     <img src="${dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">
@@ -2915,6 +2919,37 @@ async function autoMatchSweepIfDue() {
   }
 }
 
+// A stale service worker used to be able to get permanently stuck in the
+// "waiting" state — new code would deploy and pass CI, but the browser tab
+// kept being served by the old cached copy indefinitely (even after a hard
+// refresh, since a service worker intercepts requests below the HTTP cache
+// layer). This forces any waiting worker to take over immediately and does
+// one automatic reload so new deploys are visible without any manual steps
+// (closing tabs, clearing site data, etc.) on the user's end.
+function setupAutoUpdatingServiceWorker() {
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloading) return;
+    reloading = true;
+    window.location.reload();
+  });
+  navigator.serviceWorker.register('./sw.js').then((reg) => {
+    const activateWaiting = () => { if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' }); };
+    activateWaiting();
+    reg.addEventListener('updatefound', () => {
+      const nw = reg.installing;
+      if (!nw) return;
+      nw.addEventListener('statechange', () => {
+        if (nw.state === 'installed' && navigator.serviceWorker.controller) activateWaiting();
+      });
+    });
+    // Also proactively check for an update on every load, since GitHub
+    // Pages/CDN caching can otherwise delay when the browser even notices
+    // sw.js itself changed.
+    reg.update().catch(() => {});
+  }).catch(() => {});
+}
+
 async function boot() {
   try {
     db = await openDB();
@@ -2928,7 +2963,7 @@ async function boot() {
     const savedIgnoredDup = await idbGet(STORE_META, 'ignoredDupGroups');
     if (savedIgnoredDup && Array.isArray(savedIgnoredDup.value)) IGNORED_DUP_GROUPS = new Set(savedIgnoredDup.value);
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('./sw.js').catch(() => {});
+      setupAutoUpdatingServiceWorker();
     }
     fbAuth.onAuthStateChanged(async (user) => {
       CURRENT_USER = user;

@@ -27,6 +27,13 @@ self.addEventListener('install', (event) => {
   );
 });
 
+// Lets the page force this worker to activate immediately instead of
+// sitting in "waiting" forever (see setupAutoUpdatingServiceWorker in
+// app.js) — this is what actually fixes deploys never showing up.
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
+});
+
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
