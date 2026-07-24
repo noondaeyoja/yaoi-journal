@@ -44,19 +44,30 @@ button, input, textarea, select { font-family: inherit; }
 a { color: var(--pink); }
 
 /* ---------- Global persistent header (every screen) ---------- */
+/* Taller than before (was 46px) to fit the search bar, which lives here now
+   so it's reachable from any screen, not just the homepage. GLOBAL_HEADER_H
+   below in JS-land (app-header/detail-header top offsets) must match this. */
 .global-header {
-  position: sticky; top: 0; z-index: 40; height: 46px; box-sizing: border-box;
-  display: flex; align-items: center; gap: 8px; padding: 0 14px;
+  position: sticky; top: 0; z-index: 40; height: 58px; box-sizing: border-box;
+  display: flex; align-items: center; gap: 10px; padding: 0 14px;
   background: rgba(18,22,46,0.97); backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--border); cursor: pointer;
+  border-bottom: 1px solid var(--border);
 }
-.global-header-logo { font-size: 20px; line-height: 1; }
-.global-header-logo img { display: block; height: 26px; width: auto; border-radius: 6px; }
-.global-header-title { font-weight: 700; font-size: 15px; letter-spacing: .01em; }
+.global-header-brand { display: flex; align-items: center; gap: 6px; cursor: pointer; flex-shrink: 0; }
+.global-header-logo { font-size: 19px; line-height: 1; }
+.global-header-logo img { display: block; height: 24px; width: auto; border-radius: 6px; }
+.global-header-title { font-weight: 700; font-size: 14px; letter-spacing: .01em; white-space: nowrap; }
+.global-search-bar {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
+  background: var(--card); border: 1px solid var(--border); border-radius: 999px;
+  padding: 7px 12px; margin-bottom: 0;
+}
+.global-search-bar input { background: transparent; border: none; outline: none; color: var(--text); width: 100%; font-size: 13.5px; }
+.global-search-bar input::placeholder { color: var(--text-dim); }
 
 /* ---------- Sticky header (per-screen, sits just below the global one) ---------- */
 .app-header {
-  position: sticky; top: 46px; z-index: 30;
+  position: sticky; top: 58px; z-index: 30;
   background: rgba(18,22,46,0.92);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
@@ -108,8 +119,9 @@ a { color: var(--pink); }
   display: flex; flex-wrap: wrap; gap: 6px; max-height: none; overflow-y: visible; padding-bottom: 4px;
 }
 .chip {
-  white-space: nowrap; padding: 6px 12px; border-radius: 999px; font-size: 12.5px; font-weight: 600;
+  white-space: nowrap; padding: 9px 20px; border-radius: 999px; font-size: 13.5px; font-weight: 600;
   background: var(--card); color: var(--yellow); border: 1px solid var(--yellow-soft);
+  flex: 1; text-align: center;
 }
 .chip.active { background: var(--yellow); color: #241c02; border-color: var(--yellow); }
 
@@ -167,11 +179,14 @@ a { color: var(--pink); }
 .tag-ms-item input { accent-color: var(--purple); flex: 0 0 auto; }
 .tag-ms-panel.open > button, .tag-ms-panel.open > div { grid-column: 1 / -1; }
 
-.scroll-row-wrap { position: relative; display: flex; align-items: center; }
+/* Arrows stretch to the full height of the row (align-items:stretch), so
+   they always match however tall the cover thumbnails in that row are —
+   same idea as the cover/info equal-height trick on the detail page. */
+.scroll-row-wrap { position: relative; display: flex; align-items: stretch; }
 .scroll-row-wrap .cover-row-scroll { flex: 1; }
 .scroll-arrow {
-  flex: 0 0 auto; width: 26px; height: 40px; border-radius: 8px; background: rgba(18,22,46,.85);
-  border: 1px solid var(--border); color: var(--text); font-size: 18px; line-height: 1; cursor: pointer;
+  flex: 0 0 auto; width: 40px; border-radius: 8px; background: rgba(18,22,46,.85);
+  border: 1px solid var(--border); color: var(--text); font-size: 26px; line-height: 1; cursor: pointer;
   z-index: 5; display: flex; align-items: center; justify-content: center;
 }
 .scroll-arrow.left { margin-right: -6px; }
@@ -257,14 +272,33 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 .reaction-thumb.pickable { cursor: pointer; border: 2px solid transparent; }
 .reaction-thumb.pickable.selected { border-color: var(--pink); box-shadow: 0 0 0 2px var(--pink); }
 
+/* Masonry via CSS columns — each image keeps its natural aspect ratio (no
+   cropping/clipping like the old square grid), it just flows into whichever
+   column has room next, Pinterest-style. */
+.image-masonry { column-count: 2; column-gap: 10px; }
+@media (min-width: 480px) { .image-masonry { column-count: 3; } }
+@media (min-width: 720px) { .image-masonry { column-count: 4; } }
+.masonry-item {
+  position: relative; break-inside: avoid; margin-bottom: 10px; border-radius: var(--radius-sm);
+  overflow: hidden; background: var(--navy-2); cursor: pointer;
+}
+.masonry-item img { width: 100%; height: auto; display: block; }
+
+.mood-chip {
+  padding: 7px 14px; border-radius: 999px; font-size: 13px; font-weight: 600;
+  background: var(--card); color: var(--text-dim); border: 1px solid var(--border); cursor: pointer;
+}
+.mood-chip.active { background: var(--purple); color: #fff; border-color: var(--purple); }
+
 /* ---------- Detail / Journal screen ---------- */
 .detail-header {
-  display: flex; align-items: center; gap: 10px; padding: 10px 12px; position: sticky; top: 46px; z-index: 30;
+  display: flex; align-items: center; gap: 6px; padding: 10px 12px; position: sticky; top: 58px; z-index: 30;
   background: rgba(18,22,46,0.92); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border);
 }
-.back-btn { background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 999px; padding: 7px 12px; font-size: 14px; }
-.detail-header h2 { font-size: 15px; margin: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.icon-btn { background: var(--card); border: 1px solid var(--border); color: var(--yellow); border-radius: 999px; width: 34px; height: 34px; font-size: 16px; }
+.back-btn { background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 999px; padding: 7px 12px; font-size: 14px; flex-shrink: 0; }
+.detail-header h2 { font-size: 15px; margin: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.icon-btn { background: var(--card); border: 1px solid var(--border); color: var(--yellow); border-radius: 999px; width: 34px; height: 34px; font-size: 16px; flex-shrink: 0; }
+.icon-btn.danger { color: #ff6767; border-color: rgba(255,103,103,.4); }
 
 .journal { padding: 12px; max-width: 720px; margin: 0 auto; padding-bottom: calc(190px + env(safe-area-inset-bottom, 0px)); }
 
@@ -324,8 +358,8 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 .dup-item { display: flex; gap: 10px; align-items: center; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .dup-item .review-card-info { flex: 1; }
 
-.flag-dot { width: 30px; height: 30px; border-radius: 8px; border: 2px solid var(--border); background: var(--card); cursor: pointer; display:flex; align-items:center; justify-content:center; }
-.flag-dot .flag-glyph { font-size: 17px; line-height: 1; opacity: .8; filter: brightness(1.35) saturate(1.4); }
+.flag-dot { width: 44px; height: 44px; border-radius: 10px; border: 2px solid var(--border); background: var(--card); cursor: pointer; display:flex; align-items:center; justify-content:center; }
+.flag-dot .flag-glyph { font-size: 30px; line-height: 1; opacity: .8; filter: brightness(1.35) saturate(1.4); }
 .flag-dot.selected { border-color: var(--text); box-shadow: 0 0 0 2px rgba(255,255,255,.15); }
 .flag-dot.selected .flag-glyph { opacity: 1; filter: brightness(1.6) saturate(1.6); text-shadow: 0 0 6px currentColor; }
 .char-col textarea { width: 100%; min-height: 96px; font-size: 12.5px; }
@@ -448,8 +482,22 @@ table.db-table tr:hover td { background: rgba(255,255,255,.02); }
 .tagmgr-click-area { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; cursor: pointer; }
 .tagmgr-name { flex: 1; font-size: 13.5px; color: var(--text); min-width: 0; }
 .tagmgr-count { font-size: 11.5px; color: var(--text-dim); white-space: nowrap; }
-.tagmgr-actions { display: flex; gap: 8px; }
+.tagmgr-actions { display: flex; gap: 8px; align-items: center; }
 .tagmgr-actions .icon-btn-inline { font-size: 16px; padding: 2px; }
+
+.tagmgr-tabs { display: flex; gap: 8px; margin: 4px 0 12px; }
+.tagmgr-tab {
+  flex: 1; text-align: center; padding: 8px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 600;
+  background: var(--card); color: var(--text-dim); border: 1px solid var(--border); cursor: pointer;
+}
+.tagmgr-tab.active { background: var(--yellow); color: #241c02; border-color: var(--yellow); }
+
+.tag-suggestion-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12.5px;
+}
+.tag-suggestion-row:last-child { border-bottom: none; }
+.tag-suggestion-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
 /* ---------- Similar-tag suggestions ---------- */
 .tag-similar-box {

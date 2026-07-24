@@ -62,12 +62,14 @@ let TAG_EDIT_MODE = false;         // whether the Tags panel is showing its edit
 let TAG_ENTRIES_FILTER = null;     // which tag name the "view entries with this tag" screen is showing
 let TAG_FILTER_OPEN = false;       // whether the homepage tag multi-select dropdown panel is open
 let FILTERS_COLLAPSED = false;     // whether the homepage search/tabs/format/Status/Tags/Ratings&Flags block is tucked away
+let SEARCH_INPUT_SHOULD_FOCUS = false; // one-shot flag: refocus the global search box after it causes a view jump
 let STATE = {
   view: 'home',            // 'home' | 'detail' | 'tags' | 'database' | 'review' | 'duplicates'
   entryId: null,
   format: 'reading',        // 'reading' | 'watching'
   showFavoritesOnly: false,
   showOnDriveOnly: false,   // "On Yaoi Drive" homepage tab — entries tagged as saved on the drive
+  showHentaiOnly: false,    // "Hentai" filter — entries tagged as hentai
   shelf: 'ALL',             // 'ALL' or one of SHELVES_READING
   tagFilters: [],           // array of tag strings; entry matches if it has ANY of these
   smutFilter: null,         // null or 1-5, meaning "at least N eggplants"
@@ -347,6 +349,14 @@ async function pullMetaState() {
       IGNORED_DUP_GROUPS = new Set([...IGNORED_DUP_GROUPS, ...data.ignoredDupGroups]);
       await idbPut(STORE_META, { key: 'ignoredDupGroups', value: Array.from(IGNORED_DUP_GROUPS) });
     }
+    if (Array.isArray(data.userHiddenTagKeys) && data.userHiddenTagKeys.length) {
+      USER_HIDDEN_TAG_KEYS = new Set([...USER_HIDDEN_TAG_KEYS, ...data.userHiddenTagKeys]);
+      await idbPut(STORE_META, { key: 'userHiddenTagKeys', value: Array.from(USER_HIDDEN_TAG_KEYS) });
+    }
+    if (Array.isArray(data.ignoredTagSuggestions) && data.ignoredTagSuggestions.length) {
+      IGNORED_TAG_SUGGESTIONS = new Set([...IGNORED_TAG_SUGGESTIONS, ...data.ignoredTagSuggestions]);
+      await idbPut(STORE_META, { key: 'ignoredTagSuggestions', value: Array.from(IGNORED_TAG_SUGGESTIONS) });
+    }
   } catch (err) {
     console.error('Meta pull failed:', err);
   }
@@ -481,6 +491,31 @@ function startFirestoreListener(user) {
 
 function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Notes fields on the detail page (semi/uke notes, character notes) act like
+// a bullet list: every line starts with a 💦, and hitting Enter starts a
+// fresh bulleted line automatically instead of a plain blank line.
+const NOTE_BULLET = '💦 ';
+function attachBulletTextarea(el) {
+  if (!el || el._bulletWired) return;
+  el._bulletWired = true;
+  el.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    const start = el.selectionStart, end = el.selectionEnd;
+    const insert = '\n' + NOTE_BULLET;
+    el.value = el.value.slice(0, start) + insert + el.value.slice(end);
+    const pos = start + insert.length;
+    el.selectionStart = el.selectionEnd = pos;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  el.addEventListener('focus', () => {
+    if (!el.value) {
+      el.value = NOTE_BULLET;
+      el.selectionStart = el.selectionEnd = el.value.length;
+    }
+  });
 }
 
 // Some author/artist fields came in as comma-joined names with no space
@@ -667,8 +702,14 @@ async function signOutOfAccount() {
 
 function renderGlobalHeader() {
   return `
-    <div class="global-header" data-header-home="1">
-      <span class="global-header-logo">🍆</span><span class="global-header-title">Yaoi Journal</span>
+    <div class="global-header">
+      <span class="global-header-brand" data-header-home="1">
+        <span class="global-header-logo">🍆</span><span class="global-header-title">Yaoi Journal</span>
+      </span>
+      <div class="global-search-bar">
+        <span>🔍</span>
+        <input type="search" id="search-input" placeholder="Search all reads &amp; anime..." value="${escapeHtml(STATE.search)}">
+      </div>
     </div>`;
 }
 
@@ -686,6 +727,7 @@ function render() {
   else if (STATE.view === 'tagEntries') body = renderTagEntries();
   else if (STATE.view === 'hdMatch') body = renderHdMatch();
   else if (STATE.view === 'reactions') body = renderReactionsLibrary();
+  else if (STATE.view === 'meme') body = renderMemeLibrary();
   else if (STATE.view === 'database') body = renderDatabase();
   else if (STATE.view === 'review') body = renderReviewQueue();
   else if (STATE.view === 'duplicates') body = renderDuplicates();
@@ -706,6 +748,8 @@ function filteredEntries() {
       if (!e.favorite) return false;
     } else if (STATE.showOnDriveOnly) {
       if (!isOnDrive(e)) return false;
+    } else if (STATE.showHentaiOnly) {
+      if (!isHentai(e)) return false;
     } else if (e.format !== STATE.format) {
       return false;
     }
@@ -744,9 +788,31 @@ let DELETED_TAG_KEYS = new Set();
 // Whether the Tag Manager's "Show hidden tags" toggle is currently on —
 // reveals the list of tags you've deleted before, each with a Restore button.
 let SHOW_HIDDEN_TAGS = false;
+// Tags soft-hidden via the per-tag toggle in Tag Manager — unlike
+// DELETED_TAG_KEYS, the underlying entry data is untouched; the tag just
+// stays off the homepage filter dropdown/tag displays until switched back on.
+let USER_HIDDEN_TAG_KEYS = new Set();
+// Which Tag Manager tab is showing: 'active' or 'hidden'.
+let TAG_MGR_TAB = 'active';
+// Signatures of hide/merge suggestions the user has dismissed ("not now"),
+// so the same suggestion doesn't keep reappearing every time Tag Manager opens.
+let IGNORED_TAG_SUGGESTIONS = new Set();
 function isHiddenTag(t) {
   const norm = normalizeTagKey(t);
-  return HIDDEN_TAG_KEYS.has(norm) || DELETED_TAG_KEYS.has(norm);
+  return HIDDEN_TAG_KEYS.has(norm) || DELETED_TAG_KEYS.has(norm) || USER_HIDDEN_TAG_KEYS.has(norm);
+}
+async function setTagSoftHidden(name, hidden) {
+  const key = normalizeTagKey(name);
+  if (hidden) USER_HIDDEN_TAG_KEYS.add(key); else USER_HIDDEN_TAG_KEYS.delete(key);
+  const arr = Array.from(USER_HIDDEN_TAG_KEYS);
+  await idbPut(STORE_META, { key: 'userHiddenTagKeys', value: arr });
+  pushMetaField('userHiddenTagKeys', arr);
+}
+async function dismissTagSuggestion(sig) {
+  IGNORED_TAG_SUGGESTIONS.add(sig);
+  const arr = Array.from(IGNORED_TAG_SUGGESTIONS);
+  await idbPut(STORE_META, { key: 'ignoredTagSuggestions', value: arr });
+  pushMetaField('ignoredTagSuggestions', arr);
 }
 // Strips blocked/deleted tag names out of a list of incoming tags (from a
 // cross-reference pull, suggested match, etc.) before merging them into an
@@ -801,6 +867,10 @@ const ON_DRIVE_TAG_KEY = 'onhd';
 function isOnDrive(e) {
   return [...(e.tags || []), ...(e.customTags || [])].some((t) => normalizeTagKey(t) === ON_DRIVE_TAG_KEY);
 }
+const HENTAI_TAG_KEY = 'hentai';
+function isHentai(e) {
+  return [...(e.tags || []), ...(e.customTags || [])].some((t) => normalizeTagKey(t) === HENTAI_TAG_KEY);
+}
 
 function topTags(entries) {
   const counts = {};
@@ -813,20 +883,22 @@ function topTags(entries) {
   return Object.keys(counts).sort((a, b) => a.localeCompare(b));
 }
 
-function renderCoverCard(e) {
+function renderCoverCard(e, reviewMode) {
   const isSuggested = !e.coverUrl && e.suggestedMatch && e.suggestedMatch.coverUrl;
   const coverSrc = e.coverUrl || (e.suggestedMatch ? e.suggestedMatch.coverUrl : null);
   const cover = coverSrc
     ? `<img src="${escapeHtml(coverSrc)}" alt="" loading="lazy" referrerpolicy="no-referrer" style="${isSuggested ? 'opacity:.55' : ''}" onerror="this.parentElement.innerHTML='<div class=\\'cover-placeholder\\'>🍆</div>'">`
     : `<div class="cover-placeholder">🍆</div>`;
   const flagColor = e.semi && e.semi.flag ? FLAG_HEX[e.semi.flag] : (e.uke && e.uke.flag ? FLAG_HEX[e.uke.flag] : null);
+  // Cards in the Suggested Matches row open the quick-review carousel modal
+  // instead of the full detail page — that's the whole point of the row.
   return `
-    <div class="cover-card" data-open-entry="${e.id}">
+    <div class="cover-card" ${reviewMode ? `data-review-match="${e.id}"` : `data-open-entry="${e.id}"`}>
       <div class="cover-thumb">
         ${cover}
         ${e.favorite ? '<div class="cover-fav-badge">💜</div>' : ''}
         ${isSuggested ? '<div class="cover-fav-badge" style="right:auto;left:5px;" title="Suggested match, unconfirmed">🔎</div>' : ''}
-        ${(STATE.showFavoritesOnly || STATE.showOnDriveOnly) ? `<div class="cover-format-badge">${e.format === 'reading' ? '📖' : '📺'}</div>` : ''}
+        ${(STATE.showFavoritesOnly || STATE.showOnDriveOnly || STATE.showHentaiOnly) ? `<div class="cover-format-badge">${e.format === 'reading' ? '📖' : '📺'}</div>` : ''}
         ${flagColor ? `<div class="cover-flag-dot"><span style="color:${flagColor}">&#9873;</span></div>` : ''}
       </div>
       <div class="cover-title">${escapeHtml(e.title)}</div>
@@ -850,14 +922,14 @@ function renderHome() {
   const tags = topTags(ALL_ENTRIES.filter((e) => e.format === STATE.format));
 
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
     // Suggested-matches row sits above the shelf rows, same section-title +
     // horizontal-scroll treatment, so unconfirmed matches are easy to spot
     // and jump into without leaving the homepage.
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
       body += `<div class="section-title">🔎 Suggested Matches <span style="opacity:.6">(${suggestedGroup.length})</span></div>`;
-      body += scrollRow('row-suggested', suggestedGroup.map(renderCoverCard).join(''));
+      body += scrollRow('row-suggested', suggestedGroup.map((e) => renderCoverCard(e, true)).join(''));
     }
     // grouped by shelf, each group scrolls horizontally so hundreds of entries
     // don't turn into an endless vertical scroll.
@@ -899,24 +971,18 @@ function renderHome() {
   const smutChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.smutFilter && n <= STATE.smutFilter ? 'active' : ''}" data-smut-filter="${n}" title="${n}+ eggplants">🍆</span>`).join('');
   const qualityChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.qualityFilter && n <= STATE.qualityFilter ? 'active' : ''}" data-quality-filter="${n}" title="${n}+ hearts">❤️</span>`).join('');
   const flagChips = FLAG_COLORS.map((c) => `<span class="rating-pick-icon flag-filter-icon ${STATE.flagFilter === c ? 'active' : ''}" data-flag-filter="${c}" style="color:${FLAG_HEX[c]}" title="${c} flag">&#9873;</span>`).join('');
+  const hentaiChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showHentaiOnly ? 'active' : ''}" data-nav-filter="${STATE.showHentaiOnly ? 'home' : 'hentai'}" title="Hentai only">💦</span>`;
 
   return `
     <div class="app-header">
-      <div class="brand-row" style="justify-content:flex-end;">
-        <button class="icon-btn" data-open-settings="1">⚙️</button>
-      </div>
       <button class="filters-toggle-btn" data-toggle-filters="1">${FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
       <div class="filters-collapsible ${FILTERS_COLLAPSED ? 'collapsed' : ''}" id="filters-collapsible">
-        <div class="search-bar">
-          <span>🔍</span>
-          <input type="search" id="search-input" placeholder="Search all reads &amp; anime..." value="${escapeHtml(STATE.search)}">
-        </div>
         <div class="filter-section-label">Status</div>
-        <div class="shelf-row">${formatIcons}<span class="rating-pick-divider"></span>${shelfChips}</div>
+        <div class="shelf-row">${shelfChips}</div>
         <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
         <div class="filter-section-label">Ratings &amp; Flags</div>
-        <div class="rating-pick-row">${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${flagChips}</div>
+        <div class="rating-pick-row">${formatIcons}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${flagChips}<span class="rating-pick-divider"></span>${hentaiChip}</div>
       </div>
     </div>
     <main>${body}</main>
@@ -933,6 +999,7 @@ function renderBottomNav(active) {
       <button data-nav-filter="onDrive" class="${active === 'onDrive' ? 'active' : ''}"><span class="icon">💾</span>On HD</button>
       <button data-nav="tags" class="${active === 'tags' ? 'active' : ''}"><span class="icon">🏷️</span>Tags</button>
       <button data-nav="reactions" class="${active === 'reactions' ? 'active' : ''}"><span class="icon">🖼️</span>Images</button>
+      <button data-nav="meme" class="${active === 'meme' ? 'active' : ''}"><span class="icon">🎭</span>Reactions</button>
       <button data-nav="database" class="${active === 'database' ? 'active' : ''}"><span class="icon">🗂️</span>Database</button>
     </div>`;
 }
@@ -995,20 +1062,104 @@ function findSimilarTags(query) {
   return results.slice(0, 6);
 }
 
+// "Hide this" suggestions: active tags used on only 1-2 entries — low value
+// as a filter, likely clutter. "Merge these" suggestions: pairs of active
+// tags that look like the same concept (substring/near-typo match, reusing
+// the same similarity check the "type a new tag" flow already uses).
+// Both remember dismissals via IGNORED_TAG_SUGGESTIONS so declining one
+// doesn't make it pop up again next time Tag Manager opens.
+function tagHideSuggestions(activeNames, counts) {
+  return activeNames
+    .filter((t) => counts[t] <= 1 && !IGNORED_TAG_SUGGESTIONS.has('hide:' + normalizeTagKey(t)))
+    .sort((a, b) => counts[a] - counts[b])
+    .slice(0, 6)
+    .map((t) => ({ type: 'hide', tag: t, count: counts[t], sig: 'hide:' + normalizeTagKey(t) }));
+}
+function tagMergeSuggestions(activeNames, counts) {
+  const seen = new Set();
+  const out = [];
+  for (const a of activeNames) {
+    for (const b of findSimilarTags(a)) {
+      if (!activeNames.includes(b)) continue;
+      const sigKey = [normalizeTagKey(a), normalizeTagKey(b)].sort().join('|');
+      if (seen.has(sigKey)) continue;
+      seen.add(sigKey);
+      if (IGNORED_TAG_SUGGESTIONS.has('merge:' + sigKey)) continue;
+      out.push({ type: 'merge', tagA: a, tagB: b, sig: 'merge:' + sigKey, combinedCount: (counts[a] || 0) + (counts[b] || 0) });
+    }
+  }
+  return out.sort((x, y) => x.combinedCount - y.combinedCount).slice(0, 6);
+}
+
 function renderTagManager() {
   const counts = allTagCounts();
-  const names = Object.keys(counts).sort((a, b) => a.localeCompare(b));
-  const rows = names.map((t) => `
-    <div class="tagmgr-row" data-tag-name="${escapeHtml(t)}">
-      <div class="tagmgr-click-area" data-tagmgr-view="${escapeHtml(t)}" title="View entries tagged &quot;${escapeHtml(t)}&quot;">
-        <div class="tagmgr-name">${escapeHtml(t)}${isHiddenTag(t) ? ' <span style="color:var(--text-dim);font-size:10.5px;">(hidden from filters)</span>' : ''}</div>
-        <div class="tagmgr-count">${counts[t]} entr${counts[t] === 1 ? 'y' : 'ies'}</div>
-      </div>
-      <div class="tagmgr-actions">
-        <button class="icon-btn-inline" data-tagmgr-rename="${escapeHtml(t)}" title="Rename this tag everywhere">✏️</button>
-        <button class="icon-btn-inline" data-tagmgr-delete="${escapeHtml(t)}" title="Delete this tag everywhere">🗑️</button>
-      </div>
-    </div>`).join('');
+  const allNames = Object.keys(counts).sort((a, b) => a.localeCompare(b));
+  const activeNames = allNames.filter((t) => !isHiddenTag(t));
+  const hiddenActiveNames = allNames.filter((t) => USER_HIDDEN_TAG_KEYS.has(normalizeTagKey(t)) && !DELETED_TAG_KEYS.has(normalizeTagKey(t)));
+  const names = TAG_MGR_TAB === 'hidden' ? hiddenActiveNames : activeNames;
+
+  const hideSuggestions = TAG_MGR_TAB === 'active' ? tagHideSuggestions(activeNames, counts) : [];
+  const mergeSuggestions = TAG_MGR_TAB === 'active' ? tagMergeSuggestions(activeNames, counts) : [];
+  const suggestionsHtml = (hideSuggestions.length || mergeSuggestions.length) ? `
+    <div class="panel" style="border-color:var(--yellow-soft);">
+      <div class="panel-title">💡 Suggestions</div>
+      ${hideSuggestions.map((s) => `
+        <div class="tag-suggestion-row">
+          <div>Hide <strong>${escapeHtml(s.tag)}</strong> — only ${s.count} use${s.count === 1 ? '' : 's'}</div>
+          <div class="tag-suggestion-actions">
+            <button class="ref-btn" data-suggest-hide="${escapeHtml(s.tag)}" data-suggest-sig="${escapeHtml(s.sig)}">Hide</button>
+            <button class="btn-ghost" data-suggest-dismiss="${escapeHtml(s.sig)}">Not now</button>
+          </div>
+        </div>`).join('')}
+      ${mergeSuggestions.map((s) => `
+        <div class="tag-suggestion-row">
+          <div>Merge <strong>${escapeHtml(s.tagB)}</strong> into <strong>${escapeHtml(s.tagA)}</strong>?</div>
+          <div class="tag-suggestion-actions">
+            <button class="ref-btn" data-suggest-merge-a="${escapeHtml(s.tagA)}" data-suggest-merge-b="${escapeHtml(s.tagB)}" data-suggest-sig="${escapeHtml(s.sig)}">Merge</button>
+            <button class="btn-ghost" data-suggest-dismiss="${escapeHtml(s.sig)}">Not now</button>
+          </div>
+        </div>`).join('')}
+    </div>` : '';
+
+  const rows = TAG_MGR_TAB === 'active'
+    ? names.map((t) => `
+        <div class="tagmgr-row" data-tag-name="${escapeHtml(t)}">
+          <div class="tagmgr-click-area" data-tagmgr-view="${escapeHtml(t)}" title="View entries tagged &quot;${escapeHtml(t)}&quot;">
+            <div class="tagmgr-name">${escapeHtml(t)}</div>
+            <div class="tagmgr-count">${counts[t]} entr${counts[t] === 1 ? 'y' : 'ies'}</div>
+          </div>
+          <div class="tagmgr-actions">
+            <button class="toggle-switch on" data-tagmgr-hide="${escapeHtml(t)}" title="Hide from filters (keeps the data)" role="switch" aria-checked="true"><span class="toggle-knob"></span></button>
+            <button class="icon-btn-inline" data-tagmgr-rename="${escapeHtml(t)}" title="Rename this tag everywhere">✏️</button>
+            <button class="icon-btn-inline" data-tagmgr-delete="${escapeHtml(t)}" title="Delete this tag everywhere">🗑️</button>
+          </div>
+        </div>`).join('')
+    : names.map((t) => `
+        <div class="tagmgr-row" data-tag-name="${escapeHtml(t)}">
+          <div class="tagmgr-click-area" data-tagmgr-view="${escapeHtml(t)}" title="View entries tagged &quot;${escapeHtml(t)}&quot;">
+            <div class="tagmgr-name">${escapeHtml(t)}</div>
+            <div class="tagmgr-count">${counts[t]} entr${counts[t] === 1 ? 'y' : 'ies'}</div>
+          </div>
+          <div class="tagmgr-actions">
+            <button class="toggle-switch" data-tagmgr-hide="${escapeHtml(t)}" title="Show in filters again" role="switch" aria-checked="false"><span class="toggle-knob"></span></button>
+          </div>
+        </div>`).join('');
+
+  const deletedRows = TAG_MGR_TAB === 'hidden' && DELETED_TAG_KEYS.size ? `
+    <div class="panel-title" style="margin:16px 0 8px;">Permanently deleted</div>
+    <div style="color:var(--text-dim);font-size:12px;margin-bottom:8px;">These had their data removed from every entry — restoring just allows the name to be used again; old entries won't get it back.</div>
+    ${Array.from(DELETED_TAG_KEYS).sort().map((key) => `
+      <div class="tagmgr-row">
+        <div class="tagmgr-name" style="flex:1;">${escapeHtml(key)}</div>
+        <button class="ref-btn" data-restore-tag="${escapeHtml(key)}">Allow again</button>
+      </div>`).join('')}
+  ` : '';
+
+  const tabsHtml = `
+    <div class="tagmgr-tabs">
+      <button class="tagmgr-tab ${TAG_MGR_TAB === 'active' ? 'active' : ''}" data-tagmgr-tab="active">Active (${activeNames.length})</button>
+      <button class="tagmgr-tab ${TAG_MGR_TAB === 'hidden' ? 'active' : ''}" data-tagmgr-tab="hidden">Hidden (${hiddenActiveNames.length + DELETED_TAG_KEYS.size})</button>
+    </div>`;
 
   return `
     <div class="app-header">
@@ -1025,24 +1176,12 @@ function renderTagManager() {
       </div>
       <button class="ref-btn" style="width:100%;margin-bottom:12px;" data-nav="hdMatch">💾 Match Owned Titles from a List</button>
       <div style="color:var(--text-dim);font-size:12px;margin-bottom:10px;">
-        ${names.length} unique tag${names.length === 1 ? '' : 's'} across ${ALL_ENTRIES.length} entries. Tap a tag to see its entries. Renaming applies everywhere the tag is used — rename to an existing tag name to merge two tags together. Deleting removes it from every entry (can't be undone).
+        ${allNames.length} unique tag${allNames.length === 1 ? '' : 's'} across ${ALL_ENTRIES.length} entries. Tap a tag to see its entries. Renaming applies everywhere the tag is used — rename to an existing tag name to merge two tags together. Deleting removes it from every entry (can't be undone); hiding just keeps it out of filters.
       </div>
-      <div id="tagmgr-list">${rows || '<div class="empty-state">No tags yet.</div>'}</div>
-
-      <div class="panel" style="margin-top:14px;">
-        <div class="panel-title-row" style="margin-bottom:${SHOW_HIDDEN_TAGS ? '10px' : '0'};">
-          <div class="panel-title" style="margin:0;">Hidden tags</div>
-          <button class="toggle-switch ${SHOW_HIDDEN_TAGS ? 'on' : ''}" data-toggle-hidden-tags="1" role="switch" aria-checked="${SHOW_HIDDEN_TAGS}"><span class="toggle-knob"></span></button>
-        </div>
-        ${SHOW_HIDDEN_TAGS ? `
-          <div style="color:var(--text-dim);font-size:12px;margin-bottom:8px;">Tags you've deleted before — they stay off the app (won't come back from imports) until you restore them.</div>
-          ${DELETED_TAG_KEYS.size ? Array.from(DELETED_TAG_KEYS).sort().map((key) => `
-            <div class="tagmgr-row">
-              <div class="tagmgr-name" style="flex:1;">${escapeHtml(key)}</div>
-              <button class="ref-btn" data-restore-tag="${escapeHtml(key)}">Restore</button>
-            </div>`).join('') : '<div class="empty-state">No deleted tags.</div>'}
-        ` : ''}
-      </div>
+      ${suggestionsHtml}
+      ${tabsHtml}
+      <div id="tagmgr-list">${rows || `<div class="empty-state">${TAG_MGR_TAB === 'hidden' ? 'No hidden tags.' : 'No tags yet.'}</div>`}</div>
+      ${deletedRows}
     </main>
     ${renderBottomNav('tags')}
   `;
@@ -1252,11 +1391,13 @@ function entryImageUrls(e) {
   return [...(e.screencaps || []), e.semi && e.semi.photo, e.uke && e.uke.photo].filter(Boolean);
 }
 
+// Images = only pictures that live on a journal entry (screencaps, semi/uke
+// photos) — always attached to a read, by definition. The standalone meme
+// library (bottom-nav "Reactions") is a completely separate collection, kept
+// out of this aggregation, since reactions are meant to stay unattached to
+// any specific entry and organized by mood tag instead (see renderMemeLibrary).
 function allAppImages() {
   const map = new Map();
-  ALL_REACTIONS.forEach((r) => {
-    map.set(r.dataUrl, { dataUrl: r.dataUrl, reactionId: r.id, createdAt: r.createdAt });
-  });
   ALL_ENTRIES.forEach((e) => {
     entryImageUrls(e).forEach((src) => {
       if (!map.has(src)) map.set(src, { dataUrl: src, reactionId: null, createdAt: e.updatedAt || e.createdAt });
@@ -1267,23 +1408,129 @@ function allAppImages() {
     .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 }
 
+// Perceptual (average) hash — resizes to a tiny 8x8 grayscale grid and
+// records which pixels are above/below the average brightness. Two images
+// that look the same but were saved/compressed differently (so their raw
+// data-URL bytes differ) still end up with the same or a very close hash,
+// which is what lets "Possible Duplicates" catch real dupes instead of just
+// exact byte-for-byte matches (those are already deduped by data-URL).
+const IMAGE_PHASH_CACHE = new Map();
+function perceptualHash(dataUrl) {
+  if (IMAGE_PHASH_CACHE.has(dataUrl)) return Promise.resolve(IMAGE_PHASH_CACHE.get(dataUrl));
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const size = 8;
+        const canvas = document.createElement('canvas');
+        canvas.width = size; canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, size, size);
+        const data = ctx.getImageData(0, 0, size, size).data;
+        const gray = [];
+        let total = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          const g = (data[i] + data[i + 1] + data[i + 2]) / 3;
+          gray.push(g);
+          total += g;
+        }
+        const avg = total / gray.length;
+        const hash = gray.map((g) => (g >= avg ? '1' : '0')).join('');
+        IMAGE_PHASH_CACHE.set(dataUrl, hash);
+        resolve(hash);
+      } catch (err) {
+        resolve(null);
+      }
+    };
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+function hammingDistance(a, b) {
+  if (!a || !b || a.length !== b.length) return Infinity;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++;
+  return d;
+}
+
+let IMAGES_TAB = 'attached'; // 'attached' | 'unattached' | 'duplicates'
+let IMAGE_DUP_GROUPS = null; // null = not scanned yet this session
+let IMAGE_DUP_SCANNING = false;
+async function scanForImageDuplicates() {
+  IMAGE_DUP_SCANNING = true;
+  render();
+  const items = allAppImages();
+  const withHashes = [];
+  for (const img of items) {
+    const hash = await perceptualHash(img.dataUrl);
+    withHashes.push({ img, hash });
+  }
+  const groups = [];
+  const used = new Set();
+  for (let i = 0; i < withHashes.length; i++) {
+    if (used.has(i) || !withHashes[i].hash) continue;
+    const group = [withHashes[i].img];
+    used.add(i);
+    for (let j = i + 1; j < withHashes.length; j++) {
+      if (used.has(j) || !withHashes[j].hash) continue;
+      if (hammingDistance(withHashes[i].hash, withHashes[j].hash) <= 6) {
+        group.push(withHashes[j].img);
+        used.add(j);
+      }
+    }
+    if (group.length > 1) groups.push(group);
+  }
+  IMAGE_DUP_GROUPS = groups;
+  IMAGE_DUP_SCANNING = false;
+  render();
+}
+
 function renderReactionsLibrary() {
   const items = allAppImages();
-  const grid = items.length
-    ? `<div class="cover-grid">${items.map((img) => `
-        <div class="reaction-thumb" data-view-image-attachments="${escapeHtml(img.dataUrl)}">
-          <img src="${img.dataUrl}" alt="">
-          ${img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : ''}
-          ${img.reactionId ? `<button class="del" data-del-reaction="${img.reactionId}">✕</button>` : ''}
-        </div>`).join('')}</div>`
-    : `<div class="empty-state">No images uploaded yet. Tap "Add" to upload some.</div>`;
+  const attached = items.filter((i) => i.attachedEntries.length > 0);
+  const unattached = items.filter((i) => i.attachedEntries.length === 0);
+
+  const masonryItem = (img) => `
+    <div class="masonry-item" data-view-image-attachments="${escapeHtml(img.dataUrl)}">
+      <img src="${img.dataUrl}" alt="" loading="lazy">
+      ${img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : ''}
+      ${img.reactionId ? `<button class="del" data-del-reaction="${img.reactionId}">✕</button>` : ''}
+    </div>`;
+
+  let tabBody;
+  if (IMAGES_TAB === 'unattached') {
+    tabBody = unattached.length ? `<div class="image-masonry">${unattached.map(masonryItem).join('')}</div>` : `<div class="empty-state">Everything's attached to a read. 🎉</div>`;
+  } else if (IMAGES_TAB === 'duplicates') {
+    if (IMAGE_DUP_SCANNING) {
+      tabBody = `<div class="empty-state">Scanning ${items.length} images for duplicates…</div>`;
+    } else if (IMAGE_DUP_GROUPS === null) {
+      tabBody = `<div style="padding:8px 0;"><button class="btn-primary" style="width:100%;" data-scan-duplicates="1">🔍 Scan for possible duplicates</button></div>`;
+    } else if (!IMAGE_DUP_GROUPS.length) {
+      tabBody = `<div class="empty-state">No possible duplicates found. 🎉</div><button class="ref-btn" style="width:100%;" data-scan-duplicates="1">Scan again</button>`;
+    } else {
+      tabBody = `<button class="ref-btn" style="width:100%;margin-bottom:10px;" data-scan-duplicates="1">Scan again</button>` +
+        IMAGE_DUP_GROUPS.map((group) => `
+          <div class="panel">
+            <div class="panel-title">Possible duplicate (${group.length} images)</div>
+            <div class="image-masonry">${group.map(masonryItem).join('')}</div>
+          </div>`).join('');
+    }
+  } else {
+    tabBody = attached.length ? `<div class="image-masonry">${attached.map(masonryItem).join('')}</div>` : `<div class="empty-state">No attached images yet.</div>`;
+  }
+
   return `
     <div class="app-header">
       <div class="brand-row"><h1>🖼️ Images</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${items.length} image${items.length === 1 ? '' : 's'} across the app. Tap one to see which reads it's attached to.</div>
       <label class="upload-btn">📎 Add image(s)<input type="file" accept="image/*" multiple id="reaction-upload-input"></label>
+      <div class="tagmgr-tabs" style="margin-top:10px;">
+        <button class="tagmgr-tab ${IMAGES_TAB === 'attached' ? 'active' : ''}" data-images-tab="attached">Attached (${attached.length})</button>
+        <button class="tagmgr-tab ${IMAGES_TAB === 'unattached' ? 'active' : ''}" data-images-tab="unattached">Unattached (${unattached.length})</button>
+        <button class="tagmgr-tab ${IMAGES_TAB === 'duplicates' ? 'active' : ''}" data-images-tab="duplicates">Possible Duplicates</button>
+      </div>
     </div>
-    <main>${grid}</main>
+    <main>${tabBody}</main>
     ${renderBottomNav('reactions')}
   `;
 }
@@ -1301,9 +1548,97 @@ function openImageAttachmentsModal(dataUrl) {
   `);
 }
 
-// Shared by the library's own upload button and the detail-page "Add from
-// Reactions" picker's own file input (a picker can also add brand-new images
-// straight into the library while attaching them to an entry).
+/* ---------------------------------------------------------------------- */
+/* MEME / REACTION LIBRARY (bottom-nav "Reactions")                       */
+/* A personal, standalone collection of memes/reaction images — always     */
+/* organized by mood tag rather than attached to any specific journal      */
+/* entry (that's what the Images tab is for). Filter by mood, search by    */
+/* caption/keywords, Giphy-style.                                         */
+/* ---------------------------------------------------------------------- */
+
+const MOOD_OPTIONS = [
+  { key: 'angry', emoji: '😡', label: 'Angry' },
+  { key: 'funny', emoji: '😂', label: 'Funny' },
+  { key: 'horny', emoji: '🍆', label: 'Horny' },
+  { key: 'confused', emoji: '😵‍💫', label: 'Confused' },
+];
+let MEME_STATE = { moodFilter: null, search: '' };
+
+function memeFilteredItems() {
+  const q = MEME_STATE.search.trim().toLowerCase();
+  let items = ALL_REACTIONS.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  if (MEME_STATE.moodFilter) items = items.filter((r) => (r.moodTags || []).includes(MEME_STATE.moodFilter));
+  if (q) items = items.filter((r) => (r.note || '').toLowerCase().includes(q));
+  return items;
+}
+
+function renderMemeGrid() {
+  const items = memeFilteredItems();
+  return items.length
+    ? `<div class="image-masonry">${items.map((r) => `
+        <div class="masonry-item" data-open-meme="${r.id}">
+          <img src="${r.dataUrl}" alt="" loading="lazy">
+          ${!(r.moodTags || []).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
+        </div>`).join('')}</div>`
+    : `<div class="empty-state">No reactions match. ${MEME_STATE.moodFilter || MEME_STATE.search ? 'Try clearing the filter/search.' : 'Tap "Add" to upload your first meme.'}</div>`;
+}
+
+function renderMemeLibraryInPlace() {
+  const main = document.querySelector('#view-root main');
+  if (main) main.innerHTML = renderMemeGrid();
+  attachMemeGridHandlers();
+}
+
+function renderMemeLibrary() {
+  const untaggedCount = ALL_REACTIONS.filter((r) => !(r.moodTags || []).length).length;
+  const moodChips = MOOD_OPTIONS.map((m) => `<span class="rating-pick-icon flag-filter-icon ${MEME_STATE.moodFilter === m.key ? 'active' : ''}" data-meme-mood-filter="${m.key}" title="${m.label}">${m.emoji}</span>`).join('');
+  return `
+    <div class="app-header">
+      <div class="brand-row"><h1>🎭 Reactions</h1></div>
+      <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${ALL_REACTIONS.length} meme${ALL_REACTIONS.length === 1 ? '' : 's'} saved${untaggedCount ? ` · ${untaggedCount} untagged` : ''}.</div>
+      <label class="upload-btn" style="margin-bottom:10px;">📎 Add reaction(s)<input type="file" accept="image/*" multiple id="meme-upload-input"></label>
+      <div class="search-bar" style="margin-bottom:8px;"><span>🔍</span><input type="search" id="meme-search-input" placeholder="Search captions/keywords..." value="${escapeHtml(MEME_STATE.search)}"></div>
+      <div class="rating-pick-row">${moodChips}</div>
+    </div>
+    <main>${renderMemeGrid()}</main>
+    ${renderBottomNav('meme')}
+  `;
+}
+
+function attachMemeGridHandlers() {
+  document.querySelectorAll('[data-open-meme]').forEach((el) => {
+    el.onclick = () => openMemeEditModal(el.getAttribute('data-open-meme'));
+  });
+}
+
+function openMemeEditModal(id) {
+  const r = ALL_REACTIONS.find((x) => x.id === id);
+  if (!r) return;
+  openModal(`
+    <h3>Edit reaction</h3>
+    <img src="${r.dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">
+    <div class="field-row"><label>Caption/keywords (for search)</label><input type="text" id="meme-note-input" value="${escapeHtml(r.note || '')}" placeholder="e.g. blushing, screaming, oh no"></div>
+    <div class="field-row">
+      <label>Mood ${!(r.moodTags || []).length ? '<span style="color:var(--red-flag);">— pick at least one</span>' : ''}</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">
+        ${MOOD_OPTIONS.map((m) => `<button class="mood-chip ${(r.moodTags || []).includes(m.key) ? 'active' : ''}" data-meme-toggle-mood="${m.key}" data-meme-id="${r.id}">${m.emoji} ${m.label}</button>`).join('')}
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-ghost" data-delete-meme="${r.id}">🗑️ Delete</button>
+      <button class="btn-primary" data-close-modal="1">Done</button>
+    </div>
+  `);
+  const noteInput = document.getElementById('meme-note-input');
+  if (noteInput) noteInput.onblur = async () => {
+    const rr = ALL_REACTIONS.find((x) => x.id === id);
+    if (rr) { rr.note = noteInput.value; await saveReaction(rr); }
+  };
+}
+
+// Uploads into the standalone meme/reaction library (bottom-nav "Reactions").
+// These are never attached to a specific journal entry — just organized by
+// mood tag and searched by caption/keywords, Giphy-style.
 async function addReactionFiles(fileList) {
   const added = [];
   for (const file of fileList) {
@@ -1313,7 +1648,7 @@ async function addReactionFiles(fileList) {
     if (dupe) {
       if (!confirm('This looks like a duplicate of a reaction/meme you already saved. Add it again anyway?')) continue;
     }
-    const reaction = { id: uid('reaction'), dataUrl, hash, createdAt: new Date().toISOString() };
+    const reaction = { id: uid('reaction'), dataUrl, hash, moodTags: [], note: '', createdAt: new Date().toISOString() };
     await saveReaction(reaction);
     added.push(reaction);
   }
@@ -1403,6 +1738,89 @@ function applyTitleSwap(e, sm) {
   } else if (sm.altTitle && !e.altTitle) {
     e.altTitle = sm.altTitle;
   }
+}
+
+// Shared by the detail page's own "Use match"/"Dismiss" buttons and the
+// quick-review carousel (openMatchReviewCarousel) — takes an entryId
+// directly instead of always implicitly acting on STATE.entryId, so the
+// carousel can apply/dismiss without navigating to each entry's full page.
+async function applySuggestedMatch(entryId) {
+  const e = getEntry(entryId);
+  const sm = e && e.suggestedMatch;
+  if (!sm) return false;
+  if (sm.coverUrl) e.coverUrl = sm.coverUrl;
+  if (sm.url) { e.referenceUrl = sm.url; e.referenceSite = sm.site || 'Anime-Planet'; e.referenceStatus = 'confirmed'; }
+  if (sm.summary) e.summaryCache = sm.summary;
+  if (sm.tags && sm.tags.length) {
+    const merged = new Set([...(e.tags || []), ...sm.tags]);
+    e.tags = Array.from(merged);
+  }
+  if (!e.author && sm.author) e.author = sm.author;
+  applyTitleSwap(e, sm);
+  e.suggestedMatch = null;
+  await saveEntry(e);
+  return true;
+}
+async function dismissSuggestedMatch(entryId) {
+  const e = getEntry(entryId);
+  if (!e) return;
+  e.suggestedMatch = null;
+  await saveEntry(e);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Quick-review carousel — a single modal that steps through a queue of    */
+/* entries one at a time (Suggested Matches on the homepage, or "missing   */
+/* cover/reference" entries in Database review) so you can confirm/reject  */
+/* or cross-reference each one and move straight to the next without       */
+/* opening and closing each entry's full detail page.                     */
+/* ---------------------------------------------------------------------- */
+let MATCH_REVIEW_QUEUE = [];
+let MATCH_REVIEW_INDEX = 0;
+
+function openMatchReviewCarousel(startEntryId) {
+  MATCH_REVIEW_QUEUE = ALL_ENTRIES.filter((e) => e.suggestedMatch).map((e) => e.id);
+  if (!MATCH_REVIEW_QUEUE.length) { showToast('No suggested matches to review'); return; }
+  const startIdx = MATCH_REVIEW_QUEUE.indexOf(startEntryId);
+  MATCH_REVIEW_INDEX = startIdx > -1 ? startIdx : 0;
+  renderMatchReviewModal();
+}
+
+function renderMatchReviewModal() {
+  if (!MATCH_REVIEW_QUEUE.length) { closeModal(); render(); return; }
+  if (MATCH_REVIEW_INDEX >= MATCH_REVIEW_QUEUE.length) MATCH_REVIEW_INDEX = MATCH_REVIEW_QUEUE.length - 1;
+  const entryId = MATCH_REVIEW_QUEUE[MATCH_REVIEW_INDEX];
+  const e = getEntry(entryId);
+  if (!e || !e.suggestedMatch) {
+    // Handled elsewhere already (or deleted) since the queue was built — drop it and move on.
+    MATCH_REVIEW_QUEUE.splice(MATCH_REVIEW_INDEX, 1);
+    renderMatchReviewModal();
+    return;
+  }
+  const sm = e.suggestedMatch;
+  openModal(`
+    <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em;">Suggested Match Review — ${MATCH_REVIEW_INDEX + 1} of ${MATCH_REVIEW_QUEUE.length}</div>
+    <h3 style="margin:0 0 8px;">${escapeHtml(e.title)}</h3>
+    <div class="match-preview compact">
+      ${sm.coverUrl ? `<img src="${escapeHtml(sm.coverUrl)}" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : ''}
+      <div class="info">
+        <strong>${escapeHtml(sm.title || e.title)}</strong>
+        ${sm.altTitle ? escapeHtml(sm.altTitle) + '<br>' : ''}
+        ${sm.author ? 'By ' + escapeHtml(sm.author) + '<br>' : ''}
+        <p style="margin:6px 0 0;">${escapeHtml((sm.summary || '').slice(0, 200))}${(sm.summary || '').length > 200 ? '…' : ''}</p>
+      </div>
+    </div>
+    ${sm.url ? `<div style="margin:6px 0;"><a href="${escapeHtml(sm.url)}" target="_blank" style="font-size:11px;">View on ${escapeHtml(sm.site || 'Anime-Planet')} ↗</a></div>` : ''}
+    <div class="modal-actions">
+      <button class="btn-ghost" data-carousel-dismiss="1">✗ Dismiss</button>
+      <button class="btn-primary" data-carousel-use="1">✓ Use match</button>
+    </div>
+    <div style="display:flex;justify-content:space-between;gap:6px;margin-top:10px;">
+      <button class="ref-btn" data-carousel-prev="1" ${MATCH_REVIEW_INDEX === 0 ? 'disabled' : ''}>‹ Prev</button>
+      <button class="ref-btn" data-carousel-open-full="${e.id}">Open full page</button>
+      <button class="ref-btn" data-carousel-next="1" ${MATCH_REVIEW_INDEX >= MATCH_REVIEW_QUEUE.length - 1 ? 'disabled' : ''}>Next ›</button>
+    </div>
+  `);
 }
 
 // Pending (unsaved) tag edits for whichever entry is currently open. Clicking a
@@ -1516,7 +1934,7 @@ function renderDetail(e) {
     `;
   } else {
     topFieldsHtml = isReading ? `
-      <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)} <button class="icon-btn-inline" data-edit-toggle="1" title="Edit details">✏️</button></div></div>
+      <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)}</div></div>
       ${e.altTitle ? `<div class="field-row"><label>Alt title</label><div class="value plain">${escapeHtml(e.altTitle)}</div></div>` : ''}
       ${(e.isNovel || e.novelAuthor) ? `<div class="field-row"><label>Novel</label><div class="value plain">${escapeHtml(formatNames(e.novelAuthor)) || '—'}</div></div>` : ''}
       <div class="field-row"><label>Author</label><div class="value plain">${escapeHtml(formatNames(e.author)) || '—'}</div></div>
@@ -1525,7 +1943,7 @@ function renderDetail(e) {
       ${e.totalSeasons ? `<div class="field-row"><label>Seasons</label><div class="value plain">${e.totalSeasons}</div></div>` : ''}
       <div class="field-row"><label>Status</label><div class="value plain">${escapeHtml(e.status) || '—'}</div></div>
     ` : `
-      <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)} <button class="icon-btn-inline" data-edit-toggle="1" title="Edit details">✏️</button></div></div>
+      <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)}</div></div>
       ${e.altTitle ? `<div class="field-row"><label>Alt title</label><div class="value plain">${escapeHtml(e.altTitle)}</div></div>` : ''}
       <div class="field-row"><label>Notes (legacy)</label><div class="value plain">${escapeHtml(e.legacyNote) || '—'}</div></div>
     `;
@@ -1540,12 +1958,20 @@ function renderDetail(e) {
     <div class="detail-header">
       <button class="back-btn" data-nav="home">← Back</button>
       <h2>${escapeHtml(e.title)}</h2>
-      <button class="icon-btn" data-toggle-fav="1">${e.favorite ? '💜' : '🤍'}</button>
+      <button class="icon-btn" data-force-save="1" title="Save now">✅</button>
+      <button class="icon-btn" data-toggle-fav="1" title="Favorite">${e.favorite ? '💜' : '🤍'}</button>
+      <button class="icon-btn" data-toggle-hd="1" title="On HD">${isOnDrive(e) ? '💾' : '🗄️'}</button>
+      <button class="icon-btn" data-merge-entry="${e.id}" title="Mark as duplicate / merge into another entry">🔀</button>
+      <button class="icon-btn danger" data-delete-entry="${e.id}" title="Delete this entry">✕</button>
     </div>
     <div class="journal">
 
       <!-- 1. Cover + details -->
       <div class="panel">
+        <div class="panel-title-row" style="margin-bottom:8px;">
+          <div class="panel-title" style="margin:0;">Details</div>
+          ${!DETAIL_EDIT_MODE ? `<button class="icon-btn-inline" data-edit-toggle="1" title="Edit details">✏️</button>` : ''}
+        </div>
         <div class="split-row">
           <div>
             <div class="cover-slot">${e.coverUrl ? `<img src="${escapeHtml(e.coverUrl)}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='🍆'">` : '🍆'}</div>
@@ -1633,12 +2059,11 @@ function renderDetail(e) {
         <textarea id="user-notes" placeholder="Your thoughts...">${escapeHtml(e.notes)}</textarea>
       </div>
 
-      <!-- 7. Images (screencaps, fanart, meme reactions — all in one place) -->
+      <!-- 7. Images (screencaps, character photos — always attached to this read) -->
       <div class="panel">
         <div class="panel-title">Images</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
           <label class="upload-btn" style="flex:1;">📎 Add photo(s)<input type="file" accept="image/*" multiple id="screencap-input"></label>
-          <button class="ref-btn" style="flex:1;" data-open-reaction-picker="1">🖼️ Add from Images</button>
         </div>
         <div class="screencap-grid">
           ${(e.screencaps || []).map((src, i) => `<div class="screencap-thumb"><img src="${src}" data-view-screencap="${i}"><button class="del" data-del-screencap="${i}">✕</button></div>`).join('')}
@@ -1682,7 +2107,10 @@ function renderDatabase() {
 
   return `
     <div class="app-header">
-      <div class="brand-row"><h1>🗂️ Database Mode</h1></div>
+      <div class="brand-row">
+        <h1>🗂️ Database Mode</h1>
+        <button class="icon-btn" data-open-settings="1" title="Settings">⚙️</button>
+      </div>
       <div class="search-bar"><span>🔍</span><input type="search" id="db-search" placeholder="Filter table..."></div>
     </div>
     <main>
@@ -1735,7 +2163,7 @@ function renderReviewCard(e) {
         ${sm ? `
           <button class="btn-ghost" data-review-dismiss="${e.id}">Dismiss</button>
           <button class="btn-primary" data-review-use="${e.id}">✓ Use this match</button>
-        ` : `<button class="ref-btn" data-open-entry="${e.id}">🔗 Cross-reference manually</button>`}
+        ` : `<button class="ref-btn" data-review-crossref="${e.id}">🔗 Cross-reference manually</button>`}
       </div>
     </div>`;
 }
@@ -1821,6 +2249,50 @@ function mergeEntryData(target, source) {
   return target;
 }
 
+// Manual "mark as duplicate" picker, reachable from any entry's own header
+// (the 🔀 icon) — distinct from the automatic duplicate-review queue. Lets
+// you pick which OTHER entry is the one to keep; the current entry's data
+// gets folded into it via mergeEntryData before being deleted.
+let MERGE_SOURCE_ID = null;
+function openMergePickerModal(entryId) {
+  const entry = getEntry(entryId);
+  if (!entry) return;
+  MERGE_SOURCE_ID = entryId;
+  const candidates = ALL_ENTRIES.filter((x) => x.id !== entryId).sort((a, b) => a.title.localeCompare(b.title));
+  const renderList = (list) => list.length
+    ? list.slice(0, 40).map((c) => `<button class="ref-btn" style="width:100%;text-align:left;" data-merge-pick-target="${c.id}">${escapeHtml(c.title)}</button>`).join('')
+    : '<div class="empty-state">No matches.</div>';
+  openModal(`
+    <h3>Mark as duplicate of…</h3>
+    <p style="font-size:12px;color:var(--text-dim);">Pick the entry to keep. "${escapeHtml(entry.title)}"'s notes, ratings, tags, flags, and images will be merged into it, then this entry is deleted.</p>
+    <input type="text" id="merge-pick-search" placeholder="Search titles..." style="width:100%;margin-bottom:10px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--navy-2);color:var(--text);box-sizing:border-box;">
+    <div id="merge-pick-list" style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;">${renderList(candidates)}</div>
+    <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Cancel</button></div>
+  `);
+  const searchEl = document.getElementById('merge-pick-search');
+  const listEl = document.getElementById('merge-pick-list');
+  if (searchEl) {
+    searchEl.oninput = () => {
+      const q = searchEl.value.trim().toLowerCase();
+      const filtered = q ? candidates.filter((c) => c.title.toLowerCase().includes(q)) : candidates;
+      listEl.innerHTML = renderList(filtered);
+    };
+    searchEl.focus();
+  }
+}
+
+async function mergeIntoTarget(sourceId, targetId) {
+  const source = getEntry(sourceId);
+  const target = getEntry(targetId);
+  if (!source || !target) return;
+  mergeEntryData(target, source);
+  await saveEntry(target);
+  await deleteEntry(sourceId);
+  showToast('Merged and deleted');
+  closeModal();
+  navigate('detail', targetId);
+}
+
 function findDuplicateGroups() {
   const groups = {};
   ALL_ENTRIES.forEach((e) => {
@@ -1898,12 +2370,19 @@ function exportCsv() {
 /* Cross-reference (Anime-Planet) flow                                    */
 /* ---------------------------------------------------------------------- */
 
-function openCrossRefModal(entryId) {
+// `reviewInfo` (optional) is { index, total } — only set when this modal is
+// opened as part of the "review missing cover/reference" carousel, in which
+// case a counter + Prev/Skip controls show up and confirming a match moves
+// straight to the next entry needing review instead of jumping to the full
+// detail page.
+function openCrossRefModal(entryId, reviewInfo) {
+  if (!reviewInfo) CROSSREF_REVIEW_ACTIVE = false;
   const e = getEntry(entryId);
   const proxy = getProxyUrl();
   const apSearchUrl = 'https://www.anime-planet.com/manga/all?name=' + encodeURIComponent(e.title);
   const mgSearchUrl = 'https://www.mangago.me/r/l_search/?name=' + encodeURIComponent(e.title);
   openModal(`
+    ${reviewInfo ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em;">Reviewing missing cover/reference — ${reviewInfo.index + 1} of ${reviewInfo.total}</div>` : ''}
     <h3>Cross-reference "${escapeHtml(e.title)}"</h3>
     ${proxy ? '' : `<div style="background:var(--pink-soft);color:var(--pink);padding:8px 10px;border-radius:8px;font-size:12px;margin-bottom:10px;">No proxy URL set yet. Add one in Settings (⚙️) to enable live fetching — see the setup notes I gave you.</div>`}
     <p style="font-size:12.5px;color:var(--text-dim);">1. Find the title on Anime-Planet or MangaGo, then paste its page URL below.</p>
@@ -1921,7 +2400,42 @@ function openCrossRefModal(entryId) {
       <button class="ref-btn" style="width:100%;" data-paste-ref="${entryId}">📋 Paste from clipboard</button>
     </div>
     <div id="crossref-preview"></div>
+    ${reviewInfo ? `
+      <div style="display:flex;justify-content:space-between;gap:6px;margin-top:14px;border-top:1px solid var(--border);padding-top:10px;">
+        <button class="ref-btn" data-crossref-review-prev="1" ${reviewInfo.index === 0 ? 'disabled' : ''}>‹ Prev</button>
+        <button class="ref-btn" data-crossref-review-skip="1">Skip ›</button>
+      </div>
+    ` : ''}
   `);
+}
+
+/* Cross-reference review carousel — same "step through one at a time" idea
+   as the suggested-match carousel above, but for entries with no cover or
+   reference link at all yet (the Database "Review missing cover/reference"
+   queue). */
+let CROSSREF_REVIEW_QUEUE = [];
+let CROSSREF_REVIEW_INDEX = 0;
+let CROSSREF_REVIEW_ACTIVE = false;
+
+function openCrossRefReviewCarousel(startEntryId) {
+  CROSSREF_REVIEW_QUEUE = ALL_ENTRIES.filter(needsReview).map((e) => e.id);
+  if (!CROSSREF_REVIEW_QUEUE.length) { showToast('Nothing left to review'); return; }
+  const idx = CROSSREF_REVIEW_QUEUE.indexOf(startEntryId);
+  CROSSREF_REVIEW_INDEX = idx > -1 ? idx : 0;
+  CROSSREF_REVIEW_ACTIVE = true;
+  openCrossRefModal(CROSSREF_REVIEW_QUEUE[CROSSREF_REVIEW_INDEX], { index: CROSSREF_REVIEW_INDEX, total: CROSSREF_REVIEW_QUEUE.length });
+}
+
+function advanceCrossRefReview() {
+  CROSSREF_REVIEW_QUEUE.splice(CROSSREF_REVIEW_INDEX, 1);
+  if (!CROSSREF_REVIEW_QUEUE.length) {
+    CROSSREF_REVIEW_ACTIVE = false;
+    showToast('All done reviewing! 🎉');
+    render();
+    return;
+  }
+  if (CROSSREF_REVIEW_INDEX >= CROSSREF_REVIEW_QUEUE.length) CROSSREF_REVIEW_INDEX = CROSSREF_REVIEW_QUEUE.length - 1;
+  openCrossRefModal(CROSSREF_REVIEW_QUEUE[CROSSREF_REVIEW_INDEX], { index: CROSSREF_REVIEW_INDEX, total: CROSSREF_REVIEW_QUEUE.length });
 }
 
 // Reads whatever the cross-reference bookmarklet (see openSettingsModal) just
@@ -2135,9 +2649,13 @@ async function confirmReference(entryId) {
   if (!e.author && data.author) e.author = data.author;
   if (!e.altTitle && data.altTitle) e.altTitle = data.altTitle;
   await saveEntry(e);
-  closeModal();
   showToast('Linked! Summary & cover pulled in.');
-  navigate('detail', entryId);
+  if (CROSSREF_REVIEW_ACTIVE) {
+    advanceCrossRefReview();
+  } else {
+    closeModal();
+    navigate('detail', entryId);
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -2224,6 +2742,8 @@ function attachRootHandlers() {
     el.onclick = () => {
       STATE.showFavoritesOnly = false;
       STATE.showOnDriveOnly = false;
+      STATE.showHentaiOnly = false;
+      FILTERS_COLLAPSED = false;
       navigate('home');
     };
   });
@@ -2236,10 +2756,13 @@ function attachRootHandlers() {
   root.querySelectorAll('[data-open-entry]').forEach((el) => {
     el.onclick = () => navigate('detail', el.getAttribute('data-open-entry'));
   });
+  root.querySelectorAll('[data-review-match]').forEach((el) => {
+    el.onclick = () => openMatchReviewCarousel(el.getAttribute('data-review-match'));
+  });
   root.querySelectorAll('[data-nav]').forEach((el) => {
     el.onclick = () => {
       const view = el.getAttribute('data-nav');
-      if (view === 'home') { STATE.showFavoritesOnly = false; STATE.showOnDriveOnly = false; }
+      if (view === 'home') { STATE.showFavoritesOnly = false; STATE.showOnDriveOnly = false; STATE.showHentaiOnly = false; FILTERS_COLLAPSED = false; }
       navigate(view);
     };
   });
@@ -2248,14 +2771,33 @@ function attachRootHandlers() {
       const which = el.getAttribute('data-nav-filter');
       STATE.showFavoritesOnly = which === 'favorites';
       STATE.showOnDriveOnly = which === 'onDrive';
+      STATE.showHentaiOnly = which === 'hentai';
+      // Favorites/On HD are meant to be a clean "just show me everything"
+      // list — the filter box (which you didn't ask for) starts tucked away.
+      if (which === 'favorites' || which === 'onDrive') FILTERS_COLLAPSED = true;
       navigate('home');
     };
   });
   const searchInput = root.querySelector('#search-input');
   if (searchInput) {
-    searchInput.oninput = (ev) => { STATE.search = ev.target.value; renderHomeInPlace(); };
-    searchInput.focus();
-    searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+    searchInput.oninput = (ev) => {
+      STATE.search = ev.target.value;
+      if (STATE.view === 'home') {
+        renderHomeInPlace();
+      } else {
+        // Search lives in the global header now, reachable from any screen —
+        // typing while elsewhere jumps to Journal to show results, then
+        // restores focus/cursor so the jump doesn't interrupt typing.
+        STATE.showFavoritesOnly = false; STATE.showOnDriveOnly = false; STATE.showHentaiOnly = false; FILTERS_COLLAPSED = false;
+        SEARCH_INPUT_SHOULD_FOCUS = true;
+        navigate('home');
+      }
+    };
+    if (SEARCH_INPUT_SHOULD_FOCUS) {
+      SEARCH_INPUT_SHOULD_FOCUS = false;
+      searchInput.focus();
+      searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+    }
   }
   root.querySelectorAll('[data-format]').forEach((el) => {
     el.onclick = () => { STATE.format = el.getAttribute('data-format'); STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.flagFilter = null; render(); };
@@ -2319,10 +2861,43 @@ function attachRootHandlers() {
   if (settingsBtn) settingsBtn.onclick = openSettingsModal;
 
   // Detail view handlers
+  const forceSaveBtn = root.querySelector('[data-force-save]');
+  if (forceSaveBtn) forceSaveBtn.onclick = async () => {
+    // Blur whatever field is currently focused first, so its own onblur
+    // handler (notes, char notes, etc.) fires and writes its latest value
+    // onto the entry object before this does one final explicit save.
+    if (document.activeElement && typeof document.activeElement.blur === 'function') document.activeElement.blur();
+    const e = getEntry(STATE.entryId);
+    if (e) await saveEntry(e);
+    showToast('✅ Saved');
+  };
   const favBtn = root.querySelector('[data-toggle-fav]');
   if (favBtn) favBtn.onclick = async () => {
     const e = getEntry(STATE.entryId); e.favorite = !e.favorite; await saveEntry(e); render();
   };
+  const hdBtn = root.querySelector('[data-toggle-hd]');
+  if (hdBtn) hdBtn.onclick = async () => {
+    const e = getEntry(STATE.entryId);
+    if (isOnDrive(e)) {
+      e.tags = (e.tags || []).filter((t) => normalizeTagKey(t) !== ON_DRIVE_TAG_KEY);
+      e.customTags = (e.customTags || []).filter((t) => normalizeTagKey(t) !== ON_DRIVE_TAG_KEY);
+    } else {
+      e.customTags = [...(e.customTags || []), 'On HD'];
+    }
+    await saveEntry(e); render();
+  };
+  const deleteBtn = root.querySelector('[data-delete-entry]');
+  if (deleteBtn) deleteBtn.onclick = async () => {
+    const id = deleteBtn.getAttribute('data-delete-entry');
+    const e = getEntry(id);
+    if (!e) return;
+    if (!confirm(`Delete "${e.title}" for good? This can't be undone.`)) return;
+    await deleteEntry(id);
+    showToast('Deleted');
+    navigate('home');
+  };
+  const mergeBtn = root.querySelector('[data-merge-entry]');
+  if (mergeBtn) mergeBtn.onclick = () => openMergePickerModal(mergeBtn.getAttribute('data-merge-entry'));
   const shelfSelectEl = root.querySelector('[data-shelf-select]');
   if (shelfSelectEl) shelfSelectEl.onchange = async () => {
     const e = getEntry(STATE.entryId);
@@ -2351,6 +2926,7 @@ function attachRootHandlers() {
     };
   });
   root.querySelectorAll('[data-char-notes]').forEach((el) => {
+    attachBulletTextarea(el);
     el.onblur = async () => {
       const who = el.getAttribute('data-char-notes');
       const e = getEntry(STATE.entryId);
@@ -2480,6 +3056,7 @@ function attachRootHandlers() {
   };
   const notesArea = root.querySelector('#user-notes');
   if (notesArea) {
+    attachBulletTextarea(notesArea);
     const autoGrow = () => { notesArea.style.height = 'auto'; notesArea.style.height = (notesArea.scrollHeight + 2) + 'px'; };
     autoGrow();
     notesArea.oninput = autoGrow;
@@ -2527,6 +3104,33 @@ function attachRootHandlers() {
   root.querySelectorAll('[data-view-image-attachments]').forEach((el) => {
     el.onclick = () => openImageAttachmentsModal(el.getAttribute('data-view-image-attachments'));
   });
+  root.querySelectorAll('[data-images-tab]').forEach((el) => {
+    el.onclick = () => { IMAGES_TAB = el.getAttribute('data-images-tab'); render(); };
+  });
+  const scanDupBtn = root.querySelector('[data-scan-duplicates]');
+  if (scanDupBtn) scanDupBtn.onclick = () => scanForImageDuplicates();
+
+  // Meme/reaction library
+  attachMemeGridHandlers();
+  const memeUploadInput = root.querySelector('#meme-upload-input');
+  if (memeUploadInput) memeUploadInput.onchange = async () => {
+    if (!memeUploadInput.files.length) return;
+    await addReactionFiles(memeUploadInput.files);
+    render();
+  };
+  const memeSearchInput = root.querySelector('#meme-search-input');
+  if (memeSearchInput) {
+    memeSearchInput.oninput = (ev) => { MEME_STATE.search = ev.target.value; renderMemeLibraryInPlace(); };
+    memeSearchInput.focus();
+    memeSearchInput.setSelectionRange(memeSearchInput.value.length, memeSearchInput.value.length);
+  }
+  root.querySelectorAll('[data-meme-mood-filter]').forEach((el) => {
+    el.onclick = () => {
+      const mood = el.getAttribute('data-meme-mood-filter');
+      MEME_STATE.moodFilter = MEME_STATE.moodFilter === mood ? null : mood;
+      render();
+    };
+  });
   root.querySelectorAll('[data-view-screencap]').forEach((imgEl) => {
     imgEl.onclick = () => {
       openModal(`
@@ -2542,28 +3146,14 @@ function attachRootHandlers() {
   if (generateMatchBtn) generateMatchBtn.onclick = () => generateSuggestedMatch(STATE.entryId);
   const useSuggestedBtn = root.querySelector('[data-use-suggested]');
   if (useSuggestedBtn) useSuggestedBtn.onclick = async () => {
-    const e = getEntry(STATE.entryId);
-    const sm = e.suggestedMatch;
-    if (!sm) return;
-    if (sm.coverUrl) e.coverUrl = sm.coverUrl;
-    if (sm.url) { e.referenceUrl = sm.url; e.referenceSite = sm.site || 'Anime-Planet'; e.referenceStatus = 'confirmed'; }
-    if (sm.summary) e.summaryCache = sm.summary;
-    if (sm.tags && sm.tags.length) {
-      const merged = new Set([...(e.tags || []), ...sm.tags]);
-      e.tags = Array.from(merged);
-    }
-    if (!e.author && sm.author) e.author = sm.author;
-    applyTitleSwap(e, sm);
-    e.suggestedMatch = null;
-    await saveEntry(e);
+    const applied = await applySuggestedMatch(STATE.entryId);
+    if (!applied) return;
     showToast('Applied!');
     render();
   };
   const dismissSuggestedBtn = root.querySelector('[data-dismiss-suggested]');
   if (dismissSuggestedBtn) dismissSuggestedBtn.onclick = async () => {
-    const e = getEntry(STATE.entryId);
-    e.suggestedMatch = null;
-    await saveEntry(e);
+    await dismissSuggestedMatch(STATE.entryId);
     showToast('Dismissed');
     render();
   };
@@ -2626,12 +3216,58 @@ function attachRootHandlers() {
       render();
     };
   });
-  const toggleHiddenTagsBtn = root.querySelector('[data-toggle-hidden-tags]');
-  if (toggleHiddenTagsBtn) toggleHiddenTagsBtn.onclick = () => { SHOW_HIDDEN_TAGS = !SHOW_HIDDEN_TAGS; render(); };
   root.querySelectorAll('[data-restore-tag]').forEach((el) => {
     el.onclick = async () => {
       await restoreDeletedTag(el.getAttribute('data-restore-tag'));
       showToast('Restored — this tag can be used again');
+      render();
+    };
+  });
+  root.querySelectorAll('[data-tagmgr-tab]').forEach((el) => {
+    el.onclick = () => { TAG_MGR_TAB = el.getAttribute('data-tagmgr-tab'); render(); };
+  });
+  root.querySelectorAll('[data-tagmgr-hide]').forEach((el) => {
+    el.onclick = async () => {
+      const name = el.getAttribute('data-tagmgr-hide');
+      const nowHidden = !USER_HIDDEN_TAG_KEYS.has(normalizeTagKey(name));
+      await setTagSoftHidden(name, nowHidden);
+      showToast(nowHidden ? 'Hidden from filters' : 'Shown in filters again');
+      render();
+    };
+  });
+  root.querySelectorAll('[data-suggest-hide]').forEach((el) => {
+    el.onclick = async () => {
+      await setTagSoftHidden(el.getAttribute('data-suggest-hide'), true);
+      showToast('Hidden');
+      render();
+    };
+  });
+  root.querySelectorAll('[data-suggest-dismiss]').forEach((el) => {
+    el.onclick = async () => {
+      await dismissTagSuggestion(el.getAttribute('data-suggest-dismiss'));
+      render();
+    };
+  });
+  root.querySelectorAll('[data-suggest-merge-a]').forEach((el) => {
+    el.onclick = async () => {
+      const keepName = el.getAttribute('data-suggest-merge-a');
+      const dropName = el.getAttribute('data-suggest-merge-b');
+      for (const e of ALL_ENTRIES) {
+        let changed = false;
+        if ((e.tags || []).includes(dropName)) {
+          e.tags = e.tags.filter((t) => t !== dropName);
+          if (!e.tags.includes(keepName) && !(e.customTags || []).includes(keepName)) e.tags.push(keepName);
+          changed = true;
+        }
+        if ((e.customTags || []).includes(dropName)) {
+          e.customTags = e.customTags.filter((t) => t !== dropName);
+          if (!(e.tags || []).includes(keepName) && !e.customTags.includes(keepName)) e.customTags.push(keepName);
+          changed = true;
+        }
+        if (changed) await saveEntry(e);
+      }
+      await dismissTagSuggestion(el.getAttribute('data-suggest-sig'));
+      showToast(`Merged "${dropName}" into "${keepName}"`);
       render();
     };
   });
@@ -2754,6 +3390,9 @@ function attachRootHandlers() {
       render();
     };
   });
+  root.querySelectorAll('[data-review-crossref]').forEach((el) => {
+    el.onclick = () => openCrossRefReviewCarousel(el.getAttribute('data-review-crossref'));
+  });
 
   // Duplicate review
   root.querySelectorAll('[data-dup-delete]').forEach((el) => {
@@ -2794,11 +3433,11 @@ function renderHomeInPlace() {
   const main = root.querySelector('main');
   const entries = filteredEntries();
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
       body += `<div class="section-title">🔎 Suggested Matches <span style="opacity:.6">(${suggestedGroup.length})</span></div>`;
-      body += scrollRow('row-suggested', suggestedGroup.map(renderCoverCard).join(''));
+      body += scrollRow('row-suggested', suggestedGroup.map((e) => renderCoverCard(e, true)).join(''));
     }
     const shelvesToShow = STATE.format === 'reading' ? SHELVES_READING : ['Completed'];
     shelvesToShow.forEach((shelf) => {
@@ -2818,6 +3457,9 @@ function renderHomeInPlace() {
     main.innerHTML = body;
     main.querySelectorAll('[data-open-entry]').forEach((el) => {
       el.onclick = () => navigate('detail', el.getAttribute('data-open-entry'));
+    });
+    main.querySelectorAll('[data-review-match]').forEach((el) => {
+      el.onclick = () => openMatchReviewCarousel(el.getAttribute('data-review-match'));
     });
     main.querySelectorAll('[data-scroll-target]').forEach((btn) => {
       btn.onclick = () => {
@@ -2841,10 +3483,71 @@ document.addEventListener('click', (ev) => {
     render();
     return;
   }
-  if (t.matches('[data-close-modal]')) closeModal();
+  if (t.matches('[data-close-modal]')) { CROSSREF_REVIEW_ACTIVE = false; closeModal(); }
+  if (t.matches('[data-crossref-review-skip]')) advanceCrossRefReview();
+  if (t.matches('[data-crossref-review-prev]')) {
+    CROSSREF_REVIEW_INDEX = Math.max(0, CROSSREF_REVIEW_INDEX - 1);
+    openCrossRefModal(CROSSREF_REVIEW_QUEUE[CROSSREF_REVIEW_INDEX], { index: CROSSREF_REVIEW_INDEX, total: CROSSREF_REVIEW_QUEUE.length });
+  }
   if (t.matches('[data-goto-entry-from-modal]')) {
     closeModal();
     navigate('detail', t.getAttribute('data-goto-entry-from-modal'));
+  }
+  if (t.matches('[data-merge-pick-target]')) {
+    const targetId = t.getAttribute('data-merge-pick-target');
+    const source = getEntry(MERGE_SOURCE_ID);
+    const target = getEntry(targetId);
+    if (source && target && confirm(`Merge "${source.title}" into "${target.title}"? "${source.title}" will be deleted after its data is copied over.`)) {
+      mergeIntoTarget(MERGE_SOURCE_ID, targetId);
+    }
+  }
+  if (t.matches('[data-meme-toggle-mood]')) {
+    const id = t.getAttribute('data-meme-id');
+    const mood = t.getAttribute('data-meme-toggle-mood');
+    const r = ALL_REACTIONS.find((x) => x.id === id);
+    if (r) {
+      r.moodTags = r.moodTags || [];
+      if (r.moodTags.includes(mood)) r.moodTags = r.moodTags.filter((m) => m !== mood);
+      else r.moodTags.push(mood);
+      saveReaction(r);
+      openMemeEditModal(id);
+    }
+  }
+  if (t.matches('[data-carousel-use]')) {
+    const entryId = MATCH_REVIEW_QUEUE[MATCH_REVIEW_INDEX];
+    applySuggestedMatch(entryId).then(() => {
+      showToast('Applied!');
+      MATCH_REVIEW_QUEUE.splice(MATCH_REVIEW_INDEX, 1);
+      renderMatchReviewModal();
+    });
+  }
+  if (t.matches('[data-carousel-dismiss]')) {
+    const entryId = MATCH_REVIEW_QUEUE[MATCH_REVIEW_INDEX];
+    dismissSuggestedMatch(entryId).then(() => {
+      showToast('Dismissed');
+      MATCH_REVIEW_QUEUE.splice(MATCH_REVIEW_INDEX, 1);
+      renderMatchReviewModal();
+    });
+  }
+  if (t.matches('[data-carousel-prev]')) {
+    MATCH_REVIEW_INDEX = Math.max(0, MATCH_REVIEW_INDEX - 1);
+    renderMatchReviewModal();
+  }
+  if (t.matches('[data-carousel-next]')) {
+    MATCH_REVIEW_INDEX = Math.min(MATCH_REVIEW_QUEUE.length - 1, MATCH_REVIEW_INDEX + 1);
+    renderMatchReviewModal();
+  }
+  if (t.matches('[data-carousel-open-full]')) {
+    closeModal();
+    navigate('detail', t.getAttribute('data-carousel-open-full'));
+  }
+  if (t.matches('[data-delete-meme]')) {
+    const id = t.getAttribute('data-delete-meme');
+    if (confirm('Delete this reaction from your library for good?')) {
+      deleteReaction(id);
+      closeModal();
+      render();
+    }
   }
   if (t.matches('[data-save-settings]')) {
     const val = document.getElementById('proxy-url-input').value;
@@ -2962,6 +3665,10 @@ async function boot() {
     if (savedResolved && Array.isArray(savedResolved.value)) HD_RESOLVED_RAW = new Set(savedResolved.value);
     const savedIgnoredDup = await idbGet(STORE_META, 'ignoredDupGroups');
     if (savedIgnoredDup && Array.isArray(savedIgnoredDup.value)) IGNORED_DUP_GROUPS = new Set(savedIgnoredDup.value);
+    const savedUserHidden = await idbGet(STORE_META, 'userHiddenTagKeys');
+    if (savedUserHidden && Array.isArray(savedUserHidden.value)) USER_HIDDEN_TAG_KEYS = new Set(savedUserHidden.value);
+    const savedIgnoredSugg = await idbGet(STORE_META, 'ignoredTagSuggestions');
+    if (savedIgnoredSugg && Array.isArray(savedIgnoredSugg.value)) IGNORED_TAG_SUGGESTIONS = new Set(savedIgnoredSugg.value);
     if ('serviceWorker' in navigator) {
       setupAutoUpdatingServiceWorker();
     }
