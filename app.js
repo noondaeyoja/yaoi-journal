@@ -665,6 +665,13 @@ async function signOutOfAccount() {
 /* Render: root switch                                                    */
 /* ---------------------------------------------------------------------- */
 
+function renderGlobalHeader() {
+  return `
+    <div class="global-header" data-header-home="1">
+      <span class="global-header-logo">🍆</span><span class="global-header-title">Yaoi Journal</span>
+    </div>`;
+}
+
 function render() {
   const root = document.getElementById('view-root');
   if (!CURRENT_USER) {
@@ -672,15 +679,17 @@ function render() {
     attachAuthHandlers();
     return;
   }
-  if (STATE.view === 'home') root.innerHTML = renderHome();
-  else if (STATE.view === 'detail') root.innerHTML = renderDetail(getEntry(STATE.entryId));
-  else if (STATE.view === 'tags') root.innerHTML = renderTagManager();
-  else if (STATE.view === 'tagEntries') root.innerHTML = renderTagEntries();
-  else if (STATE.view === 'hdMatch') root.innerHTML = renderHdMatch();
-  else if (STATE.view === 'reactions') root.innerHTML = renderReactionsLibrary();
-  else if (STATE.view === 'database') root.innerHTML = renderDatabase();
-  else if (STATE.view === 'review') root.innerHTML = renderReviewQueue();
-  else if (STATE.view === 'duplicates') root.innerHTML = renderDuplicates();
+  let body = '';
+  if (STATE.view === 'home') body = renderHome();
+  else if (STATE.view === 'detail') body = renderDetail(getEntry(STATE.entryId));
+  else if (STATE.view === 'tags') body = renderTagManager();
+  else if (STATE.view === 'tagEntries') body = renderTagEntries();
+  else if (STATE.view === 'hdMatch') body = renderHdMatch();
+  else if (STATE.view === 'reactions') body = renderReactionsLibrary();
+  else if (STATE.view === 'database') body = renderDatabase();
+  else if (STATE.view === 'review') body = renderReviewQueue();
+  else if (STATE.view === 'duplicates') body = renderDuplicates();
+  root.innerHTML = renderGlobalHeader() + body;
   attachRootHandlers();
 }
 
@@ -732,6 +741,9 @@ const HIDDEN_TAG_KEYS = new Set(['bl', 'yaoi', 'manhwa', 'webtoon', 'webtoons', 
 // IndexedDB (and synced via Firestore) so a deleted tag can't resurface from
 // a future HD-drive scan, cross-reference pull, or other import.
 let DELETED_TAG_KEYS = new Set();
+// Whether the Tag Manager's "Show hidden tags" toggle is currently on —
+// reveals the list of tags you've deleted before, each with a Restore button.
+let SHOW_HIDDEN_TAGS = false;
 function isHiddenTag(t) {
   const norm = normalizeTagKey(t);
   return HIDDEN_TAG_KEYS.has(norm) || DELETED_TAG_KEYS.has(norm);
@@ -744,6 +756,12 @@ function sanitizeIncomingTags(tags) {
 }
 async function recordDeletedTag(name) {
   DELETED_TAG_KEYS.add(normalizeTagKey(name));
+  const arr = Array.from(DELETED_TAG_KEYS);
+  await idbPut(STORE_META, { key: 'deletedTagKeys', value: arr });
+  pushMetaField('deletedTagKeys', arr);
+}
+async function restoreDeletedTag(key) {
+  DELETED_TAG_KEYS.delete(key);
   const arr = Array.from(DELETED_TAG_KEYS);
   await idbPut(STORE_META, { key: 'deletedTagKeys', value: arr });
   pushMetaField('deletedTagKeys', arr);
@@ -861,6 +879,10 @@ function renderHome() {
   const shelfChips = STATE.format === 'reading'
     ? ['ALL', ...SHELVES_READING].map((s) => `<div class="chip ${STATE.shelf === s ? 'active' : ''}" data-shelf="${escapeHtml(s)}">${s === 'ALL' ? 'All' : escapeHtml(s)}</div>`).join('')
     : '';
+  const formatIcons = `
+    <span class="rating-pick-icon format-icon-pick ${STATE.format === 'reading' ? 'active' : ''}" data-format="reading" title="Reading (Manhwa/Manga)">📖</span>
+    <span class="rating-pick-icon format-icon-pick ${STATE.format === 'watching' ? 'active' : ''}" data-format="watching" title="Watching (Anime)">📺</span>
+  `;
 
   const tagMsPanel = tags.map((t) => `
     <label class="tag-ms-item"><input type="checkbox" data-tag-ms-item="${escapeHtml(t)}" ${STATE.tagFilters.includes(t) ? 'checked' : ''}><span>${escapeHtml(t)}</span></label>
@@ -880,8 +902,7 @@ function renderHome() {
 
   return `
     <div class="app-header">
-      <div class="brand-row">
-        <h1><span class="egg">🍆</span>Yaoi Journal</h1>
+      <div class="brand-row" style="justify-content:flex-end;">
         <button class="icon-btn" data-open-settings="1">⚙️</button>
       </div>
       <button class="filters-toggle-btn" data-toggle-filters="1">${FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
@@ -890,11 +911,8 @@ function renderHome() {
           <span>🔍</span>
           <input type="search" id="search-input" placeholder="Search all reads &amp; anime..." value="${escapeHtml(STATE.search)}">
         </div>
-        <div class="format-row">
-          <div class="format-btn ${STATE.format === 'reading' ? 'active' : ''}" data-format="reading">📖 Reading (Manhwa/Manga)</div>
-          <div class="format-btn ${STATE.format === 'watching' ? 'active' : ''}" data-format="watching">📺 Watching (Anime)</div>
-        </div>
-        ${shelfChips ? `<div class="filter-section-label">Status</div><div class="shelf-row">${shelfChips}</div>` : ''}
+        <div class="filter-section-label">Status</div>
+        <div class="shelf-row">${formatIcons}<span class="rating-pick-divider"></span>${shelfChips}</div>
         <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
         <div class="filter-section-label">Ratings &amp; Flags</div>
@@ -914,7 +932,7 @@ function renderBottomNav(active) {
       <button data-nav-filter="favorites" class="${active === 'favorites' ? 'active' : ''}"><span class="icon">💜</span>Favorites</button>
       <button data-nav-filter="onDrive" class="${active === 'onDrive' ? 'active' : ''}"><span class="icon">💾</span>On HD</button>
       <button data-nav="tags" class="${active === 'tags' ? 'active' : ''}"><span class="icon">🏷️</span>Tags</button>
-      <button data-nav="reactions" class="${active === 'reactions' ? 'active' : ''}"><span class="icon">🎭</span>Reactions</button>
+      <button data-nav="reactions" class="${active === 'reactions' ? 'active' : ''}"><span class="icon">🖼️</span>Images</button>
       <button data-nav="database" class="${active === 'database' ? 'active' : ''}"><span class="icon">🗂️</span>Database</button>
     </div>`;
 }
@@ -1010,6 +1028,21 @@ function renderTagManager() {
         ${names.length} unique tag${names.length === 1 ? '' : 's'} across ${ALL_ENTRIES.length} entries. Tap a tag to see its entries. Renaming applies everywhere the tag is used — rename to an existing tag name to merge two tags together. Deleting removes it from every entry (can't be undone).
       </div>
       <div id="tagmgr-list">${rows || '<div class="empty-state">No tags yet.</div>'}</div>
+
+      <div class="panel" style="margin-top:14px;">
+        <div class="panel-title-row" style="margin-bottom:${SHOW_HIDDEN_TAGS ? '10px' : '0'};">
+          <div class="panel-title" style="margin:0;">Hidden tags</div>
+          <button class="toggle-switch ${SHOW_HIDDEN_TAGS ? 'on' : ''}" data-toggle-hidden-tags="1" role="switch" aria-checked="${SHOW_HIDDEN_TAGS}"><span class="toggle-knob"></span></button>
+        </div>
+        ${SHOW_HIDDEN_TAGS ? `
+          <div style="color:var(--text-dim);font-size:12px;margin-bottom:8px;">Tags you've deleted before — they stay off the app (won't come back from imports) until you restore them.</div>
+          ${DELETED_TAG_KEYS.size ? Array.from(DELETED_TAG_KEYS).sort().map((key) => `
+            <div class="tagmgr-row">
+              <div class="tagmgr-name" style="flex:1;">${escapeHtml(key)}</div>
+              <button class="ref-btn" data-restore-tag="${escapeHtml(key)}">Restore</button>
+            </div>`).join('') : '<div class="empty-state">No deleted tags.</div>'}
+        ` : ''}
+      </div>
     </main>
     ${renderBottomNav('tags')}
   `;
@@ -1211,24 +1244,57 @@ function renderHdMatch() {
 /* page's Images section. Duplicate uploads (by image hash) get flagged.  */
 /* ---------------------------------------------------------------------- */
 
+// Every image in the app, in one place: the standalone reaction/meme
+// library PLUS any image uploaded straight onto an entry's own Images
+// panel. Images are keyed by their exact data-URL so the same picture
+// only shows once even if it's attached to several entries.
+function allAppImages() {
+  const map = new Map();
+  ALL_REACTIONS.forEach((r) => {
+    map.set(r.dataUrl, { dataUrl: r.dataUrl, reactionId: r.id, createdAt: r.createdAt });
+  });
+  ALL_ENTRIES.forEach((e) => {
+    (e.screencaps || []).forEach((src) => {
+      if (!map.has(src)) map.set(src, { dataUrl: src, reactionId: null, createdAt: e.updatedAt || e.createdAt });
+    });
+  });
+  return Array.from(map.values())
+    .map((img) => ({ ...img, attachedEntries: ALL_ENTRIES.filter((e) => (e.screencaps || []).includes(img.dataUrl)) }))
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+}
+
 function renderReactionsLibrary() {
-  const items = ALL_REACTIONS.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  const items = allAppImages();
   const grid = items.length
-    ? `<div class="cover-grid">${items.map((r) => `
-        <div class="reaction-thumb">
-          <img src="${r.dataUrl}" alt="">
-          <button class="del" data-del-reaction="${r.id}">✕</button>
+    ? `<div class="cover-grid">${items.map((img) => `
+        <div class="reaction-thumb" data-view-image-attachments="${escapeHtml(img.dataUrl)}">
+          <img src="${img.dataUrl}" alt="">
+          ${img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : ''}
+          ${img.reactionId ? `<button class="del" data-del-reaction="${img.reactionId}">✕</button>` : ''}
         </div>`).join('')}</div>`
-    : `<div class="empty-state">No reactions/memes saved yet. Tap "Add" to upload some.</div>`;
+    : `<div class="empty-state">No images uploaded yet. Tap "Add" to upload some.</div>`;
   return `
     <div class="app-header">
-      <div class="brand-row"><h1>🎭 Reactions Library</h1></div>
-      <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${items.length} saved. Use these on any read's Images section.</div>
-      <label class="upload-btn">📎 Add reaction(s)/meme(s)<input type="file" accept="image/*" multiple id="reaction-upload-input"></label>
+      <div class="brand-row"><h1>🖼️ Images</h1></div>
+      <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${items.length} image${items.length === 1 ? '' : 's'} across the app. Tap one to see which reads it's attached to.</div>
+      <label class="upload-btn">📎 Add image(s)<input type="file" accept="image/*" multiple id="reaction-upload-input"></label>
     </div>
     <main>${grid}</main>
     ${renderBottomNav('reactions')}
   `;
+}
+
+function openImageAttachmentsModal(dataUrl) {
+  const entries = ALL_ENTRIES.filter((e) => (e.screencaps || []).includes(dataUrl));
+  openModal(`
+    <h3>Attached to</h3>
+    <img src="${dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">
+    ${entries.length
+      ? `<div style="display:flex;flex-direction:column;gap:6px;">${entries.map((e) => `
+          <button class="ref-btn" style="text-align:left;" data-goto-entry-from-modal="${e.id}">${escapeHtml(e.title)}</button>`).join('')}</div>`
+      : `<div class="empty-state">Not attached to any read yet.</div>`}
+    <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Close</button></div>
+  `);
 }
 
 // Shared by the library's own upload button and the detail-page "Add from
@@ -1253,11 +1319,11 @@ async function addReactionFiles(fileList) {
 function openReactionPickerModal(entryId) {
   const items = ALL_REACTIONS.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   openModal(`
-    <h3>🎭 Add from Reactions</h3>
+    <h3>🖼️ Add from Images</h3>
     <p style="font-size:12px;color:var(--text-dim);">Tap to select, then Add. Or upload a brand-new one straight into this entry.</p>
     <label class="upload-btn" style="margin-bottom:10px;">📎 Upload new<input type="file" accept="image/*" multiple id="reaction-picker-upload"></label>
     <div class="reaction-picker-grid" id="reaction-picker-grid">
-      ${items.length ? items.map((r) => `<div class="reaction-thumb pickable" data-pick-reaction="${r.id}"><img src="${r.dataUrl}" alt=""></div>`).join('') : '<div class="empty-state">No reactions saved yet — upload one above.</div>'}
+      ${items.length ? items.map((r) => `<div class="reaction-thumb pickable" data-pick-reaction="${r.id}"><img src="${r.dataUrl}" alt=""></div>`).join('') : '<div class="empty-state">No images saved yet — upload one above.</div>'}
     </div>
     <div class="modal-actions">
       <button class="btn-ghost" data-close-modal="1">Cancel</button>
@@ -1512,23 +1578,23 @@ function renderDetail(e) {
           <div class="char-col">
             <div class="char-col-head">
               <h4>Semi (Top)</h4>
-              <div class="flag-picker">${renderFlagPicker(e.semi.flag, 'semi')}</div>
             </div>
             <label class="char-photo-slot" style="cursor:pointer;">
               ${renderCharPhoto(e.semi.photo)}
               <input type="file" accept="image/*" style="display:none" data-char-photo="semi">
             </label>
+            <div class="flag-picker">${renderFlagPicker(e.semi.flag, 'semi')}</div>
             <textarea placeholder="Notes on the semi..." data-char-notes="semi">${escapeHtml(e.semi.notes)}</textarea>
           </div>
           <div class="char-col">
             <div class="char-col-head">
               <h4>Uke (Bottom)</h4>
-              <div class="flag-picker">${renderFlagPicker(e.uke.flag, 'uke')}</div>
             </div>
             <label class="char-photo-slot" style="cursor:pointer;">
               ${renderCharPhoto(e.uke.photo)}
               <input type="file" accept="image/*" style="display:none" data-char-photo="uke">
             </label>
+            <div class="flag-picker">${renderFlagPicker(e.uke.flag, 'uke')}</div>
             <textarea placeholder="Notes on the uke..." data-char-notes="uke">${escapeHtml(e.uke.notes)}</textarea>
           </div>
         </div>
@@ -1568,7 +1634,7 @@ function renderDetail(e) {
         <div class="panel-title">Images</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
           <label class="upload-btn" style="flex:1;">📎 Add photo(s)<input type="file" accept="image/*" multiple id="screencap-input"></label>
-          <button class="ref-btn" style="flex:1;" data-open-reaction-picker="1">🎭 Add from Reactions</button>
+          <button class="ref-btn" style="flex:1;" data-open-reaction-picker="1">🖼️ Add from Images</button>
         </div>
         <div class="screencap-grid">
           ${(e.screencaps || []).map((src, i) => `<div class="screencap-thumb"><img src="${src}" data-view-screencap="${i}"><button class="del" data-del-screencap="${i}">✕</button></div>`).join('')}
@@ -1709,6 +1775,48 @@ function dupGroupSignature(group) {
   return group.map((e) => e.id).sort().join('|');
 }
 
+function mergeText(a, b) {
+  a = (a || '').trim(); b = (b || '').trim();
+  if (!a) return b;
+  if (!b || a === b) return a;
+  return a + '\n\n— merged from duplicate —\n' + b;
+}
+
+// Fills in anything missing on `target` using data from `source`, before
+// `source` gets deleted as a duplicate. Never overwrites data target already
+// has — only fills gaps, unions lists, and merges free-text notes.
+function mergeEntryData(target, source) {
+  const preferTarget = ['title', 'altTitle', 'novelAuthor', 'author', 'artist', 'officialLink', 'status',
+    'currentlyReadingRaw', 'downloaded', 'shelf', 'coverUrl', 'referenceUrl', 'referenceSite', 'referenceStatus', 'pdfLink'];
+  preferTarget.forEach((k) => { if (!target[k] && source[k]) target[k] = source[k]; });
+
+  if (!target.totalSeasons && source.totalSeasons) target.totalSeasons = source.totalSeasons;
+  if (!target.totalChapters && source.totalChapters) target.totalChapters = source.totalChapters;
+  if (!target.epilogue && source.epilogue) target.epilogue = source.epilogue;
+  if (!target.released && source.released) target.released = source.released;
+  if (!target.isNovel && source.isNovel) target.isNovel = source.isNovel;
+  if (!target.suggestedMatch && source.suggestedMatch) target.suggestedMatch = source.suggestedMatch;
+  if (!target.summaryCache && source.summaryCache) { target.summaryCache = source.summaryCache; target.summaryCachedAt = source.summaryCachedAt; }
+
+  target.favorite = !!(target.favorite || source.favorite);
+  target.smutRating = Math.max(target.smutRating || 0, source.smutRating || 0);
+  target.qualityRating = Math.max(target.qualityRating || 0, source.qualityRating || 0);
+  target.notes = mergeText(target.notes, source.notes);
+
+  ['semi', 'uke'].forEach((k) => {
+    target[k] = target[k] || { flag: null, notes: '', photo: null };
+    const s = source[k] || {};
+    if (!target[k].flag && s.flag) target[k].flag = s.flag;
+    if (!target[k].photo && s.photo) target[k].photo = s.photo;
+    target[k].notes = mergeText(target[k].notes, s.notes);
+  });
+
+  target.tags = Array.from(new Set([...(target.tags || []), ...(source.tags || [])]));
+  target.customTags = Array.from(new Set([...(target.customTags || []), ...(source.customTags || [])]));
+  target.screencaps = Array.from(new Set([...(target.screencaps || []), ...(source.screencaps || [])]));
+  return target;
+}
+
 function findDuplicateGroups() {
   const groups = {};
   ALL_ENTRIES.forEach((e) => {
@@ -1805,8 +1913,8 @@ function openCrossRefModal(entryId) {
       <button class="btn-primary" data-fetch-ref="${entryId}">Preview</button>
     </div>
     <div style="border-top:1px solid var(--border);margin:12px 0;padding-top:10px;">
-      <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 8px;">Getting a 403? Use the bookmarklet instead — it runs in your own browser on the page itself (no server, no blocking). Set it up once in Settings (⚙️), then: open the title on Anime-Planet/MangaGo → tap the bookmarklet → come back here and tap Paste.</p>
-      <button class="ref-btn" style="width:100%;" data-paste-ref="${entryId}">📋 Paste from clipboard (bookmarklet)</button>
+      <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 8px;">Getting an error above? Open the title on Anime-Planet/MangaGo, tap your "Get Info" bookmark (set up once in Settings ⚙️), then come back and tap Paste below.</p>
+      <button class="ref-btn" style="width:100%;" data-paste-ref="${entryId}">📋 Paste from clipboard</button>
     </div>
     <div id="crossref-preview"></div>
   `);
@@ -2045,12 +2153,20 @@ function openSettingsModal() {
       <button class="btn-primary" data-save-settings="1">Save</button>
     </div>
     <div style="border-top:1px solid var(--border);margin-top:16px;padding-top:14px;">
-      <div class="panel-title" style="margin-bottom:6px;">📋 Cross-reference bookmarklet (free 403 workaround)</div>
-      <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 8px;">Anime-Planet and MangaGo both block Google's servers, so the proxy above can 403 even when it's set up correctly. This bookmarklet runs on the title's own page in <em>your</em> browser instead — same free, no account needed, just one extra tap per title.</p>
-      <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 8px;"><strong>Desktop:</strong> drag this link to your bookmarks bar: <a href="${bookmarkletHref()}" class="ref-btn" style="display:inline-block;text-decoration:none;">💾 Yaoi Ref Grab</a></p>
-      <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 8px;"><strong>Phone:</strong> bookmark any page first, then edit that bookmark and replace its URL with the code below, then save.</p>
-      <textarea readonly style="width:100%;height:70px;font-size:10px;font-family:monospace;" onclick="this.select()">${escapeHtml(bookmarkletHref())}</textarea>
-      <p style="font-size:11px;color:var(--text-dim);margin:8px 0 0;">To use it: open the title on Anime-Planet or MangaGo → tap the bookmarklet → it copies the info → come back here, open the entry, tap Cross-reference → Paste from clipboard. Site redesigns can occasionally break the scraping — if a field comes back blank, just fill it in by hand.</p>
+      <div class="panel-title" style="margin-bottom:6px;">📋 Get Info button</div>
+      <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 10px;">You'll only need this occasionally — mainly when adding a brand-new title, or when cleaning up entries in Database mode. It's a free workaround for when the automatic fetch fails.</p>
+
+      <p style="font-size:12px;font-weight:600;margin:0 0 4px;">Set up once:</p>
+      <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 4px;"><strong>On a computer:</strong> drag this button up to your bookmarks bar. <a href="${bookmarkletHref()}" class="ref-btn" style="display:inline-block;text-decoration:none;">💾 Get Info</a></p>
+      <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 8px;"><strong>On a phone:</strong> save any page as a bookmark, then open that bookmark's settings and paste the code below over its URL.</p>
+      <textarea readonly style="width:100%;height:60px;font-size:10px;font-family:monospace;" onclick="this.select()">${escapeHtml(bookmarkletHref())}</textarea>
+
+      <p style="font-size:12px;font-weight:600;margin:10px 0 4px;">Each time you need it:</p>
+      <ol style="font-size:11.5px;color:var(--text-dim);margin:0 0 0 18px;padding:0;">
+        <li>Open the title's page on Anime-Planet or MangaGo.</li>
+        <li>Tap your "Get Info" bookmark.</li>
+        <li>Come back to Yaoi Journal, open that entry, tap Cross-reference → Paste from clipboard.</li>
+      </ol>
     </div>
   `);
 }
@@ -2099,6 +2215,14 @@ async function submitAdd() {
 
 function attachRootHandlers() {
   const root = document.getElementById('view-root');
+
+  root.querySelectorAll('[data-header-home]').forEach((el) => {
+    el.onclick = () => {
+      STATE.showFavoritesOnly = false;
+      STATE.showOnDriveOnly = false;
+      navigate('home');
+    };
+  });
 
   const signOutBtn = root.querySelector('[data-sign-out]');
   if (signOutBtn) signOutBtn.onclick = () => {
@@ -2387,13 +2511,17 @@ function attachRootHandlers() {
     render();
   };
   root.querySelectorAll('[data-del-reaction]').forEach((el) => {
-    el.onclick = async () => {
+    el.onclick = async (ev) => {
+      ev.stopPropagation();
       const id = el.getAttribute('data-del-reaction');
-      if (!confirm('Delete this reaction/meme from your library? Any entries it\'s already attached to keep their own copy.')) return;
+      if (!confirm('Delete this image from your library? Any entries it\'s already attached to keep their own copy.')) return;
       await deleteReaction(id);
       showToast('Deleted');
       render();
     };
+  });
+  root.querySelectorAll('[data-view-image-attachments]').forEach((el) => {
+    el.onclick = () => openImageAttachmentsModal(el.getAttribute('data-view-image-attachments'));
   });
   root.querySelectorAll('[data-view-screencap]').forEach((imgEl) => {
     imgEl.onclick = () => {
@@ -2491,6 +2619,15 @@ function attachRootHandlers() {
       }
       await recordDeletedTag(name);
       showToast('Deleted — won\'t come back from future imports either');
+      render();
+    };
+  });
+  const toggleHiddenTagsBtn = root.querySelector('[data-toggle-hidden-tags]');
+  if (toggleHiddenTagsBtn) toggleHiddenTagsBtn.onclick = () => { SHOW_HIDDEN_TAGS = !SHOW_HIDDEN_TAGS; render(); };
+  root.querySelectorAll('[data-restore-tag]').forEach((el) => {
+    el.onclick = async () => {
+      await restoreDeletedTag(el.getAttribute('data-restore-tag'));
+      showToast('Restored — this tag can be used again');
       render();
     };
   });
@@ -2620,9 +2757,17 @@ function attachRootHandlers() {
       const id = el.getAttribute('data-dup-delete');
       const e = getEntry(id);
       if (!e) return;
-      if (!confirm(`Delete "${e.title}"? This can't be undone.`)) return;
+      if (!confirm(`Delete "${e.title}"? Its data will be merged into the other duplicate(s) first, then this one is removed for good.`)) return;
+      // Find any other entries in this duplicate group and fold this
+      // entry's data into them before it's gone.
+      const group = findDuplicateGroups().find((g) => g.some((ge) => ge.id === id));
+      const survivors = (group || []).filter((ge) => ge.id !== id);
+      for (const survivor of survivors) {
+        mergeEntryData(survivor, e);
+        await saveEntry(survivor);
+      }
       await deleteEntry(id);
-      showToast('Deleted');
+      showToast(survivors.length ? 'Merged and deleted' : 'Deleted');
       render();
     };
   });
@@ -2693,6 +2838,10 @@ document.addEventListener('click', (ev) => {
     return;
   }
   if (t.matches('[data-close-modal]')) closeModal();
+  if (t.matches('[data-goto-entry-from-modal]')) {
+    closeModal();
+    navigate('detail', t.getAttribute('data-goto-entry-from-modal'));
+  }
   if (t.matches('[data-save-settings]')) {
     const val = document.getElementById('proxy-url-input').value;
     setProxyUrl(val);

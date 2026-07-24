@@ -43,9 +43,20 @@ button, input, textarea, select { font-family: inherit; }
 
 a { color: var(--pink); }
 
-/* ---------- Sticky header ---------- */
+/* ---------- Global persistent header (every screen) ---------- */
+.global-header {
+  position: sticky; top: 0; z-index: 40; height: 46px; box-sizing: border-box;
+  display: flex; align-items: center; gap: 8px; padding: 0 14px;
+  background: rgba(18,22,46,0.97); backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border); cursor: pointer;
+}
+.global-header-logo { font-size: 20px; line-height: 1; }
+.global-header-logo img { display: block; height: 26px; width: auto; border-radius: 6px; }
+.global-header-title { font-weight: 700; font-size: 15px; letter-spacing: .01em; }
+
+/* ---------- Sticky header (per-screen, sits just below the global one) ---------- */
 .app-header {
-  position: sticky; top: 0; z-index: 30;
+  position: sticky; top: 46px; z-index: 30;
   background: rgba(18,22,46,0.92);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
@@ -219,11 +230,28 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 .bottom-nav button.active { color: var(--pink); }
 
 /* ---------- Reactions/meme library ---------- */
-.reaction-thumb { position: relative; aspect-ratio: 1/1; border-radius: var(--radius-sm); overflow: hidden; background: var(--navy-2); }
+.reaction-thumb { position: relative; aspect-ratio: 1/1; border-radius: var(--radius-sm); overflow: hidden; background: var(--navy-2); cursor: pointer; }
 .reaction-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .reaction-thumb .del {
   position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 50%;
   background: rgba(0,0,0,.6); color: #fff; border: none; font-size: 12px;
+}
+.toggle-switch {
+  position: relative; width: 42px; height: 24px; border-radius: 12px; border: none;
+  background: var(--navy-2); border: 1px solid var(--border); cursor: pointer; padding: 0; flex-shrink: 0;
+  transition: background .18s ease;
+}
+.toggle-switch .toggle-knob {
+  position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--text-dim); transition: transform .18s ease, background .18s ease;
+}
+.toggle-switch.on { background: var(--pink); border-color: var(--pink); }
+.toggle-switch.on .toggle-knob { transform: translateX(18px); background: #fff; }
+
+.reaction-count {
+  position: absolute; bottom: 4px; left: 4px; min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 9px; background: rgba(0,0,0,.65); color: #fff; font-size: 11px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
 }
 .reaction-picker-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; max-height: 320px; overflow-y: auto; margin-bottom: 10px; }
 .reaction-thumb.pickable { cursor: pointer; border: 2px solid transparent; }
@@ -231,7 +259,7 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 
 /* ---------- Detail / Journal screen ---------- */
 .detail-header {
-  display: flex; align-items: center; gap: 10px; padding: 10px 12px; position: sticky; top: 0; z-index: 30;
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px; position: sticky; top: 46px; z-index: 30;
   background: rgba(18,22,46,0.92); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border);
 }
 .back-btn { background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 999px; padding: 7px 12px; font-size: 14px; }
@@ -278,14 +306,17 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 .char-cols { display: flex; gap: 12px; }
 .char-col { flex: 1; text-align: center; }
 .char-col-head { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
-.char-col-head h4 { font-size: 12.5px; margin: 0; color: var(--text); }
+.char-col-head h4 { font-size: 15px; font-weight: 700; margin: 0; color: var(--text); }
 .char-photo-slot {
   width: 78%; margin: 0 auto 8px; aspect-ratio: 1/1; border-radius: var(--radius-sm); background: var(--navy-2);
   border: 1px dashed var(--border); display: flex; align-items: center; justify-content: center; overflow: hidden;
   font-size: 22px; color: var(--text-dim);
 }
 .char-photo-slot img { width: 100%; height: 100%; object-fit: cover; }
-.flag-picker { display: flex; justify-content: center; gap: 6px; }
+/* Flag row sits directly under the photo and matches its width, same idea
+   as the Smut/Overall rating rows above this panel. */
+.flag-picker { display: flex; justify-content: space-between; gap: 6px; width: 78%; margin: 0 auto 10px; }
+.flag-picker .flag-dot { flex: 1; }
 .review-card-row { display: flex; gap: 10px; }
 .review-card-info { flex: 1; min-width: 0; font-size: 12.5px; }
 .review-card-info strong { display: block; font-size: 13.5px; margin-bottom: 2px; }
