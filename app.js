@@ -8,9 +8,10 @@
    ========================================================================== */
 
 const DB_NAME = 'yaoiJournalDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_ENTRIES = 'entries';
 const STORE_META = 'meta';
+const STORE_REACTIONS = 'reactions';
 
 const SHELVES_READING = ['Currently Reading', 'Completed', 'Plan to Read', 'Discontinued'];
 const FLAG_COLORS = ['green', 'red', 'black'];
@@ -44,8 +45,18 @@ let AUTH_ERROR = '';
 let AUTH_BUSY = false;
 let SYNC_BUSY = false;           // true while the initial pull/push migration is running
 
+// Raw HD-scan lines already fully handled (auto-tagged, manually confirmed,
+// or explicitly skipped) — see the HD-match tool. Prevents "re-matching the
+// same titles" every time the same drive listing gets pasted back in.
+let HD_RESOLVED_RAW = new Set();
+// Duplicate-group signatures the user has explicitly said "not a duplicate,
+// keep both" for — see Review Duplicates. Prevents that same pair from
+// re-surfacing every visit.
+let IGNORED_DUP_GROUPS = new Set();
+
 let db = null;
 let ALL_ENTRIES = [];              // in-memory cache, synced with IndexedDB
+let ALL_REACTIONS = [];            // meme/reaction image library, in-memory cache
 let DETAIL_EDIT_MODE = false;      // whether the detail page's top fields are in edit mode
 let TAG_EDIT_MODE = false;         // whether the Tags panel is showing its editable (toggle/add/save) UI
 let TAG_ENTRIES_FILTER = null;     // which tag name the "view entries with this tag" screen is showing
@@ -79,6 +90,9 @@ function openDB() {
       }
       if (!_db.objectStoreNames.contains(STORE_META)) {
         _db.createObjectStore(STORE_META, { keyPath: 'key' });
+      }
+      if (!_db.objectStoreNames.contains(STORE_REACTIONS)) {
+        _db.createObjectStore(STORE_REACTIONS, { keyPath: 'id' });
       }
     };
     req.onsuccess = (e) => resolve(e.target.result);
@@ -168,6 +182,103 @@ async function deleteEntry(id) {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Reactions / meme library                                              */
+/* A separate small IndexedDB store (+ Firestore subcollection) of        */
+/* uploaded reaction/meme images, reusable across any journal entry.      */
+/* ---------------------------------------------------------------------- */
+
+async function loadAllReactions() {
+  ALL_REACTIONS = await idbGetAll(STORE_REACTIONS);
+}
+
+// SHA-256 of the image bytes (not the whole data-URL string, so the same
+// picture re-saved at the same compression settings always hashes the same)
+// — used to catch "you already have this meme" on upload.
+async function hashDataUrl(dataUrl) {
+  const base64 = String(dataUrl || '').split(',')[1] || '';
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function findReactionByHash(hash) {
+  return ALL_REACTIONS.find((r) => r.hash === hash);
+}
+
+async function saveReaction(reaction) {
+  reaction.updatedAt = new Date().toISOString();
+  await idbPut(STORE_REACTIONS, reaction);
+  const idx = ALL_REACTIONS.findIndex((r) => r.id === reaction.id);
+  if (idx > -1) ALL_REACTIONS[idx] = reaction; else ALL_REACTIONS.push(reaction);
+  pushReactionToFirestore(reaction);
+}
+
+async function deleteReaction(id) {
+  await idbDelete(STORE_REACTIONS, id);
+  ALL_REACTIONS = ALL_REACTIONS.filter((r) => r.id !== id);
+  deleteReactionFromFirestore(id);
+}
+
+function userReactionsCol() {
+  if (!CURRENT_USER) return null;
+  return fbStore.collection('users').doc(CURRENT_USER.uid).collection('reactions');
+}
+
+function pushReactionToFirestore(reaction) {
+  const col = userReactionsCol();
+  if (!col) return;
+  const json = JSON.stringify(reaction);
+  if (json.length > 900 * 1024) {
+    console.error(`Reaction image too large to sync to Firestore (kept locally on this device only).`);
+    return;
+  }
+  col.doc(reaction.id).set(reaction).catch((err) => console.error('Reaction sync failed:', err));
+}
+
+function deleteReactionFromFirestore(id) {
+  const col = userReactionsCol();
+  if (!col) return;
+  col.doc(id).delete().catch((err) => console.error('Reaction delete sync failed:', err));
+}
+
+// Same last-write-wins merge philosophy as syncWithFirestore, applied to the
+// much smaller reactions library.
+async function syncReactionsWithFirestore(user) {
+  const col = fbStore.collection('users').doc(user.uid).collection('reactions');
+  const snap = await col.get();
+  if (snap.empty) {
+    if (ALL_REACTIONS.length) {
+      const batch = fbStore.batch();
+      ALL_REACTIONS.forEach((r) => {
+        if (JSON.stringify(r).length <= 900 * 1024) batch.set(col.doc(r.id), r);
+      });
+      await batch.commit();
+    }
+    return;
+  }
+  const remote = snap.docs.map((d) => d.data());
+  const localById = new Map(ALL_REACTIONS.map((r) => [r.id, r]));
+  const merged = [];
+  const toLocal = [];
+  remote.forEach((rr) => {
+    const lr = localById.get(rr.id);
+    if (!lr) { merged.push(rr); toLocal.push(rr); }
+    else {
+      const rt = new Date(rr.updatedAt || 0).getTime();
+      const lt = new Date(lr.updatedAt || 0).getTime();
+      merged.push(rt > lt ? rr : lr);
+      if (rt > lt) toLocal.push(rr);
+    }
+    localById.delete(rr.id);
+  });
+  localById.forEach((lr) => merged.push(lr));
+  if (toLocal.length) await idbBulkPut(STORE_REACTIONS, toLocal);
+  ALL_REACTIONS = merged;
+}
+
+/* ---------------------------------------------------------------------- */
 /* Firestore sync layer                                                   */
 /* Best-effort: these never block or throw into the caller. Firestore's   */
 /* own offline queue (enablePersistence above) means a write made while   */
@@ -177,6 +288,51 @@ async function deleteEntry(id) {
 function userEntriesCol() {
   if (!CURRENT_USER) return null;
   return fbStore.collection('users').doc(CURRENT_USER.uid).collection('entries');
+}
+
+/* ---------------------------------------------------------------------- */
+/* Small cross-device "app state" sync — deleted-tag memory, HD-match      */
+/* resolved lines, ignored duplicate-groups. These are tiny arrays (not    */
+/* image data) so they all live in one Firestore doc, separate from the    */
+/* per-entry sync above. Same best-effort, never-throws philosophy.       */
+/* ---------------------------------------------------------------------- */
+
+function metaDocRef() {
+  if (!CURRENT_USER) return null;
+  return fbStore.collection('users').doc(CURRENT_USER.uid).collection('meta').doc('appState');
+}
+
+function pushMetaField(field, value) {
+  const ref = metaDocRef();
+  if (!ref) return;
+  ref.set({ [field]: value }, { merge: true }).catch((err) => console.error('Meta sync failed:', err));
+}
+
+// Pulls whatever's already in Firestore and unions it into the local sets,
+// so a deletion/resolution made on one device shows up on the other without
+// ever silently losing one side's decisions.
+async function pullMetaState() {
+  const ref = metaDocRef();
+  if (!ref) return;
+  try {
+    const snap = await ref.get();
+    if (!snap.exists) return;
+    const data = snap.data() || {};
+    if (Array.isArray(data.deletedTagKeys) && data.deletedTagKeys.length) {
+      DELETED_TAG_KEYS = new Set([...DELETED_TAG_KEYS, ...data.deletedTagKeys]);
+      await idbPut(STORE_META, { key: 'deletedTagKeys', value: Array.from(DELETED_TAG_KEYS) });
+    }
+    if (Array.isArray(data.hdResolvedRaw) && data.hdResolvedRaw.length) {
+      HD_RESOLVED_RAW = new Set([...HD_RESOLVED_RAW, ...data.hdResolvedRaw]);
+      await idbPut(STORE_META, { key: 'hdResolvedRaw', value: Array.from(HD_RESOLVED_RAW) });
+    }
+    if (Array.isArray(data.ignoredDupGroups) && data.ignoredDupGroups.length) {
+      IGNORED_DUP_GROUPS = new Set([...IGNORED_DUP_GROUPS, ...data.ignoredDupGroups]);
+      await idbPut(STORE_META, { key: 'ignoredDupGroups', value: Array.from(IGNORED_DUP_GROUPS) });
+    }
+  } catch (err) {
+    console.error('Meta pull failed:', err);
+  }
 }
 
 // Firestore caps each document at 1MiB. Manually-uploaded cover images are
@@ -504,6 +660,7 @@ function render() {
   else if (STATE.view === 'tags') root.innerHTML = renderTagManager();
   else if (STATE.view === 'tagEntries') root.innerHTML = renderTagEntries();
   else if (STATE.view === 'hdMatch') root.innerHTML = renderHdMatch();
+  else if (STATE.view === 'reactions') root.innerHTML = renderReactionsLibrary();
   else if (STATE.view === 'database') root.innerHTML = renderDatabase();
   else if (STATE.view === 'review') root.innerHTML = renderReviewQueue();
   else if (STATE.view === 'duplicates') root.innerHTML = renderDuplicates();
@@ -546,12 +703,60 @@ function filteredEntries() {
   });
 }
 
-// "BL" and "Yaoi" are redundant on every single entry in this journal (the
-// whole app is BL/yaoi), so they're hidden from every tag display — cloud,
-// homepage dropdown, and the database table — without touching stored data.
-const HIDDEN_TAGS = new Set(['bl', 'yaoi']);
+// "BL", "Yaoi", "Manhwa", "Webtoon(s)" and "Favorite(s)" are redundant or
+// migrated-away-from tags — redundant because the whole app is BL/yaoi
+// manhwa/webtoons already, and "Favorite" because it's now the entry.favorite
+// flag instead of a plain tag (see the one-time migration in boot()). They're
+// blocked from ever being (re-)created and hidden from every tag display —
+// cloud, homepage dropdown, database table — without needing to touch
+// already-stored data (though the favorite migration does clean that up too).
+const HIDDEN_TAG_KEYS = new Set(['bl', 'yaoi', 'manhwa', 'webtoon', 'webtoons', 'favorite', 'favorites'].map((t) => t.toLowerCase()));
+// Tags the user has explicitly deleted via the Tag Manager. Persisted in
+// IndexedDB (and synced via Firestore) so a deleted tag can't resurface from
+// a future HD-drive scan, cross-reference pull, or other import.
+let DELETED_TAG_KEYS = new Set();
 function isHiddenTag(t) {
-  return HIDDEN_TAGS.has(String(t || '').trim().toLowerCase());
+  const norm = normalizeTagKey(t);
+  return HIDDEN_TAG_KEYS.has(norm) || DELETED_TAG_KEYS.has(norm);
+}
+// Strips blocked/deleted tag names out of a list of incoming tags (from a
+// cross-reference pull, suggested match, etc.) before merging them into an
+// entry, so they're never (re-)imported in the first place.
+function sanitizeIncomingTags(tags) {
+  return (tags || []).filter((t) => !isHiddenTag(t));
+}
+async function recordDeletedTag(name) {
+  DELETED_TAG_KEYS.add(normalizeTagKey(name));
+  const arr = Array.from(DELETED_TAG_KEYS);
+  await idbPut(STORE_META, { key: 'deletedTagKeys', value: arr });
+  pushMetaField('deletedTagKeys', arr);
+}
+
+// One-time cleanup, run once per device (idempotent either way): strips the
+// now-blocked "Favorite"/"BL"/"Yaoi"/"Manhwa"/"Webtoon(s)" tags out of every
+// entry's stored tags, and for "Favorite" specifically, carries that meaning
+// over into the real entry.favorite flag first so nothing is lost.
+async function runFavoriteTagMigrationOnce() {
+  try {
+    const done = await idbGet(STORE_META, 'favoriteTagMigrationDone');
+    if (done && done.value) return;
+    let touched = 0;
+    for (const e of ALL_ENTRIES) {
+      let changed = false;
+      const wasFavoriteTagged = [...(e.tags || []), ...(e.customTags || [])].some((t) => normalizeTagKey(t) === 'favorite' || normalizeTagKey(t) === 'favorites');
+      if (wasFavoriteTagged && !e.favorite) { e.favorite = true; changed = true; }
+      const stripBlocked = (list) => (list || []).filter((t) => !HIDDEN_TAG_KEYS.has(normalizeTagKey(t)));
+      const newTags = stripBlocked(e.tags);
+      const newCustom = stripBlocked(e.customTags);
+      if (newTags.length !== (e.tags || []).length) { e.tags = newTags; changed = true; }
+      if (newCustom.length !== (e.customTags || []).length) { e.customTags = newCustom; changed = true; }
+      if (changed) { await saveEntry(e); touched++; }
+    }
+    await idbPut(STORE_META, { key: 'favoriteTagMigrationDone', value: true });
+    if (touched) console.log(`Favorite/blocked-tag migration: updated ${touched} entries.`);
+  } catch (err) {
+    console.error('Favorite tag migration failed:', err);
+  }
 }
 
 // "On HD" is the tag the HD-match tool (and the HD-scan import) uses to mark
@@ -668,11 +873,6 @@ function renderHome() {
           <span>🔍</span>
           <input type="search" id="search-input" placeholder="Search all reads &amp; anime..." value="${escapeHtml(STATE.search)}">
         </div>
-        <div class="tab-row">
-          <div class="tab-pill ${!STATE.showFavoritesOnly && !STATE.showOnDriveOnly ? 'active' : ''}" data-home-filter="all">All</div>
-          <div class="tab-pill fav ${STATE.showFavoritesOnly ? 'active' : ''}" data-home-filter="favorites">💜 Favorites</div>
-          <div class="tab-pill drive ${STATE.showOnDriveOnly ? 'active' : ''}" data-home-filter="onDrive">💾 On Yaoi Drive</div>
-        </div>
         <div class="format-row">
           <div class="format-btn ${STATE.format === 'reading' ? 'active' : ''}" data-format="reading">📖 Reading (Manhwa/Manga)</div>
           <div class="format-btn ${STATE.format === 'watching' ? 'active' : ''}" data-format="watching">📺 Watching (Anime)</div>
@@ -686,7 +886,7 @@ function renderHome() {
     </div>
     <main>${body}</main>
     <button class="fab" data-add-entry="1">+</button>
-    ${renderBottomNav('home')}
+    ${renderBottomNav(STATE.showFavoritesOnly ? 'favorites' : (STATE.showOnDriveOnly ? 'onDrive' : 'home'))}
   `;
 }
 
@@ -694,7 +894,10 @@ function renderBottomNav(active) {
   return `
     <div class="bottom-nav">
       <button data-nav="home" class="${active === 'home' ? 'active' : ''}"><span class="icon">🏠</span>Journal</button>
+      <button data-nav-filter="favorites" class="${active === 'favorites' ? 'active' : ''}"><span class="icon">💜</span>Favorites</button>
+      <button data-nav-filter="onDrive" class="${active === 'onDrive' ? 'active' : ''}"><span class="icon">💾</span>On HD</button>
       <button data-nav="tags" class="${active === 'tags' ? 'active' : ''}"><span class="icon">🏷️</span>Tags</button>
+      <button data-nav="reactions" class="${active === 'reactions' ? 'active' : ''}"><span class="icon">🎭</span>Reactions</button>
       <button data-nav="database" class="${active === 'database' ? 'active' : ''}"><span class="icon">🗂️</span>Database</button>
     </div>`;
 }
@@ -864,8 +1067,25 @@ function entryTitleKeys(e) {
 // auto-tag. Everything else that at least shares a meaningful substring is
 // "uncertain" and left for a manual tap-to-confirm; anything with no overlap
 // at all is "unmatched".
+// Normalizes a raw HD-scan line for the "already handled" registry — just
+// enough to recognize the exact same line pasted again, without collapsing
+// distinct lines (e.g. different volumes) into each other the way
+// normalizeTagKey's alphanumeric-only stripping would.
+function rawLineKey(raw) {
+  return String(raw || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+async function markHdRawResolved(raws) {
+  raws.forEach((r) => HD_RESOLVED_RAW.add(rawLineKey(r)));
+  const arr = Array.from(HD_RESOLVED_RAW);
+  await idbPut(STORE_META, { key: 'hdResolvedRaw', value: arr });
+  pushMetaField('hdResolvedRaw', arr);
+}
+
 function findHdMatches(rawText) {
-  const lines = String(rawText || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const allLines = String(rawText || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const lines = allLines.filter((l) => !HD_RESOLVED_RAW.has(rawLineKey(l)));
+  const alreadyResolvedCount = allLines.length - lines.length;
   const entryKeyMap = new Map();
   ALL_ENTRIES.forEach((e) => {
     entryTitleKeys(e).forEach((k) => {
@@ -905,7 +1125,7 @@ function findHdMatches(rawText) {
     else unmatched.push(raw);
   });
 
-  return { confident: Array.from(confidentMap.values()), uncertain, unmatched };
+  return { confident: Array.from(confidentMap.values()), uncertain, unmatched, alreadyResolvedCount };
 }
 
 function renderHdMatch() {
@@ -913,6 +1133,7 @@ function renderHdMatch() {
   let resultsHtml = '';
   if (r) {
     resultsHtml = `
+      ${r.alreadyResolvedCount ? `<div style="color:var(--text-dim);font-size:11.5px;padding:0 2px 8px;">✅ ${r.alreadyResolvedCount} line${r.alreadyResolvedCount === 1 ? '' : 's'} already handled from a previous run — skipped so you're not re-deciding the same titles.</div>` : ''}
       <div class="panel">
         <div class="panel-title">✅ Will tag ${r.confident.length} entr${r.confident.length === 1 ? 'y' : 'ies'}</div>
         ${r.confident.length ? `
@@ -930,16 +1151,16 @@ function renderHdMatch() {
             <div style="display:flex;flex-wrap:wrap;gap:6px;">
               ${u.confirmed
                 ? `<span style="font-size:11.5px;color:var(--yellow);">✓ Tagged as ${escapeHtml(u.confirmed)}</span>`
-                : u.candidates.map((c) => `<button class="ref-btn" data-hdmatch-confirm="${i}:${c.id}">${escapeHtml(c.title)}</button>`).join('')}
+                : u.candidates.map((c) => `<button class="ref-btn" data-hdmatch-confirm="${i}:${c.id}">${escapeHtml(c.title)}</button>`).join('') + `<button class="btn-ghost" data-hdmatch-skip="${i}">Not a match</button>`}
             </div>
           </div>
         `).join('') : `<div style="color:var(--text-dim);font-size:12px;">Nothing in between — every line was either an exact match or no match.</div>`}
       </div>
       <div class="panel">
         <div class="panel-title">❓ No match found (${r.unmatched.length})</div>
-        <div style="color:var(--text-dim);font-size:11.5px;margin-bottom:6px;">Not in your journal yet, or too different to recognize automatically.</div>
-        <div style="max-height:180px;overflow-y:auto;font-size:12px;color:var(--text-dim);">
-          ${r.unmatched.map((u) => `<div>${escapeHtml(u)}</div>`).join('') || '<div>—</div>'}
+        <div style="color:var(--text-dim);font-size:11.5px;margin-bottom:6px;">Not in your journal yet, or too different to recognize automatically. Tap ✕ to permanently ignore junk lines (like stray numbers) so they stop showing up here.</div>
+        <div style="max-height:220px;overflow-y:auto;">
+          ${r.unmatched.map((u, i) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:var(--text-dim);padding:3px 0;"><span>${escapeHtml(u)}</span><button class="icon-btn-inline" data-hdmatch-skip-unmatched="${i}" title="Ignore this line permanently">✕</button></div>`).join('') || '<div>—</div>'}
         </div>
       </div>
     `;
@@ -964,6 +1185,103 @@ function renderHdMatch() {
     </main>
     ${renderBottomNav('tags')}
   `;
+}
+
+/* ---------------------------------------------------------------------- */
+/* REACTIONS / MEME LIBRARY                                               */
+/* A standalone library of uploaded meme/reaction images, reusable across */
+/* any journal entry via the "Add from Reactions" picker on the detail    */
+/* page's Images section. Duplicate uploads (by image hash) get flagged.  */
+/* ---------------------------------------------------------------------- */
+
+function renderReactionsLibrary() {
+  const items = ALL_REACTIONS.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  const grid = items.length
+    ? `<div class="cover-grid">${items.map((r) => `
+        <div class="reaction-thumb">
+          <img src="${r.dataUrl}" alt="">
+          <button class="del" data-del-reaction="${r.id}">✕</button>
+        </div>`).join('')}</div>`
+    : `<div class="empty-state">No reactions/memes saved yet. Tap "Add" to upload some.</div>`;
+  return `
+    <div class="app-header">
+      <div class="brand-row"><h1>🎭 Reactions Library</h1></div>
+      <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${items.length} saved. Use these on any read's Images section.</div>
+      <label class="upload-btn">📎 Add reaction(s)/meme(s)<input type="file" accept="image/*" multiple id="reaction-upload-input"></label>
+    </div>
+    <main>${grid}</main>
+    ${renderBottomNav('reactions')}
+  `;
+}
+
+// Shared by the library's own upload button and the detail-page "Add from
+// Reactions" picker's own file input (a picker can also add brand-new images
+// straight into the library while attaching them to an entry).
+async function addReactionFiles(fileList) {
+  const added = [];
+  for (const file of fileList) {
+    const dataUrl = await fileToCompressedDataUrl(file, 800);
+    const hash = await hashDataUrl(dataUrl);
+    const dupe = findReactionByHash(hash);
+    if (dupe) {
+      if (!confirm('This looks like a duplicate of a reaction/meme you already saved. Add it again anyway?')) continue;
+    }
+    const reaction = { id: uid('reaction'), dataUrl, hash, createdAt: new Date().toISOString() };
+    await saveReaction(reaction);
+    added.push(reaction);
+  }
+  return added;
+}
+
+function openReactionPickerModal(entryId) {
+  const items = ALL_REACTIONS.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  openModal(`
+    <h3>🎭 Add from Reactions</h3>
+    <p style="font-size:12px;color:var(--text-dim);">Tap to select, then Add. Or upload a brand-new one straight into this entry.</p>
+    <label class="upload-btn" style="margin-bottom:10px;">📎 Upload new<input type="file" accept="image/*" multiple id="reaction-picker-upload"></label>
+    <div class="reaction-picker-grid" id="reaction-picker-grid">
+      ${items.length ? items.map((r) => `<div class="reaction-thumb pickable" data-pick-reaction="${r.id}"><img src="${r.dataUrl}" alt=""></div>`).join('') : '<div class="empty-state">No reactions saved yet — upload one above.</div>'}
+    </div>
+    <div class="modal-actions">
+      <button class="btn-ghost" data-close-modal="1">Cancel</button>
+      <button class="btn-primary" data-add-picked-reactions="${entryId}">Add Selected</button>
+    </div>
+  `);
+  const grid = document.getElementById('reaction-picker-grid');
+  const selected = new Set();
+  if (grid) {
+    grid.querySelectorAll('[data-pick-reaction]').forEach((el) => {
+      el.onclick = () => {
+        const id = el.getAttribute('data-pick-reaction');
+        if (selected.has(id)) { selected.delete(id); el.classList.remove('selected'); }
+        else { selected.add(id); el.classList.add('selected'); }
+      };
+    });
+  }
+  const uploadInput = document.getElementById('reaction-picker-upload');
+  if (uploadInput) uploadInput.onchange = async () => {
+    if (!uploadInput.files.length) return;
+    const added = await addReactionFiles(uploadInput.files);
+    added.forEach((r) => selected.add(r.id));
+    openReactionPickerModal(entryId); // re-render with the new uploads visible
+    added.forEach((r) => {
+      const el = document.querySelector(`[data-pick-reaction="${r.id}"]`);
+      if (el) el.classList.add('selected');
+    });
+  };
+  const addBtn = document.querySelector('[data-add-picked-reactions]');
+  if (addBtn) addBtn.onclick = async () => {
+    const e = getEntry(entryId);
+    e.screencaps = e.screencaps || [];
+    selected.forEach((id) => {
+      const r = ALL_REACTIONS.find((x) => x.id === id);
+      if (r) e.screencaps.push(r.dataUrl);
+    });
+    await saveEntry(e);
+    closeModal();
+    showToast(`Added ${selected.size} image${selected.size === 1 ? '' : 's'}`);
+    render();
+  };
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1228,10 +1546,13 @@ function renderDetail(e) {
         <textarea id="user-notes" placeholder="Your thoughts...">${escapeHtml(e.notes)}</textarea>
       </div>
 
-      <!-- 7. Screencaps -->
+      <!-- 7. Images (screencaps, fanart, meme reactions — all in one place) -->
       <div class="panel">
-        <div class="panel-title">Screencaps</div>
-        <label class="upload-btn">📎 Add photo(s)<input type="file" accept="image/*" multiple id="screencap-input"></label>
+        <div class="panel-title">Images</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+          <label class="upload-btn" style="flex:1;">📎 Add photo(s)<input type="file" accept="image/*" multiple id="screencap-input"></label>
+          <button class="ref-btn" style="flex:1;" data-open-reaction-picker="1">🎭 Add from Reactions</button>
+        </div>
         <div class="screencap-grid">
           ${(e.screencaps || []).map((src, i) => `<div class="screencap-thumb"><img src="${src}" data-view-screencap="${i}"><button class="del" data-del-screencap="${i}">✕</button></div>`).join('')}
         </div>
@@ -1365,6 +1686,12 @@ function duplicateKey(title) {
     .join(' ');
 }
 
+// Stable signature for a duplicate group (sorted entry ids) — used to
+// remember "not a duplicate, keep both" decisions across visits/re-scans.
+function dupGroupSignature(group) {
+  return group.map((e) => e.id).sort().join('|');
+}
+
 function findDuplicateGroups() {
   const groups = {};
   ALL_ENTRIES.forEach((e) => {
@@ -1373,7 +1700,7 @@ function findDuplicateGroups() {
     const groupKey = e.format + '::' + key;
     (groups[groupKey] = groups[groupKey] || []).push(e);
   });
-  return Object.values(groups).filter((g) => g.length > 1);
+  return Object.values(groups).filter((g) => g.length > 1 && !IGNORED_DUP_GROUPS.has(dupGroupSignature(g)));
 }
 
 function renderDuplicateGroup(group) {
@@ -1396,7 +1723,7 @@ function renderDuplicateGroup(group) {
         </div>
       </div>`;
   }).join('');
-  return `<div class="panel"><div class="panel-title">Possible duplicate</div>${items}</div>`;
+  return `<div class="panel"><div class="panel-title">Possible duplicate</div>${items}<button class="ref-btn" style="width:100%;margin-top:8px;" data-dup-not-duplicate="${dupGroupSignature(group)}">Not duplicates — keep both, stop asking</button></div>`;
 }
 
 function renderDuplicates() {
@@ -1460,8 +1787,119 @@ function openCrossRefModal(entryId) {
       <button class="btn-ghost" data-close-modal="1">Cancel</button>
       <button class="btn-primary" data-fetch-ref="${entryId}">Preview</button>
     </div>
+    <div style="border-top:1px solid var(--border);margin:12px 0;padding-top:10px;">
+      <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 8px;">Getting a 403? Use the bookmarklet instead — it runs in your own browser on the page itself (no server, no blocking). Set it up once in Settings (⚙️), then: open the title on Anime-Planet/MangaGo → tap the bookmarklet → come back here and tap Paste.</p>
+      <button class="ref-btn" style="width:100%;" data-paste-ref="${entryId}">📋 Paste from clipboard (bookmarklet)</button>
+    </div>
     <div id="crossref-preview"></div>
   `);
+}
+
+// Reads whatever the cross-reference bookmarklet (see openSettingsModal) just
+// copied to the clipboard and previews it exactly like a live fetch would —
+// this is the free, no-server-IP-blocking path: the bookmarklet runs on the
+// title's actual page, in her own browser, so it never gets a 403.
+async function pasteReferenceFromClipboard(entryId) {
+  const previewEl = document.getElementById('crossref-preview');
+  if (!previewEl) return;
+  let text;
+  try {
+    text = await navigator.clipboard.readText();
+  } catch (err) {
+    showToast("Couldn't read the clipboard — your browser may need permission, or paste isn't supported here");
+    return;
+  }
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (err) {
+    showToast("That doesn't look like bookmarklet data — run the bookmarklet on the title's page first");
+    return;
+  }
+  if (!data || !data.sourceUrl) { showToast("That doesn't look like bookmarklet data"); return; }
+  previewEl.innerHTML = `
+    <div class="match-preview">
+      <img src="${escapeHtml(data.coverUrl || '')}" referrerpolicy="no-referrer" onerror="this.style.display='none'">
+      <div class="info">
+        <strong>${escapeHtml(data.title || '(no title found)')}</strong>
+        ${data.altTitle ? escapeHtml(data.altTitle) + '<br>' : ''}
+        ${data.author ? 'By ' + escapeHtml(data.author) + '<br>' : ''}
+        ${(data.tags || []).slice(0, 8).join(', ')}
+        <p style="margin:6px 0 0;">${escapeHtml((data.summary || '').slice(0, 220))}${(data.summary || '').length > 220 ? '…' : ''}</p>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-ghost" data-close-modal="1">Cancel</button>
+      <button class="btn-primary" data-confirm-ref="${entryId}">✓ Use this — apply to my journal</button>
+    </div>
+  `;
+  previewEl._pendingData = data;
+  previewEl._pendingUrl = data.sourceUrl;
+  showToast('Loaded from clipboard!');
+}
+
+/* ---------------------------------------------------------------------- */
+/* Cross-reference bookmarklet — a small script that runs on Anime-Planet */
+/* or MangaGo's own page, in the user's own browser (her own IP, no       */
+/* server involved), so it's immune to the IP-based 403 blocking that     */
+/* Apps Script's server hits. Written as a real function (with normal     */
+/* regex literals) and turned into a "javascript:" URL via .toString() +  */
+/* encodeURIComponent at render time — never hand-escaped, so nothing     */
+/* about it can get mangled the way manually-escaped bookmarklets do.     */
+/* ---------------------------------------------------------------------- */
+
+function hdBookmarkletSource() {
+  var Q = String.fromCharCode(34);
+  var html = document.documentElement.innerHTML;
+  var url = location.href;
+  function dec(s) {
+    if (!s) return s;
+    return s.replace(/&amp;rsquo;|&rsquo;/g, String.fromCharCode(8217))
+      .replace(/&amp;ldquo;|&ldquo;/g, String.fromCharCode(8220))
+      .replace(/&amp;rdquo;|&rdquo;/g, String.fromCharCode(8221))
+      .replace(/&amp;mdash;|&mdash;/g, String.fromCharCode(8212))
+      .replace(/&amp;hellip;|&hellip;/g, String.fromCharCode(8230))
+      .replace(/&amp;/g, '&').replace(/&quot;/g, Q).replace(/&#39;/g, String.fromCharCode(39))
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+  }
+  function meta(p) {
+    var re = new RegExp('<meta[^>]+(?:property|name)=' + Q + p + Q + '[^>]+content=' + Q + '([^' + Q + ']*)' + Q, 'i');
+    var m = html.match(re);
+    if (m) return dec(m[1]);
+    re = new RegExp('<meta[^>]+content=' + Q + '([^' + Q + ']*)' + Q + '[^>]+(?:property|name)=' + Q + p + Q, 'i');
+    m = html.match(re);
+    return m ? dec(m[1]) : '';
+  }
+  var data;
+  if (url.indexOf('anime-planet.com') > -1) {
+    var title = meta('og:title').replace(/\s*(Manga|Anime)?\s*\|\s*Anime-Planet$/i, '').trim();
+    var alt = '';
+    var am = html.match(/Alt title:\s*<\/[a-z]+>?\s*([^<\n]+)/i) || html.match(/Alt title:\s*([^\n<]+)/i);
+    if (am) alt = dec(am[1]).trim();
+    var tagRe = new RegExp('<a[^>]+href=' + Q + 'https://www\\.anime-planet\\.com/(?:manga|anime)/tags/[^' + Q + ']+' + Q + '[^>]*>([^<]+)</a>', 'g');
+    var tags = [], tm;
+    while ((tm = tagRe.exec(html)) !== null) { var tg = dec(tm[1]).trim(); if (tg && tags.indexOf(tg) === -1) tags.push(tg); }
+    var author = '';
+    var sm = html.match(/([A-Za-z0-9 .'-]+)\s*<\/[a-z]+>?\s*(Original Creator|Story\s*&\s*Art|Author|Artist)/i);
+    if (sm) author = sm[1].trim();
+    data = { site: 'Anime-Planet', sourceUrl: url, title: title, altTitle: alt, coverUrl: meta('og:image'), summary: meta('og:description'), tags: tags, author: author };
+  } else if (url.indexOf('mangago.me') > -1) {
+    data = { site: 'MangaGo', sourceUrl: url, title: meta('og:title'), altTitle: '', coverUrl: meta('og:image'), summary: meta('og:description'), tags: [], author: '' };
+  } else {
+    alert('Open an Anime-Planet or MangaGo title page first, then tap this bookmarklet.');
+    return;
+  }
+  var text = JSON.stringify(data);
+  var ta = document.createElement('textarea');
+  ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; ta.style.top = '0'; ta.style.left = '0';
+  document.body.appendChild(ta); ta.focus(); ta.select();
+  try { document.execCommand('copy'); } catch (e) {}
+  document.body.removeChild(ta);
+  alert('Copied "' + (data.title || 'this title') + '" — go back to Yaoi Journal and tap "Paste from clipboard".');
+}
+
+function bookmarkletHref() {
+  return 'javascript:' + encodeURIComponent('(' + hdBookmarkletSource.toString() + ')();');
 }
 
 async function fetchReferencePreview(entryId) {
@@ -1562,7 +2000,7 @@ async function confirmReference(entryId) {
   e.summaryCache = data.summary || '';
   e.summaryCachedAt = new Date().toISOString();
   if (data.tags && data.tags.length) {
-    const merged = new Set([...(e.tags || []), ...data.tags]);
+    const merged = new Set([...(e.tags || []), ...sanitizeIncomingTags(data.tags)]);
     e.tags = Array.from(merged);
   }
   if (!e.author && data.author) e.author = data.author;
@@ -1588,6 +2026,14 @@ function openSettingsModal() {
     <div class="modal-actions">
       <button class="btn-ghost" data-close-modal="1">Cancel</button>
       <button class="btn-primary" data-save-settings="1">Save</button>
+    </div>
+    <div style="border-top:1px solid var(--border);margin-top:16px;padding-top:14px;">
+      <div class="panel-title" style="margin-bottom:6px;">📋 Cross-reference bookmarklet (free 403 workaround)</div>
+      <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 8px;">Anime-Planet and MangaGo both block Google's servers, so the proxy above can 403 even when it's set up correctly. This bookmarklet runs on the title's own page in <em>your</em> browser instead — same free, no account needed, just one extra tap per title.</p>
+      <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 8px;"><strong>Desktop:</strong> drag this link to your bookmarks bar: <a href="${bookmarkletHref()}" class="ref-btn" style="display:inline-block;text-decoration:none;">💾 Yaoi Ref Grab</a></p>
+      <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 8px;"><strong>Phone:</strong> bookmark any page first, then edit that bookmark and replace its URL with the code below, then save.</p>
+      <textarea readonly style="width:100%;height:70px;font-size:10px;font-family:monospace;" onclick="this.select()">${escapeHtml(bookmarkletHref())}</textarea>
+      <p style="font-size:11px;color:var(--text-dim);margin:8px 0 0;">To use it: open the title on Anime-Planet or MangaGo → tap the bookmarklet → it copies the info → come back here, open the entry, tap Cross-reference → Paste from clipboard. Site redesigns can occasionally break the scraping — if a field comes back blank, just fill it in by hand.</p>
     </div>
   `);
 }
@@ -1646,7 +2092,19 @@ function attachRootHandlers() {
     el.onclick = () => navigate('detail', el.getAttribute('data-open-entry'));
   });
   root.querySelectorAll('[data-nav]').forEach((el) => {
-    el.onclick = () => navigate(el.getAttribute('data-nav'));
+    el.onclick = () => {
+      const view = el.getAttribute('data-nav');
+      if (view === 'home') { STATE.showFavoritesOnly = false; STATE.showOnDriveOnly = false; }
+      navigate(view);
+    };
+  });
+  root.querySelectorAll('[data-nav-filter]').forEach((el) => {
+    el.onclick = () => {
+      const which = el.getAttribute('data-nav-filter');
+      STATE.showFavoritesOnly = which === 'favorites';
+      STATE.showOnDriveOnly = which === 'onDrive';
+      navigate('home');
+    };
   });
   const searchInput = root.querySelector('#search-input');
   if (searchInput) {
@@ -1654,14 +2112,6 @@ function attachRootHandlers() {
     searchInput.focus();
     searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
   }
-  root.querySelectorAll('[data-home-filter]').forEach((el) => {
-    el.onclick = () => {
-      const which = el.getAttribute('data-home-filter');
-      STATE.showFavoritesOnly = which === 'favorites';
-      STATE.showOnDriveOnly = which === 'onDrive';
-      render();
-    };
-  });
   root.querySelectorAll('[data-format]').forEach((el) => {
     el.onclick = () => { STATE.format = el.getAttribute('data-format'); STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.flagFilter = null; render(); };
   });
@@ -1818,6 +2268,7 @@ function attachRootHandlers() {
     const input = document.getElementById('new-tag-input');
     const val = input.value.trim();
     if (!val) return;
+    if (isHiddenTag(val)) { showToast('That tag is blocked or was deleted before — it\'s hidden on purpose'); return; }
     const ts = getTagEditState(STATE.entryId);
     const e = getEntry(STATE.entryId);
     const already = [...(e.tags || []), ...(e.customTags || []), ...ts.added].some((t) => t.toLowerCase() === val.toLowerCase());
@@ -1910,6 +2361,23 @@ function attachRootHandlers() {
       await saveEntry(e); render();
     };
   });
+  const reactionPickerBtn = root.querySelector('[data-open-reaction-picker]');
+  if (reactionPickerBtn) reactionPickerBtn.onclick = () => openReactionPickerModal(STATE.entryId);
+  const reactionUploadInput = root.querySelector('#reaction-upload-input');
+  if (reactionUploadInput) reactionUploadInput.onchange = async () => {
+    if (!reactionUploadInput.files.length) return;
+    await addReactionFiles(reactionUploadInput.files);
+    render();
+  };
+  root.querySelectorAll('[data-del-reaction]').forEach((el) => {
+    el.onclick = async () => {
+      const id = el.getAttribute('data-del-reaction');
+      if (!confirm('Delete this reaction/meme from your library? Any entries it\'s already attached to keep their own copy.')) return;
+      await deleteReaction(id);
+      showToast('Deleted');
+      render();
+    };
+  });
   root.querySelectorAll('[data-view-screencap]').forEach((imgEl) => {
     imgEl.onclick = () => {
       openModal(`
@@ -1977,6 +2445,7 @@ function attachRootHandlers() {
       const newName = prompt('Rename tag "' + oldName + '" to:', oldName);
       if (!newName || !newName.trim() || newName.trim() === oldName) return;
       const nn = newName.trim();
+      if (isHiddenTag(nn)) { showToast('That name is blocked/hidden — pick another'); return; }
       for (const e of ALL_ENTRIES) {
         let changed = false;
         if ((e.tags || []).includes(oldName)) {
@@ -2003,7 +2472,8 @@ function attachRootHandlers() {
         if ((e.customTags || []).includes(name)) { e.customTags = e.customTags.filter((t) => t !== name); changed = true; }
         if (changed) await saveEntry(e);
       }
-      showToast('Deleted');
+      await recordDeletedTag(name);
+      showToast('Deleted — won\'t come back from future imports either');
       render();
     };
   });
@@ -2028,13 +2498,14 @@ function attachRootHandlers() {
     const r = HD_MATCH_STATE.results;
     if (!r) return;
     let count = 0;
-    for (const { entry } of r.confident) {
+    for (const { entry, matchedRaw } of r.confident) {
       const already = [...(entry.tags || []), ...(entry.customTags || [])].some((t) => t.toLowerCase() === tagName.toLowerCase());
       if (!already) {
         entry.customTags = [...(entry.customTags || []), tagName];
         await saveEntry(entry);
         count++;
       }
+      await markHdRawResolved(matchedRaw);
     }
     showToast(`Tagged ${count} entr${count === 1 ? 'y' : 'ies'} "${tagName}"`);
     render();
@@ -2052,8 +2523,31 @@ function attachRootHandlers() {
         entry.customTags = [...(entry.customTags || []), tagName];
         await saveEntry(entry);
       }
+      await markHdRawResolved([r.uncertain[idx].raw]);
       r.uncertain[idx].confirmed = entry.title;
       showToast(`Tagged "${entry.title}"`);
+      render();
+    };
+  });
+  root.querySelectorAll('[data-hdmatch-skip]').forEach((el) => {
+    el.onclick = async () => {
+      const idx = Number(el.getAttribute('data-hdmatch-skip'));
+      const r = HD_MATCH_STATE.results;
+      if (!r || !r.uncertain[idx]) return;
+      await markHdRawResolved([r.uncertain[idx].raw]);
+      r.uncertain.splice(idx, 1);
+      showToast('Skipped — won\'t ask again');
+      render();
+    };
+  });
+  root.querySelectorAll('[data-hdmatch-skip-unmatched]').forEach((el) => {
+    el.onclick = async () => {
+      const idx = Number(el.getAttribute('data-hdmatch-skip-unmatched'));
+      const r = HD_MATCH_STATE.results;
+      if (!r || r.unmatched[idx] == null) return;
+      await markHdRawResolved([r.unmatched[idx]]);
+      r.unmatched.splice(idx, 1);
+      showToast('Ignored');
       render();
     };
   });
@@ -2080,7 +2574,7 @@ function attachRootHandlers() {
       if (sm.url) { e.referenceUrl = sm.url; e.referenceSite = sm.site || 'Anime-Planet'; e.referenceStatus = 'confirmed'; }
       if (sm.summary) e.summaryCache = sm.summary;
       if (sm.tags && sm.tags.length) {
-        const merged = new Set([...(e.tags || []), ...sm.tags]);
+        const merged = new Set([...(e.tags || []), ...sanitizeIncomingTags(sm.tags)]);
         e.tags = Array.from(merged);
       }
       if (!e.author && sm.author) e.author = sm.author;
@@ -2112,6 +2606,17 @@ function attachRootHandlers() {
       if (!confirm(`Delete "${e.title}"? This can't be undone.`)) return;
       await deleteEntry(id);
       showToast('Deleted');
+      render();
+    };
+  });
+  root.querySelectorAll('[data-dup-not-duplicate]').forEach((el) => {
+    el.onclick = async () => {
+      const sig = el.getAttribute('data-dup-not-duplicate');
+      IGNORED_DUP_GROUPS.add(sig);
+      const arr = Array.from(IGNORED_DUP_GROUPS);
+      await idbPut(STORE_META, { key: 'ignoredDupGroups', value: arr });
+      pushMetaField('ignoredDupGroups', arr);
+      showToast('Got it — won\'t flag these as duplicates again');
       render();
     };
   });
@@ -2180,6 +2685,7 @@ document.addEventListener('click', (ev) => {
   if (t.matches('[data-submit-add]')) submitAdd();
   if (t.matches('[data-fetch-ref]')) fetchReferencePreview(t.getAttribute('data-fetch-ref'));
   if (t.matches('[data-confirm-ref]')) confirmReference(t.getAttribute('data-confirm-ref'));
+  if (t.matches('[data-paste-ref]')) pasteReferenceFromClipboard(t.getAttribute('data-paste-ref'));
 });
 document.getElementById('overlay').addEventListener('click', (ev) => {
   if (ev.target.id === 'overlay') closeModal();
@@ -2248,6 +2754,13 @@ async function boot() {
     db = await openDB();
     await ensureSeeded();
     await loadAllEntries();
+    await loadAllReactions();
+    const savedDeleted = await idbGet(STORE_META, 'deletedTagKeys');
+    if (savedDeleted && Array.isArray(savedDeleted.value)) DELETED_TAG_KEYS = new Set(savedDeleted.value);
+    const savedResolved = await idbGet(STORE_META, 'hdResolvedRaw');
+    if (savedResolved && Array.isArray(savedResolved.value)) HD_RESOLVED_RAW = new Set(savedResolved.value);
+    const savedIgnoredDup = await idbGet(STORE_META, 'ignoredDupGroups');
+    if (savedIgnoredDup && Array.isArray(savedIgnoredDup.value)) IGNORED_DUP_GROUPS = new Set(savedIgnoredDup.value);
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('./sw.js').catch(() => {});
     }
@@ -2257,6 +2770,8 @@ async function boot() {
         SYNC_BUSY = true;
         try {
           await syncWithFirestore(user);
+          await syncReactionsWithFirestore(user);
+          await pullMetaState();
           startFirestoreListener(user);
         } catch (err) {
           console.error('Firestore sync failed:', err);
@@ -2264,6 +2779,7 @@ async function boot() {
         }
         SYNC_BUSY = false;
         autoMatchSweepIfDue();
+        runFavoriteTagMigrationOnce();
       }
       render();
     });
