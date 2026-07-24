@@ -961,16 +961,44 @@ function attachAuthHandlers() {
   if (googleBtn) googleBtn.onclick = signInWithGoogle;
 }
 
+// Installed/home-screen PWAs (especially iOS Safari "Add to Home Screen" and
+// most Android WebAPK installs) frequently can't open or return a real
+// signInWithPopup() window — there's no separate browser chrome to host it,
+// so the popup silently fails to appear. signInWithRedirect() (full-page
+// navigate to Google and back) is the standard, reliable fallback for that
+// context, so we detect standalone mode and use redirect there.
+function isStandalonePWA() {
+  return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+    window.navigator.standalone === true;
+}
+
+function newGoogleProvider() {
+  const provider = new firebase.auth.GoogleAuthProvider();
+  provider.addScope(DRIVE_SCOPE);
+  // Always show the consent screen rather than a silent re-auth — this is
+  // also how a lapsed/expired Drive token gets refreshed (see
+  // reconnectGoogleDrive()), since Firebase doesn't do that on its own.
+  provider.setCustomParameters({ prompt: 'consent' });
+  return provider;
+}
+
 async function signInWithGoogle() {
   AUTH_BUSY = true; AUTH_ERROR = ''; render();
+  if (isStandalonePWA()) {
+    try {
+      await fbAuth.signInWithRedirect(newGoogleProvider());
+      // Page navigates away here; result is picked up by getRedirectResult()
+      // in boot() on the next load.
+      return;
+    } catch (err) {
+      AUTH_ERROR = authErrorMessage(err);
+      AUTH_BUSY = false;
+      render();
+      return;
+    }
+  }
   try {
-    const provider = new firebase.auth.GoogleAuthProvider();
-    provider.addScope(DRIVE_SCOPE);
-    // Always show the consent screen rather than a silent re-auth — this is
-    // also how a lapsed/expired Drive token gets refreshed (see
-    // reconnectGoogleDrive()), since Firebase doesn't do that on its own.
-    provider.setCustomParameters({ prompt: 'consent' });
-    const result = await fbAuth.signInWithPopup(provider);
+    const result = await fbAuth.signInWithPopup(newGoogleProvider());
     const credential = firebase.auth.GoogleAuthProvider.credentialFromResult(result);
     if (credential && credential.accessToken) {
       DRIVE_ACCESS_TOKEN = credential.accessToken;
@@ -981,6 +1009,19 @@ async function signInWithGoogle() {
   } catch (err) {
     if (err && err.code === 'auth/popup-closed-by-user') {
       AUTH_BUSY = false; render(); return;
+    }
+    // Popup blocked, failed to open, or some browsers just don't support it —
+    // fall back to a full-page redirect rather than leaving the user stuck.
+    if (err && (err.code === 'auth/popup-blocked' || err.code === 'auth/operation-not-supported-in-this-environment' || err.code === 'auth/cancelled-popup-request')) {
+      try {
+        await fbAuth.signInWithRedirect(newGoogleProvider());
+        return;
+      } catch (err2) {
+        AUTH_ERROR = authErrorMessage(err2);
+        AUTH_BUSY = false;
+        render();
+        return;
+      }
     }
     AUTH_ERROR = authErrorMessage(err);
     AUTH_BUSY = false;
@@ -993,11 +1034,19 @@ async function signInWithGoogle() {
 // initial sign-in and from the "Reconnect Google Drive" banner that shows up
 // once the ~1hr token expires or a Drive call comes back 401.
 async function reconnectGoogleDrive() {
+  if (isStandalonePWA()) {
+    try {
+      try { localStorage.setItem('driveReconnectPending', '1'); } catch (e) {}
+      await fbAuth.signInWithRedirect(newGoogleProvider());
+      return true; // page navigates away; getRedirectResult() in boot() finishes this
+    } catch (err) {
+      console.error('Drive reconnect (redirect) failed:', err);
+      showToast("Couldn't reconnect to Google Drive — try again.");
+      return false;
+    }
+  }
   try {
-    const provider = new firebase.auth.GoogleAuthProvider();
-    provider.addScope(DRIVE_SCOPE);
-    provider.setCustomParameters({ prompt: 'consent' });
-    const result = await fbAuth.signInWithPopup(provider);
+    const result = await fbAuth.signInWithPopup(newGoogleProvider());
     const credential = firebase.auth.GoogleAuthProvider.credentialFromResult(result);
     if (credential && credential.accessToken) {
       DRIVE_ACCESS_TOKEN = credential.accessToken;
@@ -1008,6 +1057,18 @@ async function reconnectGoogleDrive() {
       return true;
     }
   } catch (err) {
+    // Same popup-failure fallback as sign-in above.
+    if (err && (err.code === 'auth/popup-blocked' || err.code === 'auth/operation-not-supported-in-this-environment' || err.code === 'auth/cancelled-popup-request')) {
+      try {
+        try { localStorage.setItem('driveReconnectPending', '1'); } catch (e) {}
+        await fbAuth.signInWithRedirect(newGoogleProvider());
+        return true;
+      } catch (err2) {
+        console.error('Drive reconnect (redirect fallback) failed:', err2);
+        showToast("Couldn't reconnect to Google Drive — try again.");
+        return false;
+      }
+    }
     console.error('Drive reconnect failed:', err);
     showToast("Couldn't reconnect to Google Drive — try again.");
   }
@@ -4140,6 +4201,29 @@ async function boot() {
     if ('serviceWorker' in navigator) {
       setupAutoUpdatingServiceWorker();
     }
+    // Completes the signInWithRedirect() round trip used for standalone/PWA
+    // sign-in and reconnects (see isStandalonePWA() in signInWithGoogle()/
+    // reconnectGoogleDrive()) — onAuthStateChanged alone tells us a user is
+    // signed in, but only getRedirectResult() hands back the Google OAuth
+    // credential/access token needed for Drive calls.
+    let wasReconnect = false;
+    try { wasReconnect = localStorage.getItem('driveReconnectPending') === '1'; } catch (e) {}
+    try {
+      const redirectResult = await fbAuth.getRedirectResult();
+      if (redirectResult && redirectResult.user) {
+        const credential = firebase.auth.GoogleAuthProvider.credentialFromResult(redirectResult);
+        if (credential && credential.accessToken) {
+          DRIVE_ACCESS_TOKEN = credential.accessToken;
+          DRIVE_TOKEN_EXPIRES_AT = Date.now() + 55 * 60 * 1000;
+          DRIVE_NEEDS_RECONNECT = false;
+          if (wasReconnect) showToast('Reconnected to Google Drive.');
+        }
+      }
+    } catch (err) {
+      console.error('Redirect sign-in failed:', err);
+      if (err && err.code !== 'auth/no-auth-event') AUTH_ERROR = authErrorMessage(err);
+    }
+    try { localStorage.removeItem('driveReconnectPending'); } catch (e) {}
     fbAuth.onAuthStateChanged(async (user) => {
       CURRENT_USER = user;
       if (user) {
