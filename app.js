@@ -73,6 +73,7 @@ let DETAIL_EDIT_MODE = false;      // whether the detail page's top fields are i
 let TAG_EDIT_MODE = false;         // whether the Tags panel is showing its editable (toggle/add/save) UI
 let TAG_ENTRIES_FILTER = null;     // which tag name the "view entries with this tag" screen is showing
 let TAG_FILTER_OPEN = false;       // whether the homepage tag multi-select dropdown panel is open
+let TAG_SUGGESTIONS_OPEN = true;    // whether the Tags screen's Suggestions panel is expanded
 let FILTERS_COLLAPSED = false;     // whether the homepage search/tabs/format/Status/Tags/Ratings&Flags block is tucked away
 let SEARCH_INPUT_SHOULD_FOCUS = false; // one-shot flag: refocus the global search box after it causes a view jump
 let STATE = {
@@ -1560,7 +1561,8 @@ function renderTagManager() {
   const mergeSuggestions = TAG_MGR_TAB === 'active' ? tagMergeSuggestions(activeNames, counts) : [];
   const suggestionsHtml = (hideSuggestions.length || mergeSuggestions.length) ? `
     <div class="panel" style="border-color:var(--yellow-soft);">
-      <div class="panel-title">💡 Suggestions</div>
+      <div class="panel-title" data-tag-suggestions-toggle="1" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">💡 Suggestions <span style="font-size:11px;">${TAG_SUGGESTIONS_OPEN ? '▲ Hide' : '▼ Show'}</span></div>
+      ${TAG_SUGGESTIONS_OPEN ? `
       ${hideSuggestions.map((s) => `
         <div class="tag-suggestion-row">
           <div>Hide <strong>${escapeHtml(s.tag)}</strong> — only ${s.count} use${s.count === 1 ? '' : 's'}</div>
@@ -1577,6 +1579,7 @@ function renderTagManager() {
             <button class="btn-ghost" data-suggest-dismiss="${escapeHtml(s.sig)}">Not now</button>
           </div>
         </div>`).join('')}
+      ` : ''}
     </div>` : '';
 
   const rows = TAG_MGR_TAB === 'active'
@@ -1625,13 +1628,6 @@ function renderTagManager() {
       <div class="search-bar"><span>🔍</span><input type="search" id="tagmgr-search" placeholder="Filter tags..."></div>
     </div>
     <main>
-      <div class="account-panel">
-        <div class="account-info">
-          <div class="account-label">Synced account</div>
-          <div class="account-email">${escapeHtml(CURRENT_USER ? CURRENT_USER.email : '')}</div>
-        </div>
-        <button class="icon-btn-inline" data-sign-out="1" title="Sign out">Sign Out</button>
-      </div>
       <button class="ref-btn" style="width:100%;margin-bottom:12px;" data-nav="hdMatch">💾 Match Owned Titles from a List</button>
       <div style="color:var(--text-dim);font-size:12px;margin-bottom:10px;">
         ${allNames.length} unique tag${allNames.length === 1 ? '' : 's'} across ${ALL_ENTRIES.length} entries. Tap a tag to see its entries. Renaming applies everywhere the tag is used — rename to an existing tag name to merge two tags together. Deleting removes it from every entry (can't be undone); hiding just keeps it out of filters.
@@ -2663,7 +2659,7 @@ function renderReviewCard(e) {
   return `
     <div class="panel review-card" data-entry="${e.id}">
       <div class="review-card-row">
-        <div class="cover-thumb" style="width:78px;flex:0 0 78px;">${cover}</div>
+        <div class="cover-thumb" style="width:100%;aspect-ratio:1/1;">${cover}</div>
         <div class="review-card-info">
           <strong>${escapeHtml(e.title)}</strong>
           <div style="font-size:11px;color:var(--text-dim);margin:2px 0 4px;">${e.format === 'reading' ? '📖' : '📺'} ${escapeHtml(e.shelf)}${e.author ? ' · ' + escapeHtml(formatNames(e.author)) : ''}</div>
@@ -2684,9 +2680,14 @@ function renderReviewCard(e) {
 }
 
 function renderReviewQueue() {
-  const items = ALL_ENTRIES.filter(needsReview).sort((a, b) => a.title.localeCompare(b.title));
+  const items = ALL_ENTRIES.filter(needsReview).sort((a, b) => {
+    const aHas = a.suggestedMatch ? 1 : 0;
+    const bHas = b.suggestedMatch ? 1 : 0;
+    if (aHas !== bHas) return bHas - aHas;
+    return a.title.localeCompare(b.title);
+  });
   const body = items.length
-    ? items.map(renderReviewCard).join('')
+    ? `<div class="review-grid">${items.map(renderReviewCard).join('')}</div>`
     : `<div class="empty-state">Everything has a cover or reference link. 🎉</div>`;
   return `
     <div class="app-header">
@@ -2820,6 +2821,18 @@ function findDuplicateGroups() {
 }
 
 function renderDuplicateGroup(group) {
+  const diffFields = [
+    ['Shelf', (x) => x.shelf || ''],
+    ['Format', (x) => x.format || ''],
+    ['Author', (x) => formatNames(x.author) || ''],
+    ['Smut', (x) => String(x.smutRating || 0)],
+    ['Quality', (x) => String(x.qualityRating || 0)],
+    ['Favorite', (x) => (x.favorite ? 'Yes' : 'No')],
+  ];
+  const differingLabels = diffFields.filter(([, fn]) => {
+    const vals = group.map(fn);
+    return !vals.every((v) => v === vals[0]);
+  }).map(([label]) => label);
   const items = group.map((e) => {
     const coverSrc = e.coverUrl || (e.suggestedMatch ? e.suggestedMatch.coverUrl : null);
     const cover = coverSrc
@@ -2832,9 +2845,11 @@ function renderDuplicateGroup(group) {
           <strong>${escapeHtml(e.title)}</strong>
           <div style="font-size:11px;color:var(--text-dim);">${escapeHtml(e.shelf)}${e.author ? ' · ' + escapeHtml(formatNames(e.author)) : ''}</div>
           <div style="font-size:11px;color:var(--text-dim);">Updated ${e.updatedAt ? new Date(e.updatedAt).toLocaleDateString() : '—'}${e.favorite ? ' · 💜 favorite' : ''}</div>
+          ${differingLabels.length ? `<div style="font-size:11px;color:var(--pink);margin-top:2px;">Differs: ${differingLabels.map((label) => { const fn = diffFields.find((f) => f[0] === label)[1]; return `${label} ${escapeHtml(fn(e) || '—')}`; }).join(' · ')}</div>` : ''}
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;">
           <button class="ref-btn" data-open-entry="${e.id}">Open</button>
+          <button class="btn-primary" style="padding:6px 10px;font-size:12px;" data-dup-merge-into="${e.id}">Merge into this</button>
           <button class="btn-ghost" data-dup-delete="${e.id}">Delete this one</button>
         </div>
       </div>`;
@@ -3806,6 +3821,12 @@ function attachRootHandlers() {
       render();
     };
   });
+  root.querySelectorAll('[data-tag-suggestions-toggle]').forEach((el) => {
+    el.onclick = () => {
+      TAG_SUGGESTIONS_OPEN = !TAG_SUGGESTIONS_OPEN;
+      render();
+    };
+  });
   root.querySelectorAll('[data-suggest-dismiss]').forEach((el) => {
     el.onclick = async () => {
       await dismissTagSuggestion(el.getAttribute('data-suggest-dismiss'));
@@ -3982,6 +4003,20 @@ function attachRootHandlers() {
       await deleteEntry(id);
       showToast(survivors.length ? 'Merged and deleted' : 'Deleted');
       render();
+    };
+  });
+  root.querySelectorAll('[data-dup-merge-into]').forEach((el) => {
+    el.onclick = async () => {
+      const keepId = el.getAttribute('data-dup-merge-into');
+      const keep = getEntry(keepId);
+      if (!keep) return;
+      const group = findDuplicateGroups().find((g) => g.some((ge) => ge.id === keepId));
+      const others = (group || []).filter((ge) => ge.id !== keepId);
+      if (!others.length) return;
+      if (!confirm(`Merge the other ${others.length} cop${others.length === 1 ? 'y' : 'ies'} into "${keep.title}"? The others will be deleted after their data is copied over.`)) return;
+      for (const other of others) {
+        await mergeIntoTarget(other.id, keepId);
+      }
     };
   });
   root.querySelectorAll('[data-dup-not-duplicate]').forEach((el) => {
