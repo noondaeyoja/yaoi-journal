@@ -1030,62 +1030,32 @@ async function signInWithGoogle() {
 }
 
 // Re-runs Google sign-in purely to mint a fresh Drive access token (the
-// Firebase session itself never lapsed) — used both from the auth screen's
-// initial sign-in and from the "Reconnect Google Drive" banner that shows up
-// once the ~1hr token expires or a Drive call comes back 401.
+// Firebase session itself never lapsed) — used from the "Reconnect Google
+// Drive" banner that shows up once the ~1hr token expires or a Drive call
+// comes back 401.
+//
+// This ALWAYS uses signInWithRedirect (full-page navigate to Google and
+// back), never signInWithPopup — confirmed by watching it live: while
+// already signed in, the popup flow can complete Google's side (account
+// picker, "you're signing back in" confirmation) and close cleanly, but the
+// browser blocks the popup from messaging its result back to the opener tab
+// (third-party storage/cookie restrictions), so the signInWithPopup()
+// promise just hangs forever — no resolve, no reject, no error, nothing.
+// That's exactly what looked like "the banner just won't go away" with no
+// error message. A redirect doesn't need any cross-window messaging at all,
+// so it can't get stuck this way.
 async function reconnectGoogleDrive() {
   // Immediate feedback the instant the click registers, so a totally silent
   // failure (an exception thrown before any network call even starts) is
   // still visibly distinguishable from the button not being wired up at all.
   showToast('Connecting to Google Drive…');
   try {
-    if (isStandalonePWA()) {
-      try { localStorage.setItem('driveReconnectPending', '1'); } catch (e) {}
-      await fbAuth.signInWithRedirect(newGoogleProvider());
-      return true; // page navigates away; getRedirectResult() in boot() finishes this
-    }
-    try {
-      const result = await fbAuth.signInWithPopup(newGoogleProvider());
-      const credential = firebase.auth.GoogleAuthProvider.credentialFromResult(result);
-      if (credential && credential.accessToken) {
-        DRIVE_ACCESS_TOKEN = credential.accessToken;
-        DRIVE_TOKEN_EXPIRES_AT = Date.now() + 55 * 60 * 1000;
-        DRIVE_NEEDS_RECONNECT = false;
-        showToast('Reconnected to Google Drive.');
-        render();
-        return true;
-      }
-      // Signed in fine but Google didn't hand back an access token — surface
-      // this explicitly instead of silently doing nothing, since it
-      // otherwise looks identical to the button not working at all.
-      console.error('Drive reconnect: signed in but no accessToken on credential', credential);
-      showToast("Signed in, but didn't get Drive access — try Reconnect again.");
-    } catch (err) {
-      // Same popup-failure fallback as sign-in above.
-      if (err && (err.code === 'auth/popup-blocked' || err.code === 'auth/operation-not-supported-in-this-environment' || err.code === 'auth/cancelled-popup-request')) {
-        try {
-          try { localStorage.setItem('driveReconnectPending', '1'); } catch (e) {}
-          await fbAuth.signInWithRedirect(newGoogleProvider());
-          return true;
-        } catch (err2) {
-          console.error('Drive reconnect (redirect fallback) failed:', err2);
-          showToast('Reconnect failed: ' + (err2 && (err2.code || err2.message) || 'unknown error'));
-          return false;
-        }
-      }
-      // auth/popup-closed-by-user fires both when the user actually closed
-      // it AND when the popup got closed out from under Firebase for some
-      // other reason (e.g. it never fully loaded) — show the raw code
-      // either way so this is diagnosable instead of looking like nothing
-      // happened.
-      console.error('Drive reconnect failed:', err);
-      showToast('Reconnect failed: ' + (err && (err.code || err.message) || 'unknown error'));
-    }
-  } catch (outerErr) {
-    // Catches anything thrown before we even got to a network call —
-    // e.g. firebase not loaded yet, a bad provider config, etc.
-    console.error('Drive reconnect: unexpected error', outerErr);
-    showToast('Reconnect error: ' + (outerErr && (outerErr.code || outerErr.message) || String(outerErr)));
+    try { localStorage.setItem('driveReconnectPending', '1'); } catch (e) {}
+    await fbAuth.signInWithRedirect(newGoogleProvider());
+    return true; // page navigates away here; getRedirectResult() in boot() finishes this on return
+  } catch (err) {
+    console.error('Drive reconnect (redirect) failed:', err);
+    showToast('Reconnect failed: ' + (err && (err.code || err.message) || 'unknown error'));
   }
   return false;
 }
