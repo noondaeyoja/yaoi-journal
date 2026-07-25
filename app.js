@@ -4195,17 +4195,34 @@ async function boot() {
     try { wasReconnect = localStorage.getItem('driveReconnectPending') === '1'; } catch (e) {}
     try {
       const redirectResult = await fbAuth.getRedirectResult();
+      console.log('[drive-reconnect] getRedirectResult ->', redirectResult);
       if (redirectResult && redirectResult.user) {
         const credential = firebase.auth.GoogleAuthProvider.credentialFromResult(redirectResult);
+        console.log('[drive-reconnect] credentialFromResult ->', credential);
         if (credential && credential.accessToken) {
           DRIVE_ACCESS_TOKEN = credential.accessToken;
           DRIVE_TOKEN_EXPIRES_AT = Date.now() + 55 * 60 * 1000;
           DRIVE_NEEDS_RECONNECT = false;
           if (wasReconnect) showToast('Reconnected to Google Drive.');
+        } else if (wasReconnect) {
+          // Signed back in (redirectResult.user is set) but Google/Firebase
+          // didn't hand back an OAuth access token on the credential — this
+          // is a real, distinct failure mode (as opposed to no toast at all)
+          // so surface it instead of leaving the banner unexplained.
+          showToast('Signed in, but no Drive access token came back — try Reconnect again.');
         }
+      } else if (wasReconnect) {
+        // We navigated back from Google (driveReconnectPending was set) but
+        // getRedirectResult() came back completely empty — most likely
+        // cause is third-party storage/cookie restrictions blocking the
+        // cross-origin relay between this origin and the authDomain
+        // (yaoi-journal.firebaseapp.com) that Firebase's redirect flow
+        // depends on to reconstruct the result after the round trip.
+        showToast("Reconnect didn't go through — no result came back from Google.");
       }
     } catch (err) {
       console.error('Redirect sign-in failed:', err);
+      if (wasReconnect) showToast('Reconnect failed: ' + (err && (err.code || err.message) || 'unknown error'));
       if (err && err.code !== 'auth/no-auth-event') AUTH_ERROR = authErrorMessage(err);
     }
     try { localStorage.removeItem('driveReconnectPending'); } catch (e) {}
