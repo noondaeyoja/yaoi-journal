@@ -241,11 +241,21 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 
 .empty-state { text-align: center; color: var(--text-dim); padding: 50px 20px; }
 
-.fab {
-  position: fixed; bottom: 20px; right: 18px; width: 54px; height: 54px; border-radius: 50%;
-  background: linear-gradient(135deg, var(--purple), var(--pink)); color: #170b26; font-size: 26px; border: none;
-  box-shadow: 0 6px 18px rgba(179,75,255,.45); z-index: 20;
+.header-add-btn {
+  flex-shrink: 0; width: 30px; height: 30px; border-radius: 50%; border: none; padding: 0;
+  background: linear-gradient(135deg, var(--purple), var(--pink)); color: #170b26; font-size: 18px; line-height: 1;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  box-shadow: 0 3px 10px rgba(179,75,255,.4);
 }
+
+.lock-screen {
+  position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center;
+  background: var(--navy); padding: 24px;
+}
+.lock-screen-inner { text-align: center; max-width: 320px; }
+.lock-screen-icon { font-size: 46px; display: block; margin-bottom: 14px; }
+.lock-screen-inner h2 { margin: 0 0 8px; font-size: 20px; }
+.lock-screen-inner p { color: var(--text-dim); font-size: 13.5px; margin: 0 0 20px; }
 
 .bottom-nav {
   position: fixed; bottom: 0; left: 0; right: 0; z-index: 30;
