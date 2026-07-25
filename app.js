@@ -74,6 +74,8 @@ let TAG_EDIT_MODE = false;         // whether the Tags panel is showing its edit
 let TAG_ENTRIES_FILTER = null;     // which tag name the "view entries with this tag" screen is showing
 let TAG_FILTER_OPEN = false;       // whether the homepage tag multi-select dropdown panel is open
 let TAG_SUGGESTIONS_OPEN = true;    // whether the Tags screen's Suggestions panel is expanded
+let DB_SETTINGS_OPEN = false;       // whether the Database screen's inline Settings panel is expanded
+let DB_TABLE_OPEN = false;          // whether the Database screen's full data table is expanded
 let FILTERS_COLLAPSED = false;     // whether the homepage search/tabs/format/Status/Tags/Ratings&Flags block is tucked away
 let SEARCH_INPUT_SHOULD_FOCUS = false; // one-shot flag: refocus the global search box after it causes a view jump
 let STATE = {
@@ -1395,12 +1397,12 @@ function renderHome() {
       if (group.length === 0) return;
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
       body += `<div class="section-title">${escapeHtml(shelf)} <span style="opacity:.6">(${group.length})</span></div>`;
-      body += scrollRow(rowId, group.map(renderCoverCard).join(''));
+      body += scrollRow(rowId, group.map((e) => renderCoverCard(e)).join(''));
     });
     if (!body) body = `<div class="empty-state">Nothing here yet. Tap + to add a ${STATE.format === 'reading' ? 'manhwa/manga' : 'anime'}.</div>`;
   } else {
     body = entries.length
-      ? `<div class="cover-grid">${entries.map(renderCoverCard).join('')}</div>`
+      ? `<div class="cover-grid">${entries.map((e) => renderCoverCard(e)).join('')}</div>`
       : `<div class="empty-state">No matches. Try clearing filters.</div>`;
   }
 
@@ -1550,6 +1552,21 @@ function tagMergeSuggestions(activeNames, counts) {
   return out.sort((x, y) => x.combinedCount - y.combinedCount).slice(0, 6);
 }
 
+function openTagMergeModal(sourceTag) {
+  const counts = allTagCounts();
+  const others = Object.keys(counts).filter((name) => name !== sourceTag).sort((a, b) => a.localeCompare(b));
+  openModal(`
+    <h3>Merge "${escapeHtml(sourceTag)}" into…</h3>
+    <p style="font-size:11.5px;color:var(--text-dim);">Pick the tag to keep. Every entry tagged "${escapeHtml(sourceTag)}" will be retagged, and "${escapeHtml(sourceTag)}" will disappear.</p>
+    <div style="display:flex;flex-direction:column;gap:6px;max-height:320px;overflow-y:auto;margin-top:10px;">
+      ${others.length ? others.map((name) => `<button class="ref-btn" data-tagmgr-merge-confirm="${escapeHtml(name)}" data-tagmgr-merge-source="${escapeHtml(sourceTag)}">${escapeHtml(name)} (${counts[name]})</button>`).join('') : '<span style="font-size:12px;color:var(--text-dim);">No other tags to merge into yet.</span>'}
+    </div>
+    <div class="modal-actions" style="margin-top:12px;">
+      <button class="btn-ghost" data-close-modal="1">Cancel</button>
+    </div>
+  `);
+}
+
 function renderTagManager() {
   const counts = allTagCounts();
   const allNames = Object.keys(counts).sort((a, b) => a.localeCompare(b));
@@ -1591,6 +1608,7 @@ function renderTagManager() {
           </div>
           <div class="tagmgr-actions">
             <button class="toggle-switch on" data-tagmgr-hide="${escapeHtml(t)}" title="Hide from filters (keeps the data)" role="switch" aria-checked="true"><span class="toggle-knob"></span></button>
+            <button class="icon-btn-inline" data-tagmgr-merge="${escapeHtml(t)}" title="Merge this tag into another">🔀</button>
             <button class="icon-btn-inline" data-tagmgr-rename="${escapeHtml(t)}" title="Rename this tag everywhere">✏️</button>
             <button class="icon-btn-inline" data-tagmgr-delete="${escapeHtml(t)}" title="Delete this tag everywhere">🗑️</button>
           </div>
@@ -1645,7 +1663,7 @@ function renderTagEntries() {
   const t = TAG_ENTRIES_FILTER;
   const entries = t ? ALL_ENTRIES.filter((e) => (e.tags || []).concat(e.customTags || []).includes(t)) : [];
   const body = entries.length
-    ? `<div class="cover-grid">${entries.map(renderCoverCard).join('')}</div>`
+    ? `<div class="cover-grid">${entries.map((e) => renderCoverCard(e)).join('')}</div>`
     : `<div class="empty-state">No entries have this tag.</div>`;
   return `
     <div class="app-header">
@@ -2033,7 +2051,7 @@ function renderMemeGrid() {
     ? `<div class="image-masonry">${items.map((r) => `
         <div class="masonry-item" data-open-meme="${r.id}">
           <img src="${r.dataUrl}" alt="" loading="lazy">
-          ${!(r.moodTags || []).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
+          ${!r.groupId ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
         </div>`).join('')}</div>`
     : `<div class="empty-state">No reactions match. ${MEME_STATE.moodFilter || MEME_STATE.search ? 'Try clearing the filter/search.' : 'Tap "Add" to upload your first meme.'}</div>`;
 }
@@ -2442,9 +2460,9 @@ function renderDetail(e) {
     <div class="detail-header">
       <button class="back-btn" data-nav="home">← Back</button>
       <h2>${escapeHtml(e.title)}</h2>
-      <button class="icon-btn" data-force-save="1" title="Save now">✅</button>
       <button class="icon-btn" data-toggle-fav="1" title="Favorite">${e.favorite ? '💜' : '🤍'}</button>
       <button class="icon-btn" data-toggle-hd="1" title="On HD">${isOnDrive(e) ? '💾' : '🗄️'}</button>
+      <button class="icon-btn" data-force-save="1" title="Save now">✅</button>
       <button class="icon-btn" data-merge-entry="${e.id}" title="Mark as duplicate / merge into another entry">🔀</button>
       <button class="icon-btn danger" data-delete-entry="${e.id}" title="Delete this entry">✕</button>
     </div>
@@ -2593,7 +2611,6 @@ function renderDatabase() {
     <div class="app-header">
       <div class="brand-row">
         <h1>🗂️ Database Mode</h1>
-        <button class="icon-btn" data-open-settings="1" title="Settings">⚙️</button>
       </div>
       <div class="search-bar"><span>🔍</span><input type="search" id="db-search" placeholder="Filter table..."></div>
     </div>
@@ -2623,16 +2640,46 @@ function renderDatabase() {
           <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">Searches Anime-Planet/MangaGo for every unmatched entry in one pass instead of the usual 20-a-day auto-sweep — paced to be gentle on the proxy, so it can take a while for a big backlog. Requires a proxy URL in Settings.</p>
         `}
       </div>
+      <div class="panel" style="margin-bottom:14px;">
+        <div class="panel-title" data-toggle-db-settings="1" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">⚙️ Settings <span style="font-size:11px;">${DB_SETTINGS_OPEN ? '▲ Hide' : '▼ Show'}</span></div>
+        ${DB_SETTINGS_OPEN ? `
+        <div class="field-row">
+          <label>Cross-reference proxy URL (your Apps Script web app URL)</label>
+          <input type="text" id="proxy-url-input" value="${escapeHtml(getProxyUrl())}" placeholder="https://script.google.com/macros/s/.../exec">
+        </div>
+        <p style="font-size:11.5px;color:var(--text-dim);">This is only used when you tap "Cross-reference" on an entry — it fetches the Anime-Planet page server-side so the app can read the summary/cover. No reading data is ever sent out.</p>
+        <div class="modal-actions">
+          <button class="btn-primary" data-save-settings-inline="1">Save</button>
+        </div>
+        <div style="border-top:1px solid var(--border);margin-top:16px;padding-top:14px;">
+          <div class="panel-title" style="margin-bottom:6px;">📋 Get Info button</div>
+          <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 10px;">You'll only need this occasionally — mainly when adding a brand-new title, or when cleaning up entries in Database mode. It's a free workaround for when the automatic fetch fails.</p>
+          <p style="font-size:12px;font-weight:600;margin:0 0 4px;">Set up once:</p>
+          <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 4px;"><strong>On a computer:</strong> drag this button up to your bookmarks bar. <a href="${bookmarkletHref()}" class="ref-btn" style="display:inline-block;text-decoration:none;">💾 Get Info</a></p>
+          <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 8px;"><strong>On a phone:</strong> save any page as a bookmark, then open that bookmark's settings and paste the code below over its URL.</p>
+          <textarea readonly style="width:100%;height:60px;font-size:10px;font-family:monospace;" onclick="this.select()">${escapeHtml(bookmarkletHref())}</textarea>
+          <p style="font-size:12px;font-weight:600;margin:10px 0 4px;">Each time you need it:</p>
+          <ol style="font-size:11.5px;color:var(--text-dim);margin:0 0 0 18px;padding:0;">
+            <li>Open the title's page on Anime-Planet or MangaGo.</li>
+            <li>Tap your "Get Info" bookmark.</li>
+            <li>Come back to Yaoi Journal, open that entry, tap Cross-reference → Paste from clipboard.</li>
+          </ol>
+        </div>
+        ` : ''}
+      </div>
       <div class="export-row">
         <button class="ref-btn" data-export-csv="1">⬇ Export CSV</button>
+        <button class="ref-btn" data-toggle-db-table="1">${DB_TABLE_OPEN ? '▲ Hide Table' : '▼ Show Table'}</button>
         <span style="color:var(--text-dim);font-size:12.5px;align-self:center;">${rows.length} total entries</span>
       </div>
+      ${DB_TABLE_OPEN ? `
       <div class="db-table-wrap">
         <table class="db-table" id="db-table">
           <thead><tr>${cols.map((c) => `<th>${c}</th>`).join('')}</tr></thead>
           <tbody>${trs}</tbody>
         </table>
       </div>
+      ` : ''}
     </main>
     ${renderBottomNav('database')}
   `;
@@ -3382,8 +3429,20 @@ function attachRootHandlers() {
   });
   const addBtn = root.querySelector('[data-add-entry]');
   if (addBtn) addBtn.onclick = openAddModal;
-  const settingsBtn = root.querySelector('[data-open-settings]');
-  if (settingsBtn) settingsBtn.onclick = openSettingsModal;
+  root.querySelectorAll('[data-toggle-db-settings]').forEach((el) => {
+    el.onclick = () => { DB_SETTINGS_OPEN = !DB_SETTINGS_OPEN; render(); };
+  });
+  root.querySelectorAll('[data-toggle-db-table]').forEach((el) => {
+    el.onclick = () => { DB_TABLE_OPEN = !DB_TABLE_OPEN; render(); };
+  });
+  const saveSettingsInlineBtn = root.querySelector('[data-save-settings-inline]');
+  if (saveSettingsInlineBtn) saveSettingsInlineBtn.onclick = () => {
+    const val = document.getElementById('proxy-url-input').value;
+    setProxyUrl(val);
+    DB_SETTINGS_OPEN = false;
+    showToast('Settings saved');
+    render();
+  };
 
   // Detail view handlers
   const forceSaveBtn = root.querySelector('[data-force-save]');
@@ -3798,6 +3857,9 @@ function attachRootHandlers() {
       render();
     };
   });
+  root.querySelectorAll('[data-tagmgr-merge]').forEach((el) => {
+    el.onclick = () => openTagMergeModal(el.getAttribute('data-tagmgr-merge'));
+  });
   root.querySelectorAll('[data-suggest-hide]').forEach((el) => {
     el.onclick = async () => {
       await setTagSoftHidden(el.getAttribute('data-suggest-hide'), true);
@@ -4034,12 +4096,12 @@ function renderHomeInPlace() {
       if (group.length === 0) return;
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
       body += `<div class="section-title">${escapeHtml(shelf)} <span style="opacity:.6">(${group.length})</span></div>`;
-      body += scrollRow(rowId, group.map(renderCoverCard).join(''));
+      body += scrollRow(rowId, group.map((e) => renderCoverCard(e)).join(''));
     });
     if (!body) body = `<div class="empty-state">Nothing here yet.</div>`;
   } else {
     body = entries.length
-      ? `<div class="cover-grid">${entries.map(renderCoverCard).join('')}</div>`
+      ? `<div class="cover-grid">${entries.map((e) => renderCoverCard(e)).join('')}</div>`
       : `<div class="empty-state">No matches. Try clearing filters.</div>`;
   }
   if (main) {
@@ -4089,6 +4151,29 @@ document.addEventListener('click', (ev) => {
     if (source && target && confirm(`Merge "${source.title}" into "${target.title}"? "${source.title}" will be deleted after its data is copied over.`)) {
       mergeIntoTarget(MERGE_SOURCE_ID, targetId);
     }
+  }
+  if (t.matches('[data-tagmgr-merge-confirm]')) {
+    const keepName = t.getAttribute('data-tagmgr-merge-confirm');
+    const dropName = t.getAttribute('data-tagmgr-merge-source');
+    (async () => {
+      for (const en of ALL_ENTRIES) {
+        let changed = false;
+        if ((en.tags || []).includes(dropName)) {
+          en.tags = en.tags.filter((x) => x !== dropName);
+          if (!en.tags.includes(keepName) && !(en.customTags || []).includes(keepName)) en.tags.push(keepName);
+          changed = true;
+        }
+        if ((en.customTags || []).includes(dropName)) {
+          en.customTags = en.customTags.filter((x) => x !== dropName);
+          if (!(en.tags || []).includes(keepName) && !en.customTags.includes(keepName)) en.customTags.push(keepName);
+          changed = true;
+        }
+        if (changed) await saveEntry(en);
+      }
+      closeModal();
+      showToast(`Merged "${dropName}" into "${keepName}"`);
+      render();
+    })();
   }
   if (t.matches('[data-create-reaction-group]')) {
     const input = document.getElementById('new-group-title-input');
