@@ -35,6 +35,11 @@ const FIREBASE_CONFIG = {
 };
 firebase.initializeApp(FIREBASE_CONFIG);
 const fbAuth = firebase.auth();
+// Session-only persistence: closing the browser/tab fully ends the login,
+// so the next visit requires signing in again (rather than staying signed
+// in indefinitely). This is a deliberate privacy choice for a personal,
+// single-user app that also holds a live Google Drive connection.
+fbAuth.setPersistence(firebase.auth.Auth.Persistence.SESSION).catch(() => {});
 const fbStore = firebase.firestore();
 try { fbStore.enablePersistence({ synchronizeTabs: true }).catch(() => {}); } catch (e) {}
 
@@ -43,6 +48,27 @@ let FIRESTORE_UNSUB = null;      // unsubscribe fn for the live cross-device ent
 let AUTH_ERROR = '';
 let AUTH_BUSY = false;
 let SYNC_BUSY = false;           // true while the initial pull/push migration is running
+
+// Lightweight local "screen lock" (not a real sign-out): if the tab/app is
+// backgrounded for a while on mobile and then comes back, we show a simple
+// unlock overlay instead of the data straightaway. Purely client-side and
+// in-memory — doesn't touch the Firebase session or the Drive connection,
+// it's just a casual privacy shield against someone glancing at the phone.
+let APP_LOCKED = false;
+let LOCK_HIDDEN_AT = null;
+const LOCK_THRESHOLD_MS = 60000; // 1 minute
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    LOCK_HIDDEN_AT = Date.now();
+  } else if (LOCK_HIDDEN_AT) {
+    const elapsed = Date.now() - LOCK_HIDDEN_AT;
+    LOCK_HIDDEN_AT = null;
+    if (elapsed >= LOCK_THRESHOLD_MS && CURRENT_USER) {
+      APP_LOCKED = true;
+      render();
+    }
+  }
+});
 
 // Google Drive access token (for image upload/download), separate from the
 // Firebase Auth session above. Firebase keeps you signed in persistently,
@@ -1148,7 +1174,20 @@ async function signOutOfAccount() {
 /* Render: root switch                                                    */
 /* ---------------------------------------------------------------------- */
 
-function renderGlobalHeader() {
+function renderLockScreen() {
+  return `
+    <div class="lock-screen">
+      <div class="lock-screen-inner">
+        <span class="lock-screen-icon">🔒</span>
+        <h2>Welcome back</h2>
+        <p>You stepped away for a bit — tap below to keep going.</p>
+        <button class="btn-primary" data-unlock-app="1">Unlock</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderGlobalHeader(showAddEntry) {
   const needsReconnect = DRIVE_NEEDS_RECONNECT || (CURRENT_USER && !driveTokenValid());
   return `
     <div class="global-header">
@@ -1158,6 +1197,7 @@ function renderGlobalHeader() {
       <div class="global-search-bar">
         <span>🔍</span>
         <input type="search" id="search-input" placeholder="Search all reads &amp; anime..." value="${escapeHtml(STATE.search)}">
+        ${showAddEntry ? `<button class="header-add-btn" data-add-entry="1" title="Add new entry">+</button>` : ''}
       </div>
     </div>
     ${needsReconnect ? `
@@ -1174,6 +1214,12 @@ function render() {
     attachAuthHandlers();
     return;
   }
+  if (APP_LOCKED) {
+    root.innerHTML = renderLockScreen();
+    const unlockBtn = root.querySelector('[data-unlock-app]');
+    if (unlockBtn) unlockBtn.onclick = () => { APP_LOCKED = false; render(); };
+    return;
+  }
   let body = '';
   if (STATE.view === 'home') body = renderHome();
   else if (STATE.view === 'detail') body = renderDetail(getEntry(STATE.entryId));
@@ -1185,7 +1231,7 @@ function render() {
   else if (STATE.view === 'database') body = renderDatabase();
   else if (STATE.view === 'review') body = renderReviewQueue();
   else if (STATE.view === 'duplicates') body = renderDuplicates();
-  root.innerHTML = renderGlobalHeader() + body;
+  root.innerHTML = renderGlobalHeader(STATE.view === 'home') + body;
   attachRootHandlers();
 }
 
@@ -1449,7 +1495,6 @@ function renderHome() {
       </div>
     </div>
     <main>${body}</main>
-    <button class="fab" data-add-entry="1">+</button>
     ${renderBottomNav('home')}
   `;
 }
@@ -2037,10 +2082,25 @@ const MOOD_OPTIONS = [
 let MEME_STATE = { groupFilter: null, search: '' };
 let REACTION_GROUPS = [];
 
+// A reaction can belong to more than one grouping/mood now. Older saved
+// reactions only ever had a single r.groupId string, so this falls back to
+// that for backward compatibility without needing a data migration.
+function reactionGroupIds(r) {
+  if (r.groupIds && r.groupIds.length) return r.groupIds;
+  return r.groupId ? [r.groupId] : [];
+}
+
 function memeFilteredItems() {
   const q = MEME_STATE.search.trim().toLowerCase();
-  let items = ALL_REACTIONS.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-  if (MEME_STATE.groupFilter) items = items.filter((r) => r.groupId === MEME_STATE.groupFilter);
+  // Untagged reactions surface first (so they get organized sooner), then
+  // everything else follows in upload order (oldest added first).
+  let items = ALL_REACTIONS.slice().sort((a, b) => {
+    const aUntagged = !reactionGroupIds(a).length;
+    const bUntagged = !reactionGroupIds(b).length;
+    if (aUntagged !== bUntagged) return aUntagged ? -1 : 1;
+    return new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
+  });
+  if (MEME_STATE.groupFilter) items = items.filter((r) => reactionGroupIds(r).includes(MEME_STATE.groupFilter));
   if (q) items = items.filter((r) => (r.note || '').toLowerCase().includes(q));
   return items;
 }
@@ -2051,7 +2111,7 @@ function renderMemeGrid() {
     ? `<div class="image-masonry">${items.map((r) => `
         <div class="masonry-item" data-open-meme="${r.id}">
           <img src="${r.dataUrl}" alt="" loading="lazy">
-          ${!r.groupId ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
+          ${!reactionGroupIds(r).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
         </div>`).join('')}</div>`
     : `<div class="empty-state">No reactions match. ${MEME_STATE.moodFilter || MEME_STATE.search ? 'Try clearing the filter/search.' : 'Tap "Add" to upload your first meme.'}</div>`;
 }
@@ -2063,7 +2123,7 @@ function renderMemeLibraryInPlace() {
 }
 
 function renderMemeLibrary() {
-  const untaggedCount = ALL_REACTIONS.filter((r) => !r.groupId).length;
+  const untaggedCount = ALL_REACTIONS.filter((r) => !reactionGroupIds(r).length).length;
   const groupChips = REACTION_GROUPS.map((g) => `<span class="rating-pick-icon flag-filter-icon ${MEME_STATE.groupFilter === g.id ? 'active' : ''}" style="width:auto;min-width:28px;padding:0 10px;white-space:nowrap;" data-meme-group-filter="${g.id}" title="Filter: ${escapeHtml(g.title)}">${escapeHtml(g.title)}</span>`).join('');
   return `
     <div class="app-header">
@@ -2107,9 +2167,10 @@ function openMemeEditModal(id) {
     <img src="${r.dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">
     <div class="field-row"><label>Caption/keywords (for search)</label><input type="text" id="meme-note-input" value="${escapeHtml(r.note || '')}" placeholder="e.g. blushing, screaming, oh no"></div>
     <div class="field-row">
-      <label>Mood</label>
+      <label>Mood ${reactionGroupIds(r).length ? '' : '<span style="font-weight:400;color:var(--text-dim);">(none yet)</span>'}</label>
+      <div style="font-size:11px;color:var(--text-dim);margin:2px 0 4px;">${REACTION_GROUPS.length ? 'Tap any that apply — you can pick more than one.' : ''}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">
-        ${REACTION_GROUPS.length ? [`<button class="mood-chip ${!r.groupId ? 'active' : ''}" data-meme-set-group="" data-meme-id="${r.id}">None</button>`].concat(REACTION_GROUPS.map((g) => `<button class="mood-chip ${r.groupId === g.id ? 'active' : ''}" data-meme-set-group="${g.id}" data-meme-id="${r.id}">${escapeHtml(g.title)}</button>`)).join('') : '<span style="font-size:12px;color:var(--text-dim);">No groupings yet — tap the ➕ in the Reactions header to create one.</span>'}
+        ${REACTION_GROUPS.length ? REACTION_GROUPS.map((g) => `<button class="mood-chip ${reactionGroupIds(r).includes(g.id) ? 'active' : ''}" data-meme-toggle-group="${g.id}" data-meme-id="${r.id}">${escapeHtml(g.title)}</button>`).join('') : '<span style="font-size:12px;color:var(--text-dim);">No groupings yet — tap the ➕ in the Reactions header to create one.</span>'}
       </div>
     </div>
     <div class="modal-actions">
@@ -4188,12 +4249,15 @@ document.addEventListener('click', (ev) => {
       render();
     }
   }
-  if (t.matches('[data-meme-set-group]')) {
+  if (t.matches('[data-meme-toggle-group]')) {
     const id = t.getAttribute('data-meme-id');
-    const groupId = t.getAttribute('data-meme-set-group');
+    const groupId = t.getAttribute('data-meme-toggle-group');
     const r = ALL_REACTIONS.find((x) => x.id === id);
     if (r) {
-      r.groupId = groupId || null;
+      const ids = reactionGroupIds(r).slice();
+      const idx = ids.indexOf(groupId);
+      if (idx === -1) ids.push(groupId); else ids.splice(idx, 1);
+      r.groupIds = ids;
       saveReaction(r);
       openMemeEditModal(id);
     }
