@@ -760,14 +760,25 @@ async function hydrateAllMissingDriveImages(notify) {
   const total = entryTargets.length + reactionTargets.length;
   if (!total) {
     if (notify) showToast('Everything is already synced from Drive.');
-    return total;
+    return { total: 0, succeeded: 0 };
   }
   if (notify) showToast(`Syncing ${total} item${total === 1 ? '' : 's'} from Drive…`);
   await Promise.all(entryTargets.map((e) => hydrateDriveImages(e).catch((err) => console.error('Hydrate failed for', e.title, err))));
   await Promise.all(reactionTargets.map((r) => hydrateDriveReaction(r).catch((err) => console.error('Reaction hydrate failed:', err))));
+  // Re-check afterward rather than assuming success — a download can fail
+  // silently (e.g. Drive needs reconnecting), so report what actually landed.
+  const stillMissing = ALL_ENTRIES.filter(entryNeedsImageHydration).length + ALL_REACTIONS.filter((r) => r.driveId && !r.dataUrl).length;
+  const succeeded = total - stillMissing;
   render();
-  if (notify) showToast(`Synced ${total} item${total === 1 ? '' : 's'} from Drive.`);
-  return total;
+  if (notify) {
+    if (stillMissing > 0) {
+      const reason = (DRIVE_NEEDS_RECONNECT || !driveTokenValid()) ? ' — reconnect Google Drive and try again' : '';
+      showToast(`Synced ${succeeded} of ${total}${reason}`);
+    } else {
+      showToast(`Synced ${succeeded} item${succeeded === 1 ? '' : 's'} from Drive.`);
+    }
+  }
+  return { total, succeeded };
 }
 
 // Runs once right after sign-in. If this account has never synced before
