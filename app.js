@@ -701,6 +701,45 @@ async function hydrateDriveReaction(reaction) {
   }
 }
 
+// hydrateDriveReaction() above only ever used to get called once, during
+// syncReactionsWithFirestore()'s boot-time merge, for reactions that were
+// brand new to this device that boot. If the Drive token wasn't valid yet at
+// that exact moment (e.g. a fresh sign-in on a device that hasn't tapped
+// Reconnect yet — very much the normal state right after the mobile
+// sign-in fix), every one of those downloads failed silently and, unlike
+// entries (which get a retry via the live Firestore listener AND every
+// future boot's merge), reactions had no other path that would ever try
+// again — once a reaction was in local IndexedDB with dataUrl still null,
+// it stayed a permanently-broken "?" thumbnail. This is the actual retry
+// path: scans for anything still missing its image and Drive is reachable,
+// and is called from navigate() whenever the Reactions tab is opened, and
+// right after a successful Reconnect, instead of only once at boot.
+let REACTION_HYDRATE_BUSY = false;
+async function hydrateMissingReactions() {
+  if (REACTION_HYDRATE_BUSY || !driveTokenValid()) return;
+  const missing = ALL_REACTIONS.filter((r) => r.driveId && !r.dataUrl);
+  if (!missing.length) return;
+  REACTION_HYDRATE_BUSY = true;
+  let lastRender = 0;
+  for (const r of missing) {
+    if (!driveTokenValid()) break; // token expired mid-run — stop rather than fail through the rest one by one
+    try {
+      r.dataUrl = await downloadFromDrive(r.driveId);
+      await idbPut(STORE_REACTIONS, r);
+      const idx = ALL_REACTIONS.findIndex((x) => x.id === r.id);
+      if (idx > -1) ALL_REACTIONS[idx] = r;
+    } catch (err) {
+      console.error('Reaction hydrate failed:', err);
+    }
+    if (STATE.view === 'meme' && Date.now() - lastRender > 400) {
+      renderMemeLibraryInPlace();
+      lastRender = Date.now();
+    }
+  }
+  if (STATE.view === 'meme') renderMemeLibraryInPlace();
+  REACTION_HYDRATE_BUSY = false;
+}
+
 // Runs once right after sign-in. If this account has never synced before
 // (no entries in Firestore yet), push everything currently on this device
 // up as the starting point. Otherwise merge: newest updatedAt wins per
@@ -924,6 +963,13 @@ function setProxyUrl(url) {
 /* ---------------------------------------------------------------------- */
 
 function navigate(view, entryId) {
+  // A modal (e.g. the Suggested Match Review carousel) is a separate overlay
+  // layer that sits on top of #view-root and was never being closed on
+  // navigation — so switching views (or just typing in the search box, which
+  // routes through here too) while a modal was open left it stuck on screen,
+  // invisibly blocking every tap on whatever loaded underneath it. Closing
+  // it here guarantees a fresh navigation never has a stale modal in the way.
+  closeModal();
   STATE.view = view;
   STATE.entryId = entryId || null;
   DETAIL_EDIT_MODE = false;
@@ -931,6 +977,12 @@ function navigate(view, entryId) {
   TAG_FILTER_OPEN = false;
   window.scrollTo(0, 0);
   render();
+  // Best-effort retries for Drive-backed images that may have missed their
+  // only previous hydration attempt (e.g. this device's Drive token wasn't
+  // valid yet the first time this entry/reaction synced down) — opening the
+  // relevant screen is a natural, low-cost moment to try again.
+  if (view === 'detail' && entryId) hydrateDriveImages(getEntry(entryId)).catch(() => {});
+  if (view === 'meme') hydrateMissingReactions().catch(() => {});
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1157,6 +1209,11 @@ async function reconnectGoogleDrive() {
     DRIVE_NEEDS_RECONNECT = false;
     showToast('Reconnected to Google Drive.');
     render();
+    // The moment the token becomes valid is exactly when anything that
+    // previously failed to hydrate (reactions with no retry path of their
+    // own, or the entry currently open) should get another shot.
+    hydrateMissingReactions().catch(() => {});
+    if (STATE.view === 'detail' && STATE.entryId) hydrateDriveImages(getEntry(STATE.entryId)).catch(() => {});
     return true;
   } catch (err) {
     console.error('Drive reconnect failed:', err);
@@ -2076,7 +2133,9 @@ function renderMemeGrid() {
   return items.length
     ? `<div class="image-masonry">${items.map((r) => `
         <div class="masonry-item" data-open-meme="${r.id}">
-          <img src="${r.dataUrl}" alt="" loading="lazy">
+          ${r.dataUrl
+            ? `<img src="${r.dataUrl}" alt="" loading="lazy">`
+            : `<div class="cover-placeholder" title="Still downloading from Drive…">⏳</div>`}
           ${!(r.moodTags || []).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
         </div>`).join('')}</div>`
     : `<div class="empty-state">No reactions match. ${MEME_STATE.moodFilter || MEME_STATE.search ? 'Try clearing the filter/search.' : 'Tap "Add" to upload your first meme.'}</div>`;
@@ -2115,7 +2174,9 @@ function openMemeEditModal(id) {
   if (!r) return;
   openModal(`
     <h3>Edit reaction</h3>
-    <img src="${r.dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">
+    ${r.dataUrl
+      ? `<img src="${r.dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">`
+      : `<div class="cover-placeholder" style="height:180px;margin-bottom:10px;">⏳ Still downloading from Drive…</div>`}
     <div class="field-row"><label>Caption/keywords (for search)</label><input type="text" id="meme-note-input" value="${escapeHtml(r.note || '')}" placeholder="e.g. blushing, screaming, oh no"></div>
     <div class="field-row">
       <label>Mood ${!(r.moodTags || []).length ? '<span style="color:var(--red-flag);">— pick at least one</span>' : ''}</label>
@@ -3321,6 +3382,10 @@ function attachRootHandlers() {
   if (searchInput) {
     searchInput.oninput = (ev) => {
       STATE.search = ev.target.value;
+      // Same stale-modal issue navigate() guards against — typing here while
+      // already on the home view re-renders in place instead of routing
+      // through navigate(), so it needs its own closeModal() call too.
+      closeModal();
       if (STATE.view === 'home') {
         renderHomeInPlace();
       } else {
