@@ -1044,18 +1044,74 @@ async function signInWithGoogle() {
 // That's exactly what looked like "the banner just won't go away" with no
 // error message. A redirect doesn't need any cross-window messaging at all,
 // so it can't get stuck this way.
+// Google Identity Services (GIS) token client — mints Drive access tokens
+// directly, independent of Firebase Auth's sign-in session. Loaded via the
+// <script src="https://accounts.google.com/gsi/client"> tag in index.html.
+const GOOGLE_OAUTH_CLIENT_ID = '831194325870-hi0rg7a86n5tbqrk75hfdq90f5lkucrp.apps.googleusercontent.com';
+let GIS_TOKEN_CLIENT = null;
+
+function initGisTokenClient() {
+  if (GIS_TOKEN_CLIENT) return GIS_TOKEN_CLIENT;
+  if (!(window.google && google.accounts && google.accounts.oauth2)) {
+    throw new Error('Google Identity Services script has not loaded yet — check your connection and try again.');
+  }
+  GIS_TOKEN_CLIENT = google.accounts.oauth2.initTokenClient({
+    client_id: GOOGLE_OAUTH_CLIENT_ID,
+    scope: DRIVE_SCOPE,
+    callback: () => {} // overwritten per-request in requestDriveAccessToken()
+  });
+  return GIS_TOKEN_CLIENT;
+}
+
+// Resolves with { access_token, expires_in } straight from Google — used by
+// reconnectGoogleDrive() below. Bypasses Firebase Auth entirely for this.
+function requestDriveAccessToken() {
+  return new Promise((resolve, reject) => {
+    let client;
+    try {
+      client = initGisTokenClient();
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    client.callback = (tokenResponse) => {
+      if (tokenResponse && tokenResponse.access_token) resolve(tokenResponse);
+      else reject(new Error((tokenResponse && tokenResponse.error) || 'No access token returned.'));
+    };
+    client.error_callback = (err) => reject(new Error((err && err.type) || 'Google sign-in popup failed.'));
+    client.requestAccessToken({ prompt: '' });
+  });
+}
+
+// Re-runs Google Drive auth purely to mint a fresh Drive access token (the
+// Firebase session itself never lapsed) — used from the "Reconnect Google
+// Drive" banner that shows up once the ~1hr token expires or a Drive call
+// comes back 401.
+//
+// This used to go through fbAuth.signInWithRedirect()/signInWithPopup(),
+// both of which route the OAuth result back through a cross-origin relay
+// via the Firebase authDomain (yaoi-journal.firebaseapp.com, a different
+// origin from this app). Confirmed live that modern Chrome's third-party
+// storage partitioning breaks that relay both ways: signInWithPopup() just
+// hangs (browser blocks the popup from messaging the opener), and
+// signInWithRedirect() comes back via an empty getRedirectResult() (no
+// user, no credential) — exactly the "banner won't clear" bug. GIS's token
+// client (see requestDriveAccessToken() above) uses its own OAuth popup
+// flow that never depends on that relay, so it isn't exposed to this.
 async function reconnectGoogleDrive() {
-  // Immediate feedback the instant the click registers, so a totally silent
-  // failure (an exception thrown before any network call even starts) is
-  // still visibly distinguishable from the button not being wired up at all.
   showToast('Connecting to Google Drive…');
   try {
-    try { localStorage.setItem('driveReconnectPending', '1'); } catch (e) {}
-    await fbAuth.signInWithRedirect(newGoogleProvider());
-    return true; // page navigates away here; getRedirectResult() in boot() finishes this on return
+    const tokenResponse = await requestDriveAccessToken();
+    DRIVE_ACCESS_TOKEN = tokenResponse.access_token;
+    const expiresInMs = tokenResponse.expires_in ? Number(tokenResponse.expires_in) * 1000 : 55 * 60 * 1000;
+    DRIVE_TOKEN_EXPIRES_AT = Date.now() + Math.max(expiresInMs - 5 * 60 * 1000, 60 * 1000);
+    DRIVE_NEEDS_RECONNECT = false;
+    showToast('Google Drive reconnected.');
+    render();
+    return true;
   } catch (err) {
-    console.error('Drive reconnect (redirect) failed:', err);
-    showToast('Reconnect failed: ' + (err && (err.code || err.message) || 'unknown error'));
+    console.error('Drive reconnect (GIS) failed:', err);
+    showToast('Reconnect failed: ' + (err && err.message || 'unknown error'));
   }
   return false;
 }
@@ -4191,41 +4247,12 @@ async function boot() {
     // reconnectGoogleDrive()) — onAuthStateChanged alone tells us a user is
     // signed in, but only getRedirectResult() hands back the Google OAuth
     // credential/access token needed for Drive calls.
-    let wasReconnect = false;
-    try { wasReconnect = localStorage.getItem('driveReconnectPending') === '1'; } catch (e) {}
-    try {
-      const redirectResult = await fbAuth.getRedirectResult();
-      console.log('[drive-reconnect] getRedirectResult ->', redirectResult);
-      if (redirectResult && redirectResult.user) {
-        const credential = firebase.auth.GoogleAuthProvider.credentialFromResult(redirectResult);
-        console.log('[drive-reconnect] credentialFromResult ->', credential);
-        if (credential && credential.accessToken) {
-          DRIVE_ACCESS_TOKEN = credential.accessToken;
-          DRIVE_TOKEN_EXPIRES_AT = Date.now() + 55 * 60 * 1000;
-          DRIVE_NEEDS_RECONNECT = false;
-          if (wasReconnect) showToast('Reconnected to Google Drive.');
-        } else if (wasReconnect) {
-          // Signed back in (redirectResult.user is set) but Google/Firebase
-          // didn't hand back an OAuth access token on the credential — this
-          // is a real, distinct failure mode (as opposed to no toast at all)
-          // so surface it instead of leaving the banner unexplained.
-          showToast('Signed in, but no Drive access token came back — try Reconnect again.');
-        }
-      } else if (wasReconnect) {
-        // We navigated back from Google (driveReconnectPending was set) but
-        // getRedirectResult() came back completely empty — most likely
-        // cause is third-party storage/cookie restrictions blocking the
-        // cross-origin relay between this origin and the authDomain
-        // (yaoi-journal.firebaseapp.com) that Firebase's redirect flow
-        // depends on to reconstruct the result after the round trip.
-        showToast("Reconnect didn't go through — no result came back from Google.");
-      }
-    } catch (err) {
-      console.error('Redirect sign-in failed:', err);
-      if (wasReconnect) showToast('Reconnect failed: ' + (err && (err.code || err.message) || 'unknown error'));
-      if (err && err.code !== 'auth/no-auth-event') AUTH_ERROR = authErrorMessage(err);
-    }
-    try { localStorage.removeItem('driveReconnectPending'); } catch (e) {}
+    // Drive access tokens are now minted directly via Google Identity
+    // Services (see requestDriveAccessToken()/reconnectGoogleDrive() below) —
+    // the old getRedirectResult()-based flow that used to live here depended
+    // on a cross-origin relay through the Firebase authDomain that modern
+    // browsers' third-party storage partitioning silently breaks (confirmed
+    // live: it always came back with no user/credential). Retired.
     fbAuth.onAuthStateChanged(async (user) => {
       CURRENT_USER = user;
       if (user) {
