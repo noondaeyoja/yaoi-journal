@@ -309,14 +309,26 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 .mood-chip.small { padding: 5px 10px; font-size: 12px; }
 
 /* ---------- Detail / Journal screen ---------- */
+/* Split into two stacked rows (title row, then an icon toolbar row below it)
+   instead of cramming Back + title + 5 action icons onto one line — that
+   line was squeezing the title down to almost nothing on narrow phones.
+   Icons are always in their own row now (not just under a mobile media
+   query) since that reads cleanly at any width and is one less layout mode
+   to maintain. */
 .detail-header {
-  display: flex; align-items: center; gap: 6px; padding: 10px 12px; position: sticky; top: var(--global-header-h); z-index: 30;
+  display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; position: sticky; top: var(--global-header-h); z-index: 30;
   background: rgba(18,22,46,0.92); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border);
 }
+.detail-header-top { display: flex; align-items: center; gap: 6px; }
+.detail-header-icons { display: flex; align-items: center; gap: 6px; }
 .back-btn { background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 999px; padding: 7px 12px; font-size: 14px; flex-shrink: 0; }
 .detail-header h2 { font-size: 15px; margin: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .icon-btn { background: var(--card); border: 1px solid var(--border); color: var(--yellow); border-radius: 999px; width: 34px; height: 34px; font-size: 16px; flex-shrink: 0; }
 .icon-btn.danger { color: #ff6767; border-color: rgba(255,103,103,.4); }
+/* Same 💾 glyph either way (synced with the same icon used for "On Drive"
+   elsewhere in the app) — active/inactive is a color difference, not a
+   different emoji, so it doesn't look like two unrelated icons. */
+.icon-btn.hd-active { color: var(--purple); border-color: var(--purple); }
 
 .journal { padding: 12px; max-width: 720px; margin: 0 auto; padding-bottom: calc(190px + env(safe-area-inset-bottom, 0px)); }
 
@@ -336,16 +348,16 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
    both columns instead of inside the right column, for the same reason. */
 .split-row { display: flex; gap: 12px; align-items: flex-start; }
 .split-row > div { flex: 1; min-width: 0; }
-.split-row > div:first-child { flex: 0 0 128px; }
+.split-row > div:first-child { flex: 0 0 108px; }
+@media (max-width: 420px) {
+  .split-row > div:first-child { flex-basis: 84px; }
+}
 
 .cover-slot {
   width: 100%; aspect-ratio: 2/3; border-radius: var(--radius-sm); background: var(--navy-2);
   border: 1px dashed var(--border); overflow: hidden; display: flex; align-items: center; justify-content: center;
 }
 .cover-slot img { width: 100%; height: 100%; object-fit: cover; }
-@media (max-width: 420px) {
-  .split-row > div:first-child { flex-basis: 96px; }
-}
 
 .field-row { margin-bottom: 8px; }
 .field-row label { display: block; font-size: 10.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
@@ -380,8 +392,14 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 .review-card-info { flex: 1; min-width: 0; font-size: 12.5px; }
 .review-card-info strong { display: block; font-size: 13.5px; margin-bottom: 2px; }
 .dup-group { display: flex; flex-direction: column; gap: 10px; }
-.dup-item { display: flex; gap: 10px; align-items: center; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.dup-item { display: flex; gap: 10px; align-items: center; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 8px; }
 .dup-item .review-card-info { flex: 1; }
+
+.dup-diff-table { margin-bottom: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.dup-diff-row { padding: 6px 8px; font-size: 11.5px; align-items: start; }
+.dup-diff-row:not(:last-child) { border-bottom: 1px solid var(--border); }
+.dup-diff-row.dup-diff-head { background: var(--navy-2); font-weight: 700; color: var(--yellow); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.dup-diff-label { color: var(--text-dim); font-weight: 600; }
 
 .flag-dot { width: 44px; height: 44px; border-radius: 10px; border: 2px solid var(--border); background: var(--card); cursor: pointer; display:flex; align-items:center; justify-content:center; }
 .flag-dot .flag-glyph { font-size: 30px; line-height: 1; opacity: .8; filter: brightness(1.35) saturate(1.4); }

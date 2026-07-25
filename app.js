@@ -414,6 +414,10 @@ async function pullMetaState() {
     if (typeof data.proxyUrl === 'string' && data.proxyUrl && !localStorage.getItem('yj_proxy_url')) {
       localStorage.setItem('yj_proxy_url', data.proxyUrl);
     }
+    if (typeof data.tagSuggestionsCollapsed === 'boolean') {
+      TAG_SUGGESTIONS_COLLAPSED = data.tagSuggestionsCollapsed;
+      await idbPut(STORE_META, { key: 'tagSuggestionsCollapsed', value: TAG_SUGGESTIONS_COLLAPSED });
+    }
     if (Array.isArray(data.customMoods) && data.customMoods.length) {
       CUSTOM_MOODS = new Set([...CUSTOM_MOODS, ...data.customMoods]);
       await idbPut(STORE_META, { key: 'customMoods', value: Array.from(CUSTOM_MOODS) });
@@ -1017,7 +1021,17 @@ function setProxyUrl(url) {
 /* Router                                                                 */
 /* ---------------------------------------------------------------------- */
 
-function navigate(view, entryId) {
+// A real back-stack, not a hardcoded "Back always goes to X" per screen.
+// Every navigate() call (except a back navigation itself) pushes whatever
+// screen we're LEAVING onto this stack, so the "← Back" button can pop it
+// and return to wherever the user actually came from — previously every
+// back button had a fixed target view baked into its markup (e.g. detail's
+// was always data-nav="home"), which looked "random" any time an entry was
+// opened from somewhere other than the home grid (Tag Entries, Database's
+// Review/Duplicates tools, etc.) since it always dumped you at Home instead.
+let NAV_HISTORY = [];
+function navigate(view, entryId, opts) {
+  const isBack = !!(opts && opts.isBack);
   // A modal (e.g. the Suggested Match Review carousel) is a separate overlay
   // layer that sits on top of #view-root and was never being closed on
   // navigation — so switching views (or just typing in the search box, which
@@ -1025,6 +1039,10 @@ function navigate(view, entryId) {
   // invisibly blocking every tap on whatever loaded underneath it. Closing
   // it here guarantees a fresh navigation never has a stale modal in the way.
   closeModal();
+  if (!isBack && STATE.view !== view) {
+    NAV_HISTORY.push({ view: STATE.view, entryId: STATE.entryId });
+    if (NAV_HISTORY.length > 30) NAV_HISTORY.shift();
+  }
   STATE.view = view;
   STATE.entryId = entryId || null;
   DETAIL_EDIT_MODE = false;
@@ -1038,6 +1056,15 @@ function navigate(view, entryId) {
   // relevant screen is a natural, low-cost moment to try again.
   if (view === 'detail' && entryId) hydrateDriveImages(getEntry(entryId)).catch(() => {});
   if (view === 'meme') hydrateMissingReactions().catch(() => {});
+}
+// What every "← Back" button now calls, instead of a hardcoded data-nav
+// target — pops the real previous screen off the stack. Falls back to Home
+// if the stack is somehow empty (e.g. this screen was reached by a direct
+// link/reload rather than by navigating within the app).
+function navigateBack() {
+  const prev = NAV_HISTORY.pop();
+  if (prev) navigate(prev.view, prev.entryId, { isBack: true });
+  else navigate('home');
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1402,6 +1429,15 @@ let TAG_MGR_TAB = 'active';
 // Signatures of hide/merge suggestions the user has dismissed ("not now"),
 // so the same suggestion doesn't keep reappearing every time Tag Manager opens.
 let IGNORED_TAG_SUGGESTIONS = new Set();
+// Whether the "💡 Suggestions" panel in Tag Manager is collapsed. Persisted
+// (idb + Firestore meta) so the choice sticks across sessions/devices instead
+// of resetting to always-expanded every time Tag Manager is opened.
+let TAG_SUGGESTIONS_COLLAPSED = false;
+async function setSuggestionsCollapsed(collapsed) {
+  TAG_SUGGESTIONS_COLLAPSED = collapsed;
+  await idbPut(STORE_META, { key: 'tagSuggestionsCollapsed', value: collapsed });
+  pushMetaField('tagSuggestionsCollapsed', collapsed);
+}
 function isHiddenTag(t) {
   const norm = normalizeTagKey(t);
   return HIDDEN_TAG_KEYS.has(norm) || DELETED_TAG_KEYS.has(norm) || USER_HIDDEN_TAG_KEYS.has(norm);
@@ -1712,25 +1748,31 @@ function renderTagManager() {
 
   const hideSuggestions = TAG_MGR_TAB === 'active' ? tagHideSuggestions(activeNames, counts) : [];
   const mergeSuggestions = TAG_MGR_TAB === 'active' ? tagMergeSuggestions(activeNames, counts) : [];
-  const suggestionsHtml = (hideSuggestions.length || mergeSuggestions.length) ? `
+  const suggestionCount = hideSuggestions.length + mergeSuggestions.length;
+  const suggestionsHtml = suggestionCount ? `
     <div class="panel" style="border-color:var(--yellow-soft);">
-      <div class="panel-title">💡 Suggestions</div>
-      ${hideSuggestions.map((s) => `
-        <div class="tag-suggestion-row">
-          <div>Hide <strong>${escapeHtml(s.tag)}</strong> — only ${s.count} use${s.count === 1 ? '' : 's'}</div>
-          <div class="tag-suggestion-actions">
-            <button class="ref-btn" data-suggest-hide="${escapeHtml(s.tag)}" data-suggest-sig="${escapeHtml(s.sig)}">Hide</button>
-            <button class="btn-ghost" data-suggest-dismiss="${escapeHtml(s.sig)}">Not now</button>
-          </div>
-        </div>`).join('')}
-      ${mergeSuggestions.map((s) => `
-        <div class="tag-suggestion-row">
-          <div>Merge <strong>${escapeHtml(s.tagB)}</strong> into <strong>${escapeHtml(s.tagA)}</strong>?</div>
-          <div class="tag-suggestion-actions">
-            <button class="ref-btn" data-suggest-merge-a="${escapeHtml(s.tagA)}" data-suggest-merge-b="${escapeHtml(s.tagB)}" data-suggest-sig="${escapeHtml(s.sig)}">Merge</button>
-            <button class="btn-ghost" data-suggest-dismiss="${escapeHtml(s.sig)}">Not now</button>
-          </div>
-        </div>`).join('')}
+      <div class="panel-title-row" style="margin-bottom:${TAG_SUGGESTIONS_COLLAPSED ? '0' : '10px'};">
+        <div class="panel-title" style="margin:0;">💡 Suggestions (${suggestionCount})</div>
+        <button class="toggle-switch ${TAG_SUGGESTIONS_COLLAPSED ? '' : 'on'}" data-toggle-suggestions="1" title="${TAG_SUGGESTIONS_COLLAPSED ? 'Show suggestions' : 'Hide suggestions'}" role="switch" aria-checked="${TAG_SUGGESTIONS_COLLAPSED ? 'false' : 'true'}"><span class="toggle-knob"></span></button>
+      </div>
+      ${TAG_SUGGESTIONS_COLLAPSED ? '' : `
+        ${hideSuggestions.map((s) => `
+          <div class="tag-suggestion-row">
+            <div>Hide <strong>${escapeHtml(s.tag)}</strong> — only ${s.count} use${s.count === 1 ? '' : 's'}</div>
+            <div class="tag-suggestion-actions">
+              <button class="ref-btn" data-suggest-hide="${escapeHtml(s.tag)}" data-suggest-sig="${escapeHtml(s.sig)}">Hide</button>
+              <button class="btn-ghost" data-suggest-dismiss="${escapeHtml(s.sig)}">Not now</button>
+            </div>
+          </div>`).join('')}
+        ${mergeSuggestions.map((s) => `
+          <div class="tag-suggestion-row">
+            <div>Merge <strong>${escapeHtml(s.tagB)}</strong> into <strong>${escapeHtml(s.tagA)}</strong>?</div>
+            <div class="tag-suggestion-actions">
+              <button class="ref-btn" data-suggest-merge-a="${escapeHtml(s.tagA)}" data-suggest-merge-b="${escapeHtml(s.tagB)}" data-suggest-sig="${escapeHtml(s.sig)}">Merge</button>
+              <button class="btn-ghost" data-suggest-dismiss="${escapeHtml(s.sig)}">Not now</button>
+            </div>
+          </div>`).join('')}
+      `}
     </div>` : '';
 
   const rows = TAG_MGR_TAB === 'active'
@@ -1742,6 +1784,7 @@ function renderTagManager() {
           </div>
           <div class="tagmgr-actions">
             <button class="toggle-switch on" data-tagmgr-hide="${escapeHtml(t)}" title="Hide from filters (keeps the data)" role="switch" aria-checked="true"><span class="toggle-knob"></span></button>
+            <button class="icon-btn-inline" data-tagmgr-merge="${escapeHtml(t)}" title="Merge into another tag">🔀</button>
             <button class="icon-btn-inline" data-tagmgr-rename="${escapeHtml(t)}" title="Rename this tag everywhere">✏️</button>
             <button class="icon-btn-inline" data-tagmgr-delete="${escapeHtml(t)}" title="Delete this tag everywhere">🗑️</button>
           </div>
@@ -1808,7 +1851,7 @@ function renderTagEntries() {
   return `
     <div class="app-header">
       <div class="brand-row">
-        <button class="back-btn" data-nav="tags">← Back</button>
+        <button class="back-btn" data-nav-back="1">← Back</button>
         <h1>🏷️ ${escapeHtml(t || '')}</h1>
       </div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} tagged "${escapeHtml(t || '')}"</div>
@@ -1969,7 +2012,7 @@ function renderHdMatch() {
   return `
     <div class="app-header">
       <div class="brand-row">
-        <button class="back-btn" data-nav="tags">← Back</button>
+        <button class="back-btn" data-nav-back="1">← Back</button>
         <h1>💾 Match Owned Titles</h1>
       </div>
     </div>
@@ -2342,15 +2385,13 @@ function renderMemeLibraryInPlace() {
 
 function renderMemeLibrary() {
   const untaggedCount = ALL_REACTIONS.filter((r) => !(r.moodTags || []).length).length;
-  // Built-ins stay as compact single-emoji chips (they're the same 4 known
-  // icons every time, easy to recognize at a glance). Custom moods can't
-  // work that way — there's no way to guess what "🏷️" alone was supposed to
-  // mean once there's more than one of them, which was exactly the bug: they
-  // all rendered identically with no visible name anywhere. These render as
-  // small text pills showing the actual name instead.
-  const builtinChips = MOOD_OPTIONS.map((m) => `<span class="rating-pick-icon flag-filter-icon ${MEME_STATE.moodFilter === m.key ? 'active' : ''}" data-meme-mood-filter="${m.key}" title="${escapeHtml(m.label)}">${m.emoji}</span>`).join('');
-  const customMoodList = Array.from(CUSTOM_MOODS).sort((a, b) => a.localeCompare(b));
-  const customChips = customMoodList.map((name) => `<button class="mood-chip small ${MEME_STATE.moodFilter === name ? 'active' : ''}" data-meme-mood-filter="${escapeHtml(name)}">🏷️ ${escapeHtml(name)}</button>`).join('');
+  // Built-in and custom moods now render identically — same pill style, same
+  // row — since they're all just "mood groups" to the user; there's no
+  // meaningful reason for the 4 built-ins to look different from ones she
+  // creates herself. The management (rename/delete) controls that used to be
+  // a pencil icon sitting in the middle of this row moved out to a plain
+  // "Manage moods" button next to the Possible Duplicates tab instead.
+  const moodChips = allMoodOptions().map((m) => `<button class="mood-chip ${MEME_STATE.moodFilter === m.key ? 'active' : ''}" data-meme-mood-filter="${escapeHtml(m.key)}" title="${escapeHtml(m.label)}">${m.emoji} ${escapeHtml(m.label)}</button>`).join('');
   return `
     <div class="app-header">
       <div class="brand-row"><h1>🎭 Reactions</h1></div>
@@ -2360,10 +2401,13 @@ function renderMemeLibrary() {
       <div class="tagmgr-tabs" style="margin-bottom:8px;">
         <button class="tagmgr-tab ${!MEME_SHOWING_DUPLICATES ? 'active' : ''}" data-meme-tab="grid">Gallery</button>
         <button class="tagmgr-tab ${MEME_SHOWING_DUPLICATES ? 'active' : ''}" data-meme-tab="duplicates">Possible Duplicates</button>
+        <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-meme-manage-moods="1" title="Manage mood groups (rename/delete)">✏️ Manage</button>
       </div>
       ${!MEME_SHOWING_DUPLICATES ? `
-        <div class="rating-pick-row" style="margin-bottom:${customMoodList.length ? '8px' : '0'};">${builtinChips}<span class="rating-pick-icon flag-filter-icon" data-meme-add-mood="1" title="Create a new mood group">➕</span>${customMoodList.length ? `<span class="rating-pick-icon flag-filter-icon" data-meme-manage-moods="1" title="Edit or delete custom mood groups">✏️</span>` : ''}</div>
-        ${customMoodList.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">${customChips}</div>` : ''}
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+          ${moodChips}
+          <button class="mood-chip" data-meme-add-mood="1">➕ New mood</button>
+        </div>
       ` : ''}
     </div>
     <main>${memeMainBody()}</main>
@@ -2753,13 +2797,17 @@ function renderDetail(e) {
 
   return `
     <div class="detail-header">
-      <button class="back-btn" data-nav="home">← Back</button>
-      <h2>${escapeHtml(e.title)}</h2>
-      <button class="icon-btn" data-force-save="1" title="Save now">✅</button>
-      <button class="icon-btn" data-toggle-fav="1" title="Favorite">${e.favorite ? '💜' : '🤍'}</button>
-      <button class="icon-btn" data-toggle-hd="1" title="On HD">${isOnDrive(e) ? '💾' : '🗄️'}</button>
-      <button class="icon-btn" data-merge-entry="${e.id}" title="Mark as duplicate / merge into another entry">🔀</button>
-      <button class="icon-btn danger" data-delete-entry="${e.id}" title="Delete this entry">✕</button>
+      <div class="detail-header-top">
+        <button class="back-btn" data-nav-back="1">← Back</button>
+        <h2>${escapeHtml(e.title)}</h2>
+      </div>
+      <div class="detail-header-icons">
+        <button class="icon-btn" data-force-save="1" title="Save now">✅</button>
+        <button class="icon-btn" data-toggle-fav="1" title="Favorite">${e.favorite ? '💜' : '🤍'}</button>
+        <button class="icon-btn" data-merge-entry="${e.id}" title="Mark as duplicate / merge into another entry">🔀</button>
+        <button class="icon-btn danger" data-delete-entry="${e.id}" title="Delete this entry">✕</button>
+        <button class="icon-btn ${isOnDrive(e) ? 'hd-active' : ''}" data-toggle-hd="1" title="${isOnDrive(e) ? 'On HD — tap to unmark' : 'Mark as On HD'}">💾</button>
+      </div>
     </div>
     <div class="journal">
 
@@ -2906,9 +2954,7 @@ function renderDatabase() {
     <div class="app-header">
       <div class="brand-row">
         <h1>🗂️ Database Mode</h1>
-        <button class="icon-btn" data-open-settings="1" title="Settings">⚙️</button>
       </div>
-      <div class="search-bar"><span>🔍</span><input type="search" id="db-search" placeholder="Filter table..."></div>
     </div>
     <main>
       <div class="panel" style="margin-bottom:14px;">
@@ -2917,6 +2963,7 @@ function renderDatabase() {
           <button class="ref-btn" data-nav="review">🔎 Review missing cover/reference (${reviewCount})</button>
           <button class="ref-btn" data-nav="duplicates">🧬 Review duplicates (${dupCount})</button>
         </div>
+        <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">Entries missing a cover image or reference link, and possible duplicate titles — both flagged automatically as you add and cross-reference entries.</p>
         ${BULK_SWEEP.running ? `
           <div class="export-row" style="margin-top:8px;">
             <div style="flex:1;font-size:12.5px;color:var(--text-dim);">🔄 Checking ${BULK_SWEEP.checked}/${BULK_SWEEP.total} against Anime-Planet/MangaGo — ${BULK_SWEEP.found} found so far</div>
@@ -2926,7 +2973,7 @@ function renderDatabase() {
           <div class="export-row" style="margin-top:8px;">
             <button class="ref-btn" data-run-bulk-sweep="1">🚀 Run match sweep now (${bulkSweepCandidates().length} unmatched)</button>
           </div>
-          <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">Searches Anime-Planet/MangaGo for every unmatched entry in one pass instead of the usual 20-a-day auto-sweep — paced to be gentle on the proxy, so it can take a while for a big backlog. Requires a proxy URL in Settings.</p>
+          <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">Searches Anime-Planet/MangaGo for every unmatched entry in one pass instead of the usual 20-a-day auto-sweep — paced to be gentle on the proxy, so it can take a while for a big backlog. Requires a proxy URL below.</p>
         `}
         ${IMAGE_BACKFILL.running ? `
           <div class="export-row" style="margin-top:8px;">
@@ -2940,10 +2987,12 @@ function renderDatabase() {
           <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">Images added before Drive was hooked up (or while it was disconnected) only ever saved on the device that added them. This pushes anything still local-only up to your Drive so other devices can finally pull it down. Requires Google Drive to be connected.</p>
         `}
       </div>
+      ${renderSettingsPanel()}
       <div class="export-row">
         <button class="ref-btn" data-export-csv="1">⬇ Export CSV</button>
         <span style="color:var(--text-dim);font-size:12.5px;align-self:center;">${rows.length} total entries</span>
       </div>
+      <div class="search-bar" style="margin-bottom:10px;"><span>🔍</span><input type="search" id="db-search" placeholder="Filter table..."></div>
       <div class="db-table-wrap">
         <table class="db-table" id="db-table">
           <thead><tr>${cols.map((c) => `<th>${c}</th>`).join('')}</tr></thead>
@@ -2952,6 +3001,37 @@ function renderDatabase() {
       </div>
     </main>
     ${renderBottomNav('database')}
+  `;
+}
+
+// Pulled out of the old ⚙️ gear-icon modal into its own always-visible panel
+// in Database mode, per user request — it was easy to forget the gear icon
+// existed at all, and this settings content (proxy URL, Get Info bookmarklet)
+// is squarely a "data cleanup tools" adjacent concern anyway.
+function renderSettingsPanel() {
+  return `
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="panel-title">⚙️ Settings</div>
+      <div class="field-row">
+        <label>Cross-reference proxy URL (your Apps Script web app URL)</label>
+        <input type="text" id="proxy-url-input" value="${escapeHtml(getProxyUrl())}" placeholder="https://script.google.com/macros/s/.../exec">
+      </div>
+      <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 12px;">This is only used when you tap "Cross-reference" on an entry — it fetches the Anime-Planet page server-side so the app can read the summary/cover. No reading data is ever sent out.</p>
+      <div style="border-top:1px solid var(--border);padding-top:12px;">
+        <div class="panel-title" style="margin-bottom:6px;">📋 Get Info button</div>
+        <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 10px;">You'll only need this occasionally — mainly when adding a brand-new title, or when cleaning up entries in Database mode. It's a free workaround for when the automatic fetch fails.</p>
+        <p style="font-size:12px;font-weight:600;margin:0 0 4px;">Set up once:</p>
+        <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 4px;"><strong>On a computer:</strong> drag this button up to your bookmarks bar. <a href="${bookmarkletHref()}" class="ref-btn" style="display:inline-block;text-decoration:none;">💾 Get Info</a></p>
+        <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 8px;"><strong>On a phone:</strong> save any page as a bookmark, then open that bookmark's settings and paste the code below over its URL.</p>
+        <textarea readonly style="width:100%;height:60px;font-size:10px;font-family:monospace;" onclick="this.select()">${escapeHtml(bookmarkletHref())}</textarea>
+        <p style="font-size:12px;font-weight:600;margin:10px 0 4px;">Each time you need it:</p>
+        <ol style="font-size:11.5px;color:var(--text-dim);margin:0 0 0 18px;padding:0;">
+          <li>Open the title's page on Anime-Planet or MangaGo.</li>
+          <li>Tap your "Get Info" bookmark.</li>
+          <li>Come back to Yaoi Journal, open that entry, tap Cross-reference → Paste from clipboard.</li>
+        </ol>
+      </div>
+    </div>
   `;
 }
 
@@ -2995,7 +3075,7 @@ function renderReviewQueue() {
   return `
     <div class="app-header">
       <div class="brand-row">
-        <button class="back-btn" data-nav="database">← Back</button>
+        <button class="back-btn" data-nav-back="1">← Back</button>
         <h1>Review Missing Cover/Reference</h1>
       </div>
       <div style="color:var(--text-dim);font-size:12px;padding:0 2px;">${items.length} item${items.length === 1 ? '' : 's'} to check. Approving applies the suggested cover, tags, author, and reference link to your journal entry.</div>
@@ -3123,8 +3203,33 @@ function findDuplicateGroups() {
   return Object.values(groups).filter((g) => g.length > 1 && !IGNORED_DUP_GROUPS.has(dupGroupSignature(g)));
 }
 
+// What actually differs between the entries in a possible-duplicate group —
+// this is the piece that was missing before: seeing "Author" and "Shelf"
+// tells you nothing about whether one copy has notes/ratings/tags the other
+// doesn't, which is exactly the information you need before deciding whether
+// to delete one outright or merge them instead.
+function duplicateFieldDiffs(group) {
+  const fields = [
+    { label: 'Shelf', get: (e) => e.shelf || '—' },
+    { label: 'Status', get: (e) => e.status || '—' },
+    { label: 'Author', get: (e) => formatNames(e.author) || '—' },
+    { label: 'Smut Level', get: (e) => String(e.smutRating || 0) },
+    { label: 'Overall', get: (e) => String(e.qualityRating || 0) },
+    { label: 'Favorite', get: (e) => (e.favorite ? 'Yes' : 'No') },
+    { label: 'Tags', get: (e) => (e.tags || []).concat(e.customTags || []).filter((t) => !isHiddenTag(t)).join(', ') || '—' },
+    { label: 'Semi flag', get: (e) => e.semi.flag || '—' },
+    { label: 'Uke flag', get: (e) => e.uke.flag || '—' },
+    { label: 'Cover image', get: (e) => (e.coverUrl ? 'Yes' : 'No') },
+    { label: 'Reference link', get: (e) => (e.referenceStatus === 'confirmed' ? (e.referenceSite || 'Linked') : 'Not linked') },
+    { label: 'Notes', get: (e) => (e.notes || '').trim() || '—' },
+  ];
+  return fields
+    .map((f) => ({ label: f.label, values: group.map((e) => f.get(e)) }))
+    .filter((row) => new Set(row.values).size > 1);
+}
+
 function renderDuplicateGroup(group) {
-  const items = group.map((e) => {
+  const items = group.map((e, i) => {
     const coverSrc = e.coverUrl || (e.suggestedMatch ? e.suggestedMatch.coverUrl : null);
     const cover = coverSrc
       ? `<img src="${escapeHtml(coverSrc)}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='<div class=\\'cover-placeholder\\'>🍆</div>'">`
@@ -3133,17 +3238,32 @@ function renderDuplicateGroup(group) {
       <div class="dup-item">
         <div class="cover-thumb" style="width:64px;flex:0 0 64px;">${cover}</div>
         <div class="review-card-info">
-          <strong>${escapeHtml(e.title)}</strong>
+          <strong>#${i + 1} ${escapeHtml(e.title)}</strong>
           <div style="font-size:11px;color:var(--text-dim);">${escapeHtml(e.shelf)}${e.author ? ' · ' + escapeHtml(formatNames(e.author)) : ''}</div>
           <div style="font-size:11px;color:var(--text-dim);">Updated ${e.updatedAt ? new Date(e.updatedAt).toLocaleDateString() : '—'}${e.favorite ? ' · 💜 favorite' : ''}</div>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;">
           <button class="ref-btn" data-open-entry="${e.id}">Open</button>
+          <button class="ref-btn" data-merge-entry="${e.id}" title="Merge this into another entry">🔀 Merge into…</button>
           <button class="btn-ghost" data-dup-delete="${e.id}">Delete this one</button>
         </div>
       </div>`;
   }).join('');
-  return `<div class="panel"><div class="panel-title">Possible duplicate</div>${items}<button class="ref-btn" style="width:100%;margin-top:8px;" data-dup-not-duplicate="${dupGroupSignature(group)}">Not duplicates — keep both, stop asking</button></div>`;
+  const diffs = duplicateFieldDiffs(group);
+  const rowGridStyle = `display:grid;grid-template-columns:90px repeat(${group.length}, 1fr);gap:6px;`;
+  const diffHtml = diffs.length ? `
+    <div class="dup-diff-table">
+      <div class="dup-diff-row dup-diff-head" style="${rowGridStyle}">
+        <div></div>${group.map((e, i) => `<div>#${i + 1}</div>`).join('')}
+      </div>
+      ${diffs.map((row) => `
+        <div class="dup-diff-row" style="${rowGridStyle}">
+          <div class="dup-diff-label">${escapeHtml(row.label)}</div>
+          ${row.values.map((v) => `<div>${escapeHtml(v.length > 140 ? v.slice(0, 140) + '…' : v)}</div>`).join('')}
+        </div>`).join('')}
+    </div>
+  ` : `<div style="font-size:11.5px;color:var(--text-dim);margin:0 0 10px;">No differences found in the fields that are usually worth comparing — looks like a clean duplicate.</div>`;
+  return `<div class="panel"><div class="panel-title">Possible duplicate</div>${diffHtml}${items}<button class="ref-btn" style="width:100%;margin-top:8px;" data-dup-not-duplicate="${dupGroupSignature(group)}">Not duplicates — keep both, stop asking</button></div>`;
 }
 
 function renderDuplicates() {
@@ -3154,7 +3274,7 @@ function renderDuplicates() {
   return `
     <div class="app-header">
       <div class="brand-row">
-        <button class="back-btn" data-nav="database">← Back</button>
+        <button class="back-btn" data-nav-back="1">← Back</button>
         <h1>Review Duplicates</h1>
       </div>
       <div style="color:var(--text-dim);font-size:12px;padding:0 2px;">${groups.length} possible duplicate group${groups.length === 1 ? '' : 's'}. Compare the details, then delete the one you don't want to keep.</div>
@@ -3203,7 +3323,7 @@ function openCrossRefModal(entryId, reviewInfo) {
   openModal(`
     ${reviewInfo ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em;">Reviewing missing cover/reference — ${reviewInfo.index + 1} of ${reviewInfo.total}</div>` : ''}
     <h3>Cross-reference "${escapeHtml(e.title)}"</h3>
-    ${proxy ? '' : `<div style="background:var(--pink-soft);color:var(--pink);padding:8px 10px;border-radius:8px;font-size:12px;margin-bottom:10px;">No proxy URL set yet. Add one in Settings (⚙️) to enable live fetching — see the setup notes I gave you.</div>`}
+    ${proxy ? '' : `<div style="background:var(--pink-soft);color:var(--pink);padding:8px 10px;border-radius:8px;font-size:12px;margin-bottom:10px;">No proxy URL set yet. Add one in the Settings panel (Database mode) to enable live fetching — see the setup notes I gave you.</div>`}
     <p style="font-size:12.5px;color:var(--text-dim);">1. Find the title on Anime-Planet or MangaGo, then paste its page URL below.</p>
     <div style="display:flex;gap:8px;margin-bottom:10px;">
       <a class="ref-btn" href="${apSearchUrl}" target="_blank" style="flex:1;text-align:center;text-decoration:none;">🔍 Anime-Planet ↗</a>
@@ -3257,7 +3377,7 @@ function advanceCrossRefReview() {
   openCrossRefModal(CROSSREF_REVIEW_QUEUE[CROSSREF_REVIEW_INDEX], { index: CROSSREF_REVIEW_INDEX, total: CROSSREF_REVIEW_QUEUE.length });
 }
 
-// Reads whatever the cross-reference bookmarklet (see openSettingsModal) just
+// Reads whatever the cross-reference bookmarklet (see renderSettingsPanel) just
 // copied to the clipboard and previews it exactly like a live fetch would —
 // this is the free, no-server-IP-blocking path: the bookmarklet runs on the
 // title's actual page, in her own browser, so it never gets a 403.
@@ -3479,41 +3599,6 @@ async function confirmReference(entryId) {
 }
 
 /* ---------------------------------------------------------------------- */
-/* Settings modal                                                         */
-/* ---------------------------------------------------------------------- */
-
-function openSettingsModal() {
-  openModal(`
-    <h3>⚙️ Settings</h3>
-    <div class="field-row">
-      <label>Cross-reference proxy URL (your Apps Script web app URL)</label>
-      <input type="text" id="proxy-url-input" value="${escapeHtml(getProxyUrl())}" placeholder="https://script.google.com/macros/s/.../exec">
-    </div>
-    <p style="font-size:11.5px;color:var(--text-dim);">This is only used when you tap "Cross-reference" on an entry — it fetches the Anime-Planet page server-side so the app can read the summary/cover. No reading data is ever sent out.</p>
-    <div class="modal-actions">
-      <button class="btn-ghost" data-close-modal="1">Cancel</button>
-      <button class="btn-primary" data-save-settings="1">Save</button>
-    </div>
-    <div style="border-top:1px solid var(--border);margin-top:16px;padding-top:14px;">
-      <div class="panel-title" style="margin-bottom:6px;">📋 Get Info button</div>
-      <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 10px;">You'll only need this occasionally — mainly when adding a brand-new title, or when cleaning up entries in Database mode. It's a free workaround for when the automatic fetch fails.</p>
-
-      <p style="font-size:12px;font-weight:600;margin:0 0 4px;">Set up once:</p>
-      <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 4px;"><strong>On a computer:</strong> drag this button up to your bookmarks bar. <a href="${bookmarkletHref()}" class="ref-btn" style="display:inline-block;text-decoration:none;">💾 Get Info</a></p>
-      <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 8px;"><strong>On a phone:</strong> save any page as a bookmark, then open that bookmark's settings and paste the code below over its URL.</p>
-      <textarea readonly style="width:100%;height:60px;font-size:10px;font-family:monospace;" onclick="this.select()">${escapeHtml(bookmarkletHref())}</textarea>
-
-      <p style="font-size:12px;font-weight:600;margin:10px 0 4px;">Each time you need it:</p>
-      <ol style="font-size:11.5px;color:var(--text-dim);margin:0 0 0 18px;padding:0;">
-        <li>Open the title's page on Anime-Planet or MangaGo.</li>
-        <li>Tap your "Get Info" bookmark.</li>
-        <li>Come back to Yaoi Journal, open that entry, tap Cross-reference → Paste from clipboard.</li>
-      </ol>
-    </div>
-  `);
-}
-
-/* ---------------------------------------------------------------------- */
 /* Add entry modal                                                        */
 /* ---------------------------------------------------------------------- */
 
@@ -3589,15 +3674,19 @@ function attachRootHandlers() {
       navigate(view);
     };
   });
+  root.querySelectorAll('[data-nav-back]').forEach((el) => {
+    el.onclick = () => navigateBack();
+  });
   root.querySelectorAll('[data-nav-filter]').forEach((el) => {
     el.onclick = () => {
       const which = el.getAttribute('data-nav-filter');
       STATE.showFavoritesOnly = which === 'favorites';
       STATE.showOnDriveOnly = which === 'onDrive';
       STATE.showHentaiOnly = which === 'hentai';
-      // Favorites/On HD are meant to be a clean "just show me everything"
-      // list — the filter box (which you didn't ask for) starts tucked away.
-      if (which === 'favorites' || which === 'onDrive') FILTERS_COLLAPSED = true;
+      // Every filter chip in this row should behave the same way — results
+      // appear below the filter container, which stays put. Favorites/On HD
+      // used to force the whole filter section closed, which was jarring and
+      // inconsistent with every other filter (hentai, shelf, tags, ratings).
       navigate('home');
     };
   });
@@ -3684,8 +3773,11 @@ function attachRootHandlers() {
   });
   const addBtn = root.querySelector('[data-add-entry]');
   if (addBtn) addBtn.onclick = openAddModal;
-  const settingsBtn = root.querySelector('[data-open-settings]');
-  if (settingsBtn) settingsBtn.onclick = openSettingsModal;
+  const proxyUrlInput = root.querySelector('#proxy-url-input');
+  if (proxyUrlInput) proxyUrlInput.onblur = () => {
+    setProxyUrl(proxyUrlInput.value);
+    showToast('Settings saved');
+  };
 
   // Detail view handlers
   const forceSaveBtn = root.querySelector('[data-force-save]');
@@ -3723,8 +3815,13 @@ function attachRootHandlers() {
     showToast('Deleted');
     navigate('home');
   };
-  const mergeBtn = root.querySelector('[data-merge-entry]');
-  if (mergeBtn) mergeBtn.onclick = () => openMergePickerModal(mergeBtn.getAttribute('data-merge-entry'));
+  // querySelectorAll (not querySelector) — this same attribute is now used
+  // both for the single 🔀 icon on an entry's own detail header AND for a
+  // "Merge into…" button per item inside each Review Duplicates group, so
+  // there can legitimately be more than one on screen at once.
+  root.querySelectorAll('[data-merge-entry]').forEach((el) => {
+    el.onclick = () => openMergePickerModal(el.getAttribute('data-merge-entry'));
+  });
   const shelfSelectEl = root.querySelector('[data-shelf-select]');
   if (shelfSelectEl) shelfSelectEl.onchange = async () => {
     const e = getEntry(STATE.entryId);
@@ -4073,6 +4170,36 @@ function attachRootHandlers() {
         if (changed) await saveEntry(e);
       }
       showToast('Renamed');
+      render();
+    };
+  });
+  const toggleSuggBtn = root.querySelector('[data-toggle-suggestions]');
+  if (toggleSuggBtn) toggleSuggBtn.onclick = async () => {
+    await setSuggestionsCollapsed(!TAG_SUGGESTIONS_COLLAPSED);
+    render();
+  };
+  root.querySelectorAll('[data-tagmgr-merge]').forEach((el) => {
+    el.onclick = async () => {
+      const name = el.getAttribute('data-tagmgr-merge');
+      const targetRaw = prompt(`Merge "${name}" into which existing tag? (its entries will get that tag instead, and "${name}" will disappear)`);
+      if (!targetRaw || !targetRaw.trim()) return;
+      const target = targetRaw.trim();
+      if (target.toLowerCase() === name.toLowerCase()) return;
+      for (const e of ALL_ENTRIES) {
+        let changed = false;
+        if ((e.tags || []).includes(name)) {
+          e.tags = e.tags.filter((t) => t !== name);
+          if (!e.tags.includes(target) && !(e.customTags || []).includes(target)) e.tags.push(target);
+          changed = true;
+        }
+        if ((e.customTags || []).includes(name)) {
+          e.customTags = e.customTags.filter((t) => t !== name);
+          if (!(e.tags || []).includes(target) && !e.customTags.includes(target)) e.customTags.push(target);
+          changed = true;
+        }
+        if (changed) await saveEntry(e);
+      }
+      showToast(`Merged "${name}" into "${target}"`);
       render();
     };
   });
@@ -4463,12 +4590,6 @@ document.addEventListener('click', (ev) => {
       render();
     }
   }
-  if (t.matches('[data-save-settings]')) {
-    const val = document.getElementById('proxy-url-input').value;
-    setProxyUrl(val);
-    closeModal();
-    showToast('Settings saved');
-  }
   if (t.matches('[data-submit-add]')) submitAdd();
   if (t.matches('[data-fetch-ref]')) fetchReferencePreview(t.getAttribute('data-fetch-ref'));
   if (t.matches('[data-confirm-ref]')) confirmReference(t.getAttribute('data-confirm-ref'));
@@ -4729,6 +4850,8 @@ async function boot() {
     if (savedIgnoredSugg && Array.isArray(savedIgnoredSugg.value)) IGNORED_TAG_SUGGESTIONS = new Set(savedIgnoredSugg.value);
     const savedCustomMoods = await idbGet(STORE_META, 'customMoods');
     if (savedCustomMoods && Array.isArray(savedCustomMoods.value)) CUSTOM_MOODS = new Set(savedCustomMoods.value);
+    const savedSuggCollapsed = await idbGet(STORE_META, 'tagSuggestionsCollapsed');
+    if (savedSuggCollapsed && typeof savedSuggCollapsed.value === 'boolean') TAG_SUGGESTIONS_COLLAPSED = savedSuggCollapsed.value;
     if ('serviceWorker' in navigator) {
       setupAutoUpdatingServiceWorker();
     }
