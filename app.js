@@ -35,11 +35,6 @@ const FIREBASE_CONFIG = {
 };
 firebase.initializeApp(FIREBASE_CONFIG);
 const fbAuth = firebase.auth();
-// Session-only persistence: closing the browser/tab fully ends the login,
-// so the next visit requires signing in again (rather than staying signed
-// in indefinitely). This is a deliberate privacy choice for a personal,
-// single-user app that also holds a live Google Drive connection.
-fbAuth.setPersistence(firebase.auth.Auth.Persistence.SESSION).catch(() => {});
 const fbStore = firebase.firestore();
 try { fbStore.enablePersistence({ synchronizeTabs: true }).catch(() => {}); } catch (e) {}
 
@@ -48,27 +43,6 @@ let FIRESTORE_UNSUB = null;      // unsubscribe fn for the live cross-device ent
 let AUTH_ERROR = '';
 let AUTH_BUSY = false;
 let SYNC_BUSY = false;           // true while the initial pull/push migration is running
-
-// Lightweight local "screen lock" (not a real sign-out): if the tab/app is
-// backgrounded for a while on mobile and then comes back, we show a simple
-// unlock overlay instead of the data straightaway. Purely client-side and
-// in-memory — doesn't touch the Firebase session or the Drive connection,
-// it's just a casual privacy shield against someone glancing at the phone.
-let APP_LOCKED = false;
-let LOCK_HIDDEN_AT = null;
-const LOCK_THRESHOLD_MS = 60000; // 1 minute
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    LOCK_HIDDEN_AT = Date.now();
-  } else if (LOCK_HIDDEN_AT) {
-    const elapsed = Date.now() - LOCK_HIDDEN_AT;
-    LOCK_HIDDEN_AT = null;
-    if (elapsed >= LOCK_THRESHOLD_MS && CURRENT_USER) {
-      APP_LOCKED = true;
-      render();
-    }
-  }
-});
 
 // Google Drive access token (for image upload/download), separate from the
 // Firebase Auth session above. Firebase keeps you signed in persistently,
@@ -99,9 +73,6 @@ let DETAIL_EDIT_MODE = false;      // whether the detail page's top fields are i
 let TAG_EDIT_MODE = false;         // whether the Tags panel is showing its editable (toggle/add/save) UI
 let TAG_ENTRIES_FILTER = null;     // which tag name the "view entries with this tag" screen is showing
 let TAG_FILTER_OPEN = false;       // whether the homepage tag multi-select dropdown panel is open
-let TAG_SUGGESTIONS_OPEN = true;    // whether the Tags screen's Suggestions panel is expanded
-let DB_SETTINGS_OPEN = false;       // whether the Database screen's inline Settings panel is expanded
-let DB_TABLE_OPEN = false;          // whether the Database screen's full data table is expanded
 let FILTERS_COLLAPSED = false;     // whether the homepage search/tabs/format/Status/Tags/Ratings&Flags block is tucked away
 let SEARCH_INPUT_SHOULD_FOCUS = false; // one-shot flag: refocus the global search box after it causes a view jump
 let STATE = {
@@ -291,15 +262,12 @@ function pushReactionToFirestore(reaction) {
   if (!col) return;
   // Once it's up on Drive, the base64 copy doesn't need to also ride along
   // in Firestore — keeps this doc tiny regardless of image size.
-  let safe = (reaction.driveId && reaction.dataUrl) ? { ...reaction, dataUrl: null } : reaction;
-  if (JSON.stringify(safe).length > 900 * 1024) {
-    // Still too big — Drive upload hasn't finished or succeeded yet. Sync
-    // the record now with the image stripped instead of losing it entirely;
-    // the image itself backfills via Drive once the upload completes/retries.
-    safe = { ...safe, dataUrl: null, reactionImageTooLargeForSync: true };
-    if (!reaction.driveId) {
-      showToast(`That reaction image is large — backing it up via Drive in the background.`);
-    }
+  const safe = (reaction.driveId && reaction.dataUrl) ? { ...reaction, dataUrl: null } : reaction;
+  const json = JSON.stringify(safe);
+  if (json.length > 900 * 1024) {
+    console.error(`Reaction image too large to sync to Firestore (kept locally on this device only).`);
+    showToast(`That reaction image is too big to back up to the cloud — kept on this device only.`);
+    return;
   }
   col.doc(reaction.id).set(safe).catch((err) => {
     console.error('Reaction sync failed:', err);
@@ -433,14 +401,6 @@ async function pullMetaState() {
     if (Array.isArray(data.ignoredTagSuggestions) && data.ignoredTagSuggestions.length) {
       IGNORED_TAG_SUGGESTIONS = new Set([...IGNORED_TAG_SUGGESTIONS, ...data.ignoredTagSuggestions]);
       await idbPut(STORE_META, { key: 'ignoredTagSuggestions', value: Array.from(IGNORED_TAG_SUGGESTIONS) });
-    }
-    if (Array.isArray(data.reactionGroups) && data.reactionGroups.length) {
-      const localGroupIds = new Set(REACTION_GROUPS.map((g) => g.id));
-      const newOnes = data.reactionGroups.filter((g) => g && g.id && !localGroupIds.has(g.id));
-      if (newOnes.length) {
-        REACTION_GROUPS = REACTION_GROUPS.concat(newOnes);
-        await idbPut(STORE_META, { key: 'reactionGroups', value: REACTION_GROUPS });
-      }
     }
     // Only fill in the proxy URL from the cloud if this device doesn't
     // already have one set locally — never overwrite a value someone just
@@ -698,16 +658,6 @@ async function tryUploadImageToDrive(dataUrl, filename) {
 // Every existing render path already expects e.coverUrl/screencaps/photo to
 // just be data: URLs, so this is the only place that needs to know Drive
 // exists — nothing else has to change.
-// True if this entry references a Drive file (cover/semi/uke/screencaps)
-// that hasn't been downloaded to this device yet.
-function entryNeedsImageHydration(e) {
-  if (e.coverDriveId && !e.coverUrl) return true;
-  if (e.semi && e.semi.photoDriveId && !e.semi.photo) return true;
-  if (e.uke && e.uke.photoDriveId && !e.uke.photo) return true;
-  if (e.screencapDriveIds && e.screencapDriveIds.length && (!e.screencaps || e.screencaps.length < e.screencapDriveIds.length)) return true;
-  return false;
-}
-
 async function hydrateDriveImages(entry) {
   if (!entry) return;
   const jobs = [];
@@ -749,56 +699,6 @@ async function hydrateDriveReaction(reaction) {
   } catch (err) {
     console.error('Reaction hydrate failed:', err);
   }
-}
-
-// Manual + automatic safety net for when a background Drive download
-// silently failed earlier (e.g. the Drive connection dropped mid-sync) and
-// was never retried — rescans every entry/reaction for a Drive file id with
-// no local copy yet and re-fetches it. Called quietly once per sign-in, and
-// also exposed as a "Sync images from Drive" button in Database so it can
-// be re-run on demand.
-function reactionNeedsDriveUpload(r) {
-  return !!(r.dataUrl && !r.driveId);
-}
-
-async function uploadPendingReaction(reaction) {
-  if (!reactionNeedsDriveUpload(reaction)) return;
-  const ext = reaction.mediaType === 'video' ? 'mp4' : (reaction.mediaType === 'gif' ? 'gif' : 'jpg');
-  const fileId = await tryUploadImageToDrive(reaction.dataUrl, `reaction-${reaction.id}.${ext}`);
-  if (!fileId) return;
-  const fresh = ALL_REACTIONS.find((r) => r.id === reaction.id);
-  if (!fresh) return;
-  fresh.driveId = fileId;
-  await saveReaction(fresh);
-}
-
-async function hydrateAllMissingDriveImages(notify) {
-  const entryTargets = ALL_ENTRIES.filter(entryNeedsImageHydration);
-  const reactionTargets = ALL_REACTIONS.filter((r) => r.driveId && !r.dataUrl);
-  const reactionUploadTargets = ALL_REACTIONS.filter(reactionNeedsDriveUpload);
-  const total = entryTargets.length + reactionTargets.length + reactionUploadTargets.length;
-  if (!total) {
-    if (notify) showToast('Everything is already synced from Drive.');
-    return { total: 0, succeeded: 0 };
-  }
-  if (notify) showToast(`Syncing ${total} item${total === 1 ? '' : 's'} from Drive…`);
-  await Promise.all(entryTargets.map((e) => hydrateDriveImages(e).catch((err) => console.error('Hydrate failed for', e.title, err))));
-  await Promise.all(reactionTargets.map((r) => hydrateDriveReaction(r).catch((err) => console.error('Reaction hydrate failed:', err))));
-  await Promise.all(reactionUploadTargets.map((r) => uploadPendingReaction(r).catch((err) => console.error('Reaction upload failed:', err))));
-  // Re-check afterward rather than assuming success — a download can fail
-  // silently (e.g. Drive needs reconnecting), so report what actually landed.
-  const stillMissing = ALL_ENTRIES.filter(entryNeedsImageHydration).length + ALL_REACTIONS.filter((r) => r.driveId && !r.dataUrl).length + ALL_REACTIONS.filter(reactionNeedsDriveUpload).length;
-  const succeeded = total - stillMissing;
-  render();
-  if (notify) {
-    if (stillMissing > 0) {
-      const reason = (DRIVE_NEEDS_RECONNECT || !driveTokenValid()) ? ' — reconnect Google Drive and try again' : '';
-      showToast(`Synced ${succeeded} of ${total}${reason}`);
-    } else {
-      showToast(`Synced ${succeeded} item${succeeded === 1 ? '' : 's'} from Drive.`);
-    }
-  }
-  return { total, succeeded };
 }
 
 // Runs once right after sign-in. If this account has never synced before
@@ -969,23 +869,7 @@ function uid(prefix) {
 
 function closeModal() {
   document.getElementById('overlay').classList.remove('open');
-  document.getElementById('overlay').classList.remove('lightbox-mode');
   document.getElementById('modal-sheet').innerHTML = '';
-}
-
-// A true centered/fullscreen image viewer (as opposed to the usual bottom
-// sheet used for forms/menus) — used for screencap and Images-tab viewing.
-// belowHtml is optional extra content rendered under the image, inside the
-// overlay's own solid panel (the overlay's background goes transparent in
-// lightbox mode so the photo itself is the star).
-function openImageLightbox(dataUrl, belowHtml) {
-  openModal(`
-    <div class="lightbox-wrap">
-      <img src="${dataUrl}" class="lightbox-img" alt="Tap and hold to save">
-      ${belowHtml || ''}
-      <button class="lightbox-close" data-close-modal="1">✕ Close</button>
-    </div>`);
-  document.getElementById('overlay').classList.add('lightbox-mode');
 }
 
 function openModal(html) {
@@ -1160,74 +1044,18 @@ async function signInWithGoogle() {
 // That's exactly what looked like "the banner just won't go away" with no
 // error message. A redirect doesn't need any cross-window messaging at all,
 // so it can't get stuck this way.
-// Google Identity Services (GIS) token client — mints Drive access tokens
-// directly, independent of Firebase Auth's sign-in session. Loaded via the
-// <script src="https://accounts.google.com/gsi/client"> tag in index.html.
-const GOOGLE_OAUTH_CLIENT_ID = '831194325870-hi0rg7a86n5tbqrk75hfdq90f5lkucrp.apps.googleusercontent.com';
-let GIS_TOKEN_CLIENT = null;
-
-function initGisTokenClient() {
-  if (GIS_TOKEN_CLIENT) return GIS_TOKEN_CLIENT;
-  if (!(window.google && google.accounts && google.accounts.oauth2)) {
-    throw new Error('Google Identity Services script has not loaded yet — check your connection and try again.');
-  }
-  GIS_TOKEN_CLIENT = google.accounts.oauth2.initTokenClient({
-    client_id: GOOGLE_OAUTH_CLIENT_ID,
-    scope: DRIVE_SCOPE,
-    callback: () => {} // overwritten per-request in requestDriveAccessToken()
-  });
-  return GIS_TOKEN_CLIENT;
-}
-
-// Resolves with { access_token, expires_in } straight from Google — used by
-// reconnectGoogleDrive() below. Bypasses Firebase Auth entirely for this.
-function requestDriveAccessToken() {
-  return new Promise((resolve, reject) => {
-    let client;
-    try {
-      client = initGisTokenClient();
-    } catch (err) {
-      reject(err);
-      return;
-    }
-    client.callback = (tokenResponse) => {
-      if (tokenResponse && tokenResponse.access_token) resolve(tokenResponse);
-      else reject(new Error((tokenResponse && tokenResponse.error) || 'No access token returned.'));
-    };
-    client.error_callback = (err) => reject(new Error((err && err.type) || 'Google sign-in popup failed.'));
-    client.requestAccessToken({ prompt: '' });
-  });
-}
-
-// Re-runs Google Drive auth purely to mint a fresh Drive access token (the
-// Firebase session itself never lapsed) — used from the "Reconnect Google
-// Drive" banner that shows up once the ~1hr token expires or a Drive call
-// comes back 401.
-//
-// This used to go through fbAuth.signInWithRedirect()/signInWithPopup(),
-// both of which route the OAuth result back through a cross-origin relay
-// via the Firebase authDomain (yaoi-journal.firebaseapp.com, a different
-// origin from this app). Confirmed live that modern Chrome's third-party
-// storage partitioning breaks that relay both ways: signInWithPopup() just
-// hangs (browser blocks the popup from messaging the opener), and
-// signInWithRedirect() comes back via an empty getRedirectResult() (no
-// user, no credential) — exactly the "banner won't clear" bug. GIS's token
-// client (see requestDriveAccessToken() above) uses its own OAuth popup
-// flow that never depends on that relay, so it isn't exposed to this.
 async function reconnectGoogleDrive() {
+  // Immediate feedback the instant the click registers, so a totally silent
+  // failure (an exception thrown before any network call even starts) is
+  // still visibly distinguishable from the button not being wired up at all.
   showToast('Connecting to Google Drive…');
   try {
-    const tokenResponse = await requestDriveAccessToken();
-    DRIVE_ACCESS_TOKEN = tokenResponse.access_token;
-    const expiresInMs = tokenResponse.expires_in ? Number(tokenResponse.expires_in) * 1000 : 55 * 60 * 1000;
-    DRIVE_TOKEN_EXPIRES_AT = Date.now() + Math.max(expiresInMs - 5 * 60 * 1000, 60 * 1000);
-    DRIVE_NEEDS_RECONNECT = false;
-    showToast('Google Drive reconnected.');
-    render();
-    return true;
+    try { localStorage.setItem('driveReconnectPending', '1'); } catch (e) {}
+    await fbAuth.signInWithRedirect(newGoogleProvider());
+    return true; // page navigates away here; getRedirectResult() in boot() finishes this on return
   } catch (err) {
-    console.error('Drive reconnect (GIS) failed:', err);
-    showToast('Reconnect failed: ' + (err && err.message || 'unknown error'));
+    console.error('Drive reconnect (redirect) failed:', err);
+    showToast('Reconnect failed: ' + (err && (err.code || err.message) || 'unknown error'));
   }
   return false;
 }
@@ -1253,20 +1081,7 @@ async function signOutOfAccount() {
 /* Render: root switch                                                    */
 /* ---------------------------------------------------------------------- */
 
-function renderLockScreen() {
-  return `
-    <div class="lock-screen">
-      <div class="lock-screen-inner">
-        <span class="lock-screen-icon">🔒</span>
-        <h2>Welcome back</h2>
-        <p>You stepped away for a bit — tap below to keep going.</p>
-        <button class="btn-primary" data-unlock-app="1">Unlock</button>
-      </div>
-    </div>
-  `;
-}
-
-function renderGlobalHeader(showAddEntry) {
+function renderGlobalHeader() {
   const needsReconnect = DRIVE_NEEDS_RECONNECT || (CURRENT_USER && !driveTokenValid());
   return `
     <div class="global-header">
@@ -1276,7 +1091,6 @@ function renderGlobalHeader(showAddEntry) {
       <div class="global-search-bar">
         <span>🔍</span>
         <input type="search" id="search-input" placeholder="Search all reads &amp; anime..." value="${escapeHtml(STATE.search)}">
-        ${showAddEntry ? `<button class="header-add-btn" data-add-entry="1" title="Add new entry">+</button>` : ''}
       </div>
     </div>
     ${needsReconnect ? `
@@ -1286,42 +1100,11 @@ function renderGlobalHeader(showAddEntry) {
       </div>` : ''}`;
 }
 
-async function addScreencapFiles(files) {
-  const e = getEntry(STATE.entryId);
-  if (!e) return;
-  e.screencaps = e.screencaps || [];
-  e.screencapDriveIds = e.screencapDriveIds || [];
-  const newDataUrls = [];
-  for (const file of files) {
-    if (!file.type.startsWith('image/')) continue;
-    const dataUrl = await fileToCompressedDataUrl(file, 900);
-    e.screencaps.push(dataUrl);
-    newDataUrls.push(dataUrl);
-  }
-  await saveEntry(e); render();
-  newDataUrls.forEach((dataUrl, i) => {
-    tryUploadImageToDrive(dataUrl, `${e.id}-screencap-${Date.now()}-${i}.jpg`).then((fileId) => {
-      if (!fileId) return;
-      const fresh = getEntry(e.id);
-      if (!fresh) return;
-      fresh.screencapDriveIds = fresh.screencapDriveIds || [];
-      fresh.screencapDriveIds.push(fileId);
-      saveEntry(fresh);
-    });
-  });
-}
-
 function render() {
   const root = document.getElementById('view-root');
   if (!CURRENT_USER) {
     root.innerHTML = renderAuthScreen();
     attachAuthHandlers();
-    return;
-  }
-  if (APP_LOCKED) {
-    root.innerHTML = renderLockScreen();
-    const unlockBtn = root.querySelector('[data-unlock-app]');
-    if (unlockBtn) unlockBtn.onclick = () => { APP_LOCKED = false; render(); };
     return;
   }
   let body = '';
@@ -1335,7 +1118,7 @@ function render() {
   else if (STATE.view === 'database') body = renderDatabase();
   else if (STATE.view === 'review') body = renderReviewQueue();
   else if (STATE.view === 'duplicates') body = renderDuplicates();
-  root.innerHTML = renderGlobalHeader(STATE.view === 'home') + body;
+  root.innerHTML = renderGlobalHeader() + body;
   attachRootHandlers();
 }
 
@@ -1547,12 +1330,12 @@ function renderHome() {
       if (group.length === 0) return;
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
       body += `<div class="section-title">${escapeHtml(shelf)} <span style="opacity:.6">(${group.length})</span></div>`;
-      body += scrollRow(rowId, group.map((e) => renderCoverCard(e)).join(''));
+      body += scrollRow(rowId, group.map(renderCoverCard).join(''));
     });
     if (!body) body = `<div class="empty-state">Nothing here yet. Tap + to add a ${STATE.format === 'reading' ? 'manhwa/manga' : 'anime'}.</div>`;
   } else {
     body = entries.length
-      ? `<div class="cover-grid">${entries.map((e) => renderCoverCard(e)).join('')}</div>`
+      ? `<div class="cover-grid">${entries.map(renderCoverCard).join('')}</div>`
       : `<div class="empty-state">No matches. Try clearing filters.</div>`;
   }
 
@@ -1599,6 +1382,7 @@ function renderHome() {
       </div>
     </div>
     <main>${body}</main>
+    <button class="fab" data-add-entry="1">+</button>
     ${renderBottomNav('home')}
   `;
 }
@@ -1701,21 +1485,6 @@ function tagMergeSuggestions(activeNames, counts) {
   return out.sort((x, y) => x.combinedCount - y.combinedCount).slice(0, 6);
 }
 
-function openTagMergeModal(sourceTag) {
-  const counts = allTagCounts();
-  const others = Object.keys(counts).filter((name) => name !== sourceTag).sort((a, b) => a.localeCompare(b));
-  openModal(`
-    <h3>Merge "${escapeHtml(sourceTag)}" into…</h3>
-    <p style="font-size:11.5px;color:var(--text-dim);">Pick the tag to keep. Every entry tagged "${escapeHtml(sourceTag)}" will be retagged, and "${escapeHtml(sourceTag)}" will disappear.</p>
-    <div style="display:flex;flex-direction:column;gap:6px;max-height:320px;overflow-y:auto;margin-top:10px;">
-      ${others.length ? others.map((name) => `<button class="ref-btn" data-tagmgr-merge-confirm="${escapeHtml(name)}" data-tagmgr-merge-source="${escapeHtml(sourceTag)}">${escapeHtml(name)} (${counts[name]})</button>`).join('') : '<span style="font-size:12px;color:var(--text-dim);">No other tags to merge into yet.</span>'}
-    </div>
-    <div class="modal-actions" style="margin-top:12px;">
-      <button class="btn-ghost" data-close-modal="1">Cancel</button>
-    </div>
-  `);
-}
-
 function renderTagManager() {
   const counts = allTagCounts();
   const allNames = Object.keys(counts).sort((a, b) => a.localeCompare(b));
@@ -1727,8 +1496,7 @@ function renderTagManager() {
   const mergeSuggestions = TAG_MGR_TAB === 'active' ? tagMergeSuggestions(activeNames, counts) : [];
   const suggestionsHtml = (hideSuggestions.length || mergeSuggestions.length) ? `
     <div class="panel" style="border-color:var(--yellow-soft);">
-      <div class="panel-title" data-tag-suggestions-toggle="1" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">💡 Suggestions <span style="font-size:11px;">${TAG_SUGGESTIONS_OPEN ? '▲ Hide' : '▼ Show'}</span></div>
-      ${TAG_SUGGESTIONS_OPEN ? `
+      <div class="panel-title">💡 Suggestions</div>
       ${hideSuggestions.map((s) => `
         <div class="tag-suggestion-row">
           <div>Hide <strong>${escapeHtml(s.tag)}</strong> — only ${s.count} use${s.count === 1 ? '' : 's'}</div>
@@ -1745,7 +1513,6 @@ function renderTagManager() {
             <button class="btn-ghost" data-suggest-dismiss="${escapeHtml(s.sig)}">Not now</button>
           </div>
         </div>`).join('')}
-      ` : ''}
     </div>` : '';
 
   const rows = TAG_MGR_TAB === 'active'
@@ -1757,7 +1524,6 @@ function renderTagManager() {
           </div>
           <div class="tagmgr-actions">
             <button class="toggle-switch on" data-tagmgr-hide="${escapeHtml(t)}" title="Hide from filters (keeps the data)" role="switch" aria-checked="true"><span class="toggle-knob"></span></button>
-            <button class="icon-btn-inline" data-tagmgr-merge="${escapeHtml(t)}" title="Merge this tag into another">🔀</button>
             <button class="icon-btn-inline" data-tagmgr-rename="${escapeHtml(t)}" title="Rename this tag everywhere">✏️</button>
             <button class="icon-btn-inline" data-tagmgr-delete="${escapeHtml(t)}" title="Delete this tag everywhere">🗑️</button>
           </div>
@@ -1795,6 +1561,13 @@ function renderTagManager() {
       <div class="search-bar"><span>🔍</span><input type="search" id="tagmgr-search" placeholder="Filter tags..."></div>
     </div>
     <main>
+      <div class="account-panel">
+        <div class="account-info">
+          <div class="account-label">Synced account</div>
+          <div class="account-email">${escapeHtml(CURRENT_USER ? CURRENT_USER.email : '')}</div>
+        </div>
+        <button class="icon-btn-inline" data-sign-out="1" title="Sign out">Sign Out</button>
+      </div>
       <button class="ref-btn" style="width:100%;margin-bottom:12px;" data-nav="hdMatch">💾 Match Owned Titles from a List</button>
       <div style="color:var(--text-dim);font-size:12px;margin-bottom:10px;">
         ${allNames.length} unique tag${allNames.length === 1 ? '' : 's'} across ${ALL_ENTRIES.length} entries. Tap a tag to see its entries. Renaming applies everywhere the tag is used — rename to an existing tag name to merge two tags together. Deleting removes it from every entry (can't be undone); hiding just keeps it out of filters.
@@ -1812,7 +1585,7 @@ function renderTagEntries() {
   const t = TAG_ENTRIES_FILTER;
   const entries = t ? ALL_ENTRIES.filter((e) => (e.tags || []).concat(e.customTags || []).includes(t)) : [];
   const body = entries.length
-    ? `<div class="cover-grid">${entries.map((e) => renderCoverCard(e)).join('')}</div>`
+    ? `<div class="cover-grid">${entries.map(renderCoverCard).join('')}</div>`
     : `<div class="empty-state">No entries have this tag.</div>`;
   return `
     <div class="app-header">
@@ -2144,7 +1917,7 @@ function renderReactionsLibrary() {
     <div class="app-header">
       <div class="brand-row"><h1>🖼️ Images</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${items.length} image${items.length === 1 ? '' : 's'} across the app. Tap one to see which reads it's attached to.</div>
-      <label class="upload-btn">📎 Add image(s)<input type="file" accept="image/*,video/*" multiple id="reaction-upload-input"></label>
+      <label class="upload-btn">📎 Add image(s)<input type="file" accept="image/*" multiple id="reaction-upload-input"></label>
       <div class="tagmgr-tabs" style="margin-top:10px;">
         <button class="tagmgr-tab ${IMAGES_TAB === 'attached' ? 'active' : ''}" data-images-tab="attached">Attached (${attached.length})</button>
         <button class="tagmgr-tab ${IMAGES_TAB === 'unattached' ? 'active' : ''}" data-images-tab="unattached">Unattached (${unattached.length})</button>
@@ -2156,54 +1929,17 @@ function renderReactionsLibrary() {
   `;
 }
 
-// A screencap already saved on this entry can also double as a Reactions-
-// library item — toggled from within the lightbox itself so you don't have
-// to leave the read to go re-upload the same picture over in Reactions.
-function renderScreencapLightbox(src) {
-  const isReaction = ALL_REACTIONS.some((r) => r.dataUrl === src);
-  openImageLightbox(src, `
-    <div class="lightbox-actions">
-      <button class="reaction-toggle-btn ${isReaction ? 'on' : 'off'}" data-toggle-use-as-reaction="${escapeHtml(src)}">
-        Use as reaction? ${isReaction ? '✅' : '❌'}
-      </button>
-    </div>`);
-}
-
 function openImageAttachmentsModal(dataUrl) {
   const entries = ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(dataUrl));
-  const candidates = ALL_ENTRIES.filter((e) => !entryImageUrls(e).includes(dataUrl)).slice().sort((a, b) => a.title.localeCompare(b.title));
-  const resultsHtml = (list, query) => {
-    if (!query) return '<div class="empty-state" style="padding:6px 0;font-size:12px;">Type to search…</div>';
-    return list.length
-      ? list.slice(0, 30).map((e) => `<button class="ref-btn" style="text-align:left;" data-attach-image-to-entry="${e.id}" data-attach-image-src="${escapeHtml(dataUrl)}">${escapeHtml(e.title)}</button>`).join('')
-      : '<div class="empty-state" style="padding:6px 0;">No matches.</div>';
-  };
-  const attachedRow = (e) => {
-    const canDetach = (e.screencaps || []).includes(dataUrl);
-    return `<div style="display:flex;align-items:center;gap:6px;">
-      <button class="ref-btn" style="flex:1;text-align:left;" data-goto-entry-from-modal="${e.id}">${escapeHtml(e.title)}</button>
-      ${canDetach ? `<button class="icon-btn" data-detach-image-entry="${e.id}" data-detach-image-src="${escapeHtml(dataUrl)}" title="Remove from this read">✕</button>` : ''}
-    </div>`;
-  };
-  openImageLightbox(dataUrl, `
-    <div class="lightbox-actions">
-      <div class="panel-title" style="margin-top:0;">Attached to</div>
-      ${entries.length
-         ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px;">${entries.map(attachedRow).join('')}</div>`
-        : `<div class="empty-state" style="padding:6px 0 14px;">Not attached to any read yet.</div>`}
-      <div class="panel-title">Attach to another read</div>
-      <input type="text" id="image-attach-search-input" placeholder="Search titles..." style="width:100%;margin-bottom:8px;">
-      <div id="image-attach-results" style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow-y:auto;">
-        ${resultsHtml(candidates, '')}
-      </div>
-    </div>`);
-  const searchInput = document.getElementById('image-attach-search-input');
-  if (searchInput) searchInput.oninput = () => {
-    const q = searchInput.value.trim().toLowerCase();
-    const filtered = candidates.filter((e) => e.title.toLowerCase().includes(q));
-    const resultsEl = document.getElementById('image-attach-results');
-    if (resultsEl) resultsEl.innerHTML = resultsHtml(filtered, q);
-  };
+  openModal(`
+    <h3>Attached to</h3>
+    <img src="${dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">
+    ${entries.length
+      ? `<div style="display:flex;flex-direction:column;gap:6px;">${entries.map((e) => `
+          <button class="ref-btn" style="text-align:left;" data-goto-entry-from-modal="${e.id}">${escapeHtml(e.title)}</button>`).join('')}</div>`
+      : `<div class="empty-state">Not attached to any read yet.</div>`}
+    <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Close</button></div>
+  `);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -2220,28 +1956,12 @@ const MOOD_OPTIONS = [
   { key: 'horny', emoji: '🍆', label: 'Horny' },
   { key: 'confused', emoji: '😵‍💫', label: 'Confused' },
 ];
-let MEME_STATE = { groupFilter: null, search: '' };
-let REACTION_GROUPS = [];
-
-// A reaction can belong to more than one grouping/mood now. Older saved
-// reactions only ever had a single r.groupId string, so this falls back to
-// that for backward compatibility without needing a data migration.
-function reactionGroupIds(r) {
-  if (r.groupIds && r.groupIds.length) return r.groupIds;
-  return r.groupId ? [r.groupId] : [];
-}
+let MEME_STATE = { moodFilter: null, search: '' };
 
 function memeFilteredItems() {
   const q = MEME_STATE.search.trim().toLowerCase();
-  // Untagged reactions surface first (so they get organized sooner), then
-  // everything else follows in upload order (oldest added first).
-  let items = ALL_REACTIONS.slice().sort((a, b) => {
-    const aUntagged = !reactionGroupIds(a).length;
-    const bUntagged = !reactionGroupIds(b).length;
-    if (aUntagged !== bUntagged) return aUntagged ? -1 : 1;
-    return new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
-  });
-  if (MEME_STATE.groupFilter) items = items.filter((r) => reactionGroupIds(r).includes(MEME_STATE.groupFilter));
+  let items = ALL_REACTIONS.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  if (MEME_STATE.moodFilter) items = items.filter((r) => (r.moodTags || []).includes(MEME_STATE.moodFilter));
   if (q) items = items.filter((r) => (r.note || '').toLowerCase().includes(q));
   return items;
 }
@@ -2251,10 +1971,8 @@ function renderMemeGrid() {
   return items.length
     ? `<div class="image-masonry">${items.map((r) => `
         <div class="masonry-item" data-open-meme="${r.id}">
-          ${r.mediaType === 'video'
-            ? `<video src="${r.dataUrl}" autoplay muted loop playsinline></video>`
-            : `<img src="${r.dataUrl}" alt="" loading="lazy">`}
-          ${!reactionGroupIds(r).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
+          <img src="${r.dataUrl}" alt="" loading="lazy">
+          ${!(r.moodTags || []).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
         </div>`).join('')}</div>`
     : `<div class="empty-state">No reactions match. ${MEME_STATE.moodFilter || MEME_STATE.search ? 'Try clearing the filter/search.' : 'Tap "Add" to upload your first meme.'}</div>`;
 }
@@ -2266,15 +1984,15 @@ function renderMemeLibraryInPlace() {
 }
 
 function renderMemeLibrary() {
-  const untaggedCount = ALL_REACTIONS.filter((r) => !reactionGroupIds(r).length).length;
-  const groupChips = REACTION_GROUPS.map((g) => `<span class="rating-pick-icon flag-filter-icon ${MEME_STATE.groupFilter === g.id ? 'active' : ''}" style="width:auto;min-width:28px;padding:0 10px;white-space:nowrap;" data-meme-group-filter="${g.id}" title="Filter: ${escapeHtml(g.title)}">${escapeHtml(g.title)}</span>`).join('');
+  const untaggedCount = ALL_REACTIONS.filter((r) => !(r.moodTags || []).length).length;
+  const moodChips = MOOD_OPTIONS.map((m) => `<span class="rating-pick-icon flag-filter-icon ${MEME_STATE.moodFilter === m.key ? 'active' : ''}" data-meme-mood-filter="${m.key}" title="${m.label}">${m.emoji}</span>`).join('');
   return `
     <div class="app-header">
       <div class="brand-row"><h1>🎭 Reactions</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${ALL_REACTIONS.length} meme${ALL_REACTIONS.length === 1 ? '' : 's'} saved${untaggedCount ? ` · ${untaggedCount} untagged` : ''}.</div>
-      <label class="upload-btn" style="margin-bottom:10px;">📎 Add reaction(s)<input type="file" accept="image/*,video/*" multiple id="meme-upload-input"></label>
+      <label class="upload-btn" style="margin-bottom:10px;">📎 Add reaction(s)<input type="file" accept="image/*" multiple id="meme-upload-input"></label>
       <div class="search-bar" style="margin-bottom:8px;"><span>🔍</span><input type="search" id="meme-search-input" placeholder="Search captions/keywords..." value="${escapeHtml(MEME_STATE.search)}"></div>
-      <div class="rating-pick-row">${groupChips}<span class="rating-pick-icon flag-filter-icon" style="width:auto;padding:0 10px;" data-add-reaction-group="1" title="New grouping">➕</span></div>
+      <div class="rating-pick-row">${moodChips}</div>
     </div>
     <main>${renderMemeGrid()}</main>
     ${renderBottomNav('meme')}
@@ -2287,35 +2005,17 @@ function attachMemeGridHandlers() {
   });
 }
 
-function openCreateReactionGroupModal() {
-  openModal(`
-    <h3>New reaction grouping</h3>
-    <div class="field-row"><label>Title (text or emoji)</label><input type="text" id="new-group-title-input" placeholder="e.g. 😭 or Crying" maxlength="24"></div>
-    <div class="modal-actions">
-      <button class="btn-ghost" data-close-modal="1">Cancel</button>
-      <button class="btn-primary" data-create-reaction-group="1">Create</button>
-    </div>
-  `);
-  setTimeout(() => {
-    const el = document.getElementById('new-group-title-input');
-    if (el) el.focus();
-  }, 30);
-}
-
 function openMemeEditModal(id) {
   const r = ALL_REACTIONS.find((x) => x.id === id);
   if (!r) return;
   openModal(`
     <h3>Edit reaction</h3>
-    ${r.mediaType === 'video'
-      ? `<video src="${r.dataUrl}" autoplay muted loop playsinline controls style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;"></video>`
-      : `<img src="${r.dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">`}
+    <img src="${r.dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">
     <div class="field-row"><label>Caption/keywords (for search)</label><input type="text" id="meme-note-input" value="${escapeHtml(r.note || '')}" placeholder="e.g. blushing, screaming, oh no"></div>
     <div class="field-row">
-      <label>Mood ${reactionGroupIds(r).length ? '' : '<span style="font-weight:400;color:var(--text-dim);">(none yet)</span>'}</label>
-      <div style="font-size:11px;color:var(--text-dim);margin:2px 0 4px;">${REACTION_GROUPS.length ? 'Tap any that apply — you can pick more than one.' : ''}</div>
+      <label>Mood ${!(r.moodTags || []).length ? '<span style="color:var(--red-flag);">— pick at least one</span>' : ''}</label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">
-        ${REACTION_GROUPS.length ? REACTION_GROUPS.map((g) => `<button class="mood-chip ${reactionGroupIds(r).includes(g.id) ? 'active' : ''}" data-meme-toggle-group="${g.id}" data-meme-id="${r.id}">${escapeHtml(g.title)}</button>`).join('') : '<span style="font-size:12px;color:var(--text-dim);">No groupings yet — tap the ➕ in the Reactions header to create one.</span>'}
+        ${MOOD_OPTIONS.map((m) => `<button class="mood-chip ${(r.moodTags || []).includes(m.key) ? 'active' : ''}" data-meme-toggle-mood="${m.key}" data-meme-id="${r.id}">${m.emoji} ${m.label}</button>`).join('')}
       </div>
     </div>
     <div class="modal-actions">
@@ -2336,24 +2036,16 @@ function openMemeEditModal(id) {
 async function addReactionFiles(fileList) {
   const added = [];
   for (const file of fileList) {
-    const isVideo = file.type.startsWith('video/');
-    const isGif = file.type === 'image/gif';
-    const mediaType = isVideo ? 'video' : (isGif ? 'gif' : 'image');
-    // Animated GIFs and videos can't go through the canvas-based compressor
-    // below — canvas would flatten a GIF to a single static frame, and an
-    // <img> can't decode video at all — so store those as-is to keep them
-    // animating/playing.
-    const dataUrl = mediaType === 'image' ? await fileToCompressedDataUrl(file, 800) : await fileToDataUrl(file);
+    const dataUrl = await fileToCompressedDataUrl(file, 800);
     const hash = await hashDataUrl(dataUrl);
     const dupe = findReactionByHash(hash);
     if (dupe) {
       if (!confirm('This looks like a duplicate of a reaction/meme you already saved. Add it again anyway?')) continue;
     }
-    const reaction = { id: uid('reaction'), dataUrl, hash, mediaType, moodTags: [], note: '', createdAt: new Date().toISOString() };
+    const reaction = { id: uid('reaction'), dataUrl, hash, moodTags: [], note: '', createdAt: new Date().toISOString() };
     await saveReaction(reaction);
     added.push(reaction);
-    const ext = mediaType === 'video' ? ((file.name || '').split('.').pop() || 'mp4') : (mediaType === 'gif' ? 'gif' : 'jpg');
-    tryUploadImageToDrive(dataUrl, `reaction-${reaction.id}.${ext}`).then((fileId) => {
+    tryUploadImageToDrive(dataUrl, `reaction-${reaction.id}.jpg`).then((fileId) => {
       if (!fileId) return;
       const fresh = ALL_REACTIONS.find((r) => r.id === reaction.id);
       if (!fresh) return;
@@ -2674,9 +2366,9 @@ function renderDetail(e) {
     <div class="detail-header">
       <button class="back-btn" data-nav="home">← Back</button>
       <h2>${escapeHtml(e.title)}</h2>
+      <button class="icon-btn" data-force-save="1" title="Save now">✅</button>
       <button class="icon-btn" data-toggle-fav="1" title="Favorite">${e.favorite ? '💜' : '🤍'}</button>
       <button class="icon-btn" data-toggle-hd="1" title="On HD">${isOnDrive(e) ? '💾' : '🗄️'}</button>
-      <button class="icon-btn" data-force-save="1" title="Save now">✅</button>
       <button class="icon-btn" data-merge-entry="${e.id}" title="Mark as duplicate / merge into another entry">🔀</button>
       <button class="icon-btn danger" data-delete-entry="${e.id}" title="Delete this entry">✕</button>
     </div>
@@ -2781,10 +2473,8 @@ function renderDetail(e) {
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
           <label class="upload-btn" style="flex:1;">📎 Add photo(s)<input type="file" accept="image/*" multiple id="screencap-input"></label>
         </div>
-        <div class="screencap-grid" data-screencap-dropzone="1">
-          ${(e.screencaps || []).length
-            ? (e.screencaps || []).map((src, i) => `<div class="screencap-thumb"><img src="${src}" data-view-screencap="${i}"><button class="del" data-del-screencap="${i}">✕</button></div>`).join('')
-            : '<div class="screencap-drop-hint">Drag &amp; drop images here, or use Add photo(s) above</div>'}
+        <div class="screencap-grid">
+          ${(e.screencaps || []).map((src, i) => `<div class="screencap-thumb"><img src="${src}" data-view-screencap="${i}"><button class="del" data-del-screencap="${i}">✕</button></div>`).join('')}
         </div>
       </div>
 
@@ -2807,7 +2497,6 @@ function renderDatabase() {
   const rows = ALL_ENTRIES.slice().sort((a, b) => a.title.localeCompare(b.title));
   const reviewCount = ALL_ENTRIES.filter(needsReview).length;
   const dupCount = findDuplicateGroups().length;
-  const missingImagesCount = ALL_ENTRIES.filter(entryNeedsImageHydration).length + ALL_REACTIONS.filter((r) => r.driveId && !r.dataUrl).length + ALL_REACTIONS.filter(reactionNeedsDriveUpload).length;
   const cols = ['Title', 'Format', 'Shelf', 'Author', 'Tags', 'Semi Flag', 'Uke Flag', 'Smut', 'Quality', 'Favorite', 'Notes'];
   const trs = rows.map((e) => `
     <tr>
@@ -2828,17 +2517,11 @@ function renderDatabase() {
     <div class="app-header">
       <div class="brand-row">
         <h1>🗂️ Database Mode</h1>
+        <button class="icon-btn" data-open-settings="1" title="Settings">⚙️</button>
       </div>
       <div class="search-bar"><span>🔍</span><input type="search" id="db-search" placeholder="Filter table..."></div>
     </div>
     <main>
-      <div class="account-panel" style="margin-bottom:14px;">
-        <div class="account-info">
-          <div class="account-label">Synced account</div>
-          <div class="account-email">${escapeHtml(CURRENT_USER ? CURRENT_USER.email : '')}</div>
-        </div>
-        <button class="icon-btn-inline" data-sign-out="1" title="Sign out">Sign Out</button>
-      </div>
       <div class="panel" style="margin-bottom:14px;">
         <div class="panel-title">Data Cleanup Tools</div>
         <div class="export-row">
@@ -2856,51 +2539,28 @@ function renderDatabase() {
           </div>
           <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">Searches Anime-Planet/MangaGo for every unmatched entry in one pass instead of the usual 20-a-day auto-sweep — paced to be gentle on the proxy, so it can take a while for a big backlog. Requires a proxy URL in Settings.</p>
         `}
-        <div class="export-row" style="margin-top:8px;">
-          <button class="ref-btn" data-sync-drive-images="1">🔄 Sync images from Drive${missingImagesCount ? ` (${missingImagesCount})` : ''}</button>
-        </div>
-        <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">Re-checks every read/reaction against Google Drive and re-downloads anything that's missing locally — use this if images uploaded on another device aren't showing up here yet.</p>
-      </div>
-      <div class="panel" style="margin-bottom:14px;">
-        <div class="panel-title" data-toggle-db-settings="1" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">⚙️ Settings <span style="font-size:11px;">${DB_SETTINGS_OPEN ? '▲ Hide' : '▼ Show'}</span></div>
-        ${DB_SETTINGS_OPEN ? `
-        <div class="field-row">
-          <label>Cross-reference proxy URL (your Apps Script web app URL)</label>
-          <input type="text" id="proxy-url-input" value="${escapeHtml(getProxyUrl())}" placeholder="https://script.google.com/macros/s/.../exec">
-        </div>
-        <p style="font-size:11.5px;color:var(--text-dim);">This is only used when you tap "Cross-reference" on an entry — it fetches the Anime-Planet page server-side so the app can read the summary/cover. No reading data is ever sent out.</p>
-        <div class="modal-actions">
-          <button class="btn-primary" data-save-settings-inline="1">Save</button>
-        </div>
-        <div style="border-top:1px solid var(--border);margin-top:16px;padding-top:14px;">
-          <div class="panel-title" style="margin-bottom:6px;">📋 Get Info button</div>
-          <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 10px;">You'll only need this occasionally — mainly when adding a brand-new title, or when cleaning up entries in Database mode. It's a free workaround for when the automatic fetch fails.</p>
-          <p style="font-size:12px;font-weight:600;margin:0 0 4px;">Set up once:</p>
-          <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 4px;"><strong>On a computer:</strong> drag this button up to your bookmarks bar. <a href="${bookmarkletHref()}" class="ref-btn" style="display:inline-block;text-decoration:none;">💾 Get Info</a></p>
-          <p style="font-size:11.5px;color:var(--text-dim);margin:0 0 8px;"><strong>On a phone:</strong> save any page as a bookmark, then open that bookmark's settings and paste the code below over its URL.</p>
-          <textarea readonly style="width:100%;height:60px;font-size:10px;font-family:monospace;" onclick="this.select()">${escapeHtml(bookmarkletHref())}</textarea>
-          <p style="font-size:12px;font-weight:600;margin:10px 0 4px;">Each time you need it:</p>
-          <ol style="font-size:11.5px;color:var(--text-dim);margin:0 0 0 18px;padding:0;">
-            <li>Open the title's page on Anime-Planet or MangaGo.</li>
-            <li>Tap your "Get Info" bookmark.</li>
-            <li>Come back to Yaoi Journal, open that entry, tap Cross-reference → Paste from clipboard.</li>
-          </ol>
-        </div>
-        ` : ''}
+        ${IMAGE_BACKFILL.running ? `
+          <div class="export-row" style="margin-top:8px;">
+            <div style="flex:1;font-size:12.5px;color:var(--text-dim);">☁️ Uploading ${IMAGE_BACKFILL.checked}/${IMAGE_BACKFILL.total} — ${IMAGE_BACKFILL.uploaded} sent to Drive so far</div>
+            <button class="ref-btn" data-stop-image-backfill="1">Stop</button>
+          </div>
+        ` : `
+          <div class="export-row" style="margin-top:8px;">
+            <button class="ref-btn" data-run-image-backfill="1">☁️ Upload local-only images to Drive (${imageBackfillCandidates().length} pending)</button>
+          </div>
+          <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">Images added before Drive was hooked up (or while it was disconnected) only ever saved on the device that added them. This pushes anything still local-only up to your Drive so other devices can finally pull it down. Requires Google Drive to be connected.</p>
+        `}
       </div>
       <div class="export-row">
         <button class="ref-btn" data-export-csv="1">⬇ Export CSV</button>
-        <button class="ref-btn" data-toggle-db-table="1">${DB_TABLE_OPEN ? '▲ Hide Table' : '▼ Show Table'}</button>
         <span style="color:var(--text-dim);font-size:12.5px;align-self:center;">${rows.length} total entries</span>
       </div>
-      ${DB_TABLE_OPEN ? `
       <div class="db-table-wrap">
         <table class="db-table" id="db-table">
           <thead><tr>${cols.map((c) => `<th>${c}</th>`).join('')}</tr></thead>
           <tbody>${trs}</tbody>
         </table>
       </div>
-      ` : ''}
     </main>
     ${renderBottomNav('database')}
   `;
@@ -2939,14 +2599,9 @@ function renderReviewCard(e) {
 }
 
 function renderReviewQueue() {
-  const items = ALL_ENTRIES.filter(needsReview).sort((a, b) => {
-    const aHas = a.suggestedMatch ? 1 : 0;
-    const bHas = b.suggestedMatch ? 1 : 0;
-    if (aHas !== bHas) return bHas - aHas;
-    return a.title.localeCompare(b.title);
-  });
+  const items = ALL_ENTRIES.filter(needsReview).sort((a, b) => a.title.localeCompare(b.title));
   const body = items.length
-    ? `<div class="review-grid">${items.map(renderReviewCard).join('')}</div>`
+    ? items.map(renderReviewCard).join('')
     : `<div class="empty-state">Everything has a cover or reference link. 🎉</div>`;
   return `
     <div class="app-header">
@@ -3065,7 +2720,7 @@ async function mergeIntoTarget(sourceId, targetId) {
   await deleteEntry(sourceId);
   showToast('Merged and deleted');
   closeModal();
-  render();
+  navigate('detail', targetId);
 }
 
 function findDuplicateGroups() {
@@ -3080,18 +2735,6 @@ function findDuplicateGroups() {
 }
 
 function renderDuplicateGroup(group) {
-  const diffFields = [
-    ['Shelf', (x) => x.shelf || ''],
-    ['Format', (x) => x.format || ''],
-    ['Author', (x) => formatNames(x.author) || ''],
-    ['Smut', (x) => String(x.smutRating || 0)],
-    ['Quality', (x) => String(x.qualityRating || 0)],
-    ['Favorite', (x) => (x.favorite ? 'Yes' : 'No')],
-  ];
-  const differingLabels = diffFields.filter(([, fn]) => {
-    const vals = group.map(fn);
-    return !vals.every((v) => v === vals[0]);
-  }).map(([label]) => label);
   const items = group.map((e) => {
     const coverSrc = e.coverUrl || (e.suggestedMatch ? e.suggestedMatch.coverUrl : null);
     const cover = coverSrc
@@ -3099,21 +2742,19 @@ function renderDuplicateGroup(group) {
       : `<div class="cover-placeholder">🍆</div>`;
     return `
       <div class="dup-item">
-        <div class="cover-thumb" style="width:100%;aspect-ratio:1/1;">${cover}</div>
+        <div class="cover-thumb" style="width:64px;flex:0 0 64px;">${cover}</div>
         <div class="review-card-info">
           <strong>${escapeHtml(e.title)}</strong>
           <div style="font-size:11px;color:var(--text-dim);">${escapeHtml(e.shelf)}${e.author ? ' · ' + escapeHtml(formatNames(e.author)) : ''}</div>
           <div style="font-size:11px;color:var(--text-dim);">Updated ${e.updatedAt ? new Date(e.updatedAt).toLocaleDateString() : '—'}${e.favorite ? ' · 💜 favorite' : ''}</div>
-          ${differingLabels.length ? `<div style="font-size:11px;color:var(--pink);margin-top:2px;">Differs: ${differingLabels.map((label) => { const fn = diffFields.find((f) => f[0] === label)[1]; return `${label} ${escapeHtml(fn(e) || '—')}`; }).join(' · ')}</div>` : ''}
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;">
           <button class="ref-btn" data-open-entry="${e.id}">Open</button>
-          <button class="btn-primary" style="padding:6px 10px;font-size:12px;" data-dup-merge-into="${e.id}">Merge into this</button>
           <button class="btn-ghost" data-dup-delete="${e.id}">Delete this one</button>
         </div>
       </div>`;
   }).join('');
-  return `<div class="panel"><div class="panel-title">Possible duplicate</div><div class="dup-items-row">${items}</div><button class="ref-btn" style="width:100%;margin-top:8px;" data-dup-not-duplicate="${dupGroupSignature(group)}">Not duplicates — keep both, stop asking</button></div>`;
+  return `<div class="panel"><div class="panel-title">Possible duplicate</div>${items}<button class="ref-btn" style="width:100%;margin-top:8px;" data-dup-not-duplicate="${dupGroupSignature(group)}">Not duplicates — keep both, stop asking</button></div>`;
 }
 
 function renderDuplicates() {
@@ -3650,20 +3291,8 @@ function attachRootHandlers() {
   });
   const addBtn = root.querySelector('[data-add-entry]');
   if (addBtn) addBtn.onclick = openAddModal;
-  root.querySelectorAll('[data-toggle-db-settings]').forEach((el) => {
-    el.onclick = () => { DB_SETTINGS_OPEN = !DB_SETTINGS_OPEN; render(); };
-  });
-  root.querySelectorAll('[data-toggle-db-table]').forEach((el) => {
-    el.onclick = () => { DB_TABLE_OPEN = !DB_TABLE_OPEN; render(); };
-  });
-  const saveSettingsInlineBtn = root.querySelector('[data-save-settings-inline]');
-  if (saveSettingsInlineBtn) saveSettingsInlineBtn.onclick = () => {
-    const val = document.getElementById('proxy-url-input').value;
-    setProxyUrl(val);
-    DB_SETTINGS_OPEN = false;
-    showToast('Settings saved');
-    render();
-  };
+  const settingsBtn = root.querySelector('[data-open-settings]');
+  if (settingsBtn) settingsBtn.onclick = openSettingsModal;
 
   // Detail view handlers
   const forceSaveBtn = root.querySelector('[data-force-save]');
@@ -3887,19 +3516,30 @@ function attachRootHandlers() {
   }
   const screencapInput = root.querySelector('#screencap-input');
   if (screencapInput) screencapInput.onchange = async () => {
-    if (screencapInput.files.length) await addScreencapFiles(screencapInput.files);
+    const e = getEntry(STATE.entryId);
+    e.screencaps = e.screencaps || [];
+    e.screencapDriveIds = e.screencapDriveIds || [];
+    const newDataUrls = [];
+    for (const file of screencapInput.files) {
+      const dataUrl = await fileToCompressedDataUrl(file, 900);
+      e.screencaps.push(dataUrl);
+      newDataUrls.push(dataUrl);
+    }
+    await saveEntry(e); render();
+    // Upload each new screencap to Drive in the background and append its
+    // id once it resolves — order isn't guaranteed against further edits in
+    // the meantime, so re-fetch the entry fresh before each append.
+    newDataUrls.forEach((dataUrl, i) => {
+      tryUploadImageToDrive(dataUrl, `${e.id}-screencap-${Date.now()}-${i}.jpg`).then((fileId) => {
+        if (!fileId) return;
+        const fresh = getEntry(e.id);
+        if (!fresh) return;
+        fresh.screencapDriveIds = fresh.screencapDriveIds || [];
+        fresh.screencapDriveIds.push(fileId);
+        saveEntry(fresh);
+      });
+    });
   };
-  const screencapDropzone = root.querySelector('[data-screencap-dropzone]');
-  if (screencapDropzone) {
-    screencapDropzone.ondragover = (ev) => { ev.preventDefault(); screencapDropzone.classList.add('drag-over'); };
-    screencapDropzone.ondragleave = () => { screencapDropzone.classList.remove('drag-over'); };
-    screencapDropzone.ondrop = (ev) => {
-      ev.preventDefault();
-      screencapDropzone.classList.remove('drag-over');
-      const files = ev.dataTransfer && ev.dataTransfer.files;
-      if (files && files.length) addScreencapFiles(files);
-    };
-  }
   root.querySelectorAll('[data-del-screencap]').forEach((el) => {
     el.onclick = async (ev) => {
       ev.stopPropagation();
@@ -3954,18 +3594,20 @@ function attachRootHandlers() {
     memeSearchInput.focus();
     memeSearchInput.setSelectionRange(memeSearchInput.value.length, memeSearchInput.value.length);
   }
-  root.querySelectorAll('[data-meme-group-filter]').forEach((el) => {
+  root.querySelectorAll('[data-meme-mood-filter]').forEach((el) => {
     el.onclick = () => {
-      const gid = el.getAttribute('data-meme-group-filter');
-      MEME_STATE.groupFilter = MEME_STATE.groupFilter === gid ? null : gid;
+      const mood = el.getAttribute('data-meme-mood-filter');
+      MEME_STATE.moodFilter = MEME_STATE.moodFilter === mood ? null : mood;
       render();
     };
   });
-  const addGroupBtn = root.querySelector('[data-add-reaction-group]');
-  if (addGroupBtn) addGroupBtn.onclick = openCreateReactionGroupModal;
   root.querySelectorAll('[data-view-screencap]').forEach((imgEl) => {
     imgEl.onclick = () => {
-      renderScreencapLightbox(imgEl.getAttribute('src'));
+      openModal(`
+        <div class="lightbox-wrap">
+          <img src="${imgEl.getAttribute('src')}" class="lightbox-img" alt="Screencap, tap and hold to save">
+          <button class="lightbox-close" data-close-modal="1">✕ Close</button>
+        </div>`);
     };
   });
   const crossRefBtn = root.querySelector('[data-open-crossref]');
@@ -4063,19 +3705,10 @@ function attachRootHandlers() {
       render();
     };
   });
-  root.querySelectorAll('[data-tagmgr-merge]').forEach((el) => {
-    el.onclick = () => openTagMergeModal(el.getAttribute('data-tagmgr-merge'));
-  });
   root.querySelectorAll('[data-suggest-hide]').forEach((el) => {
     el.onclick = async () => {
       await setTagSoftHidden(el.getAttribute('data-suggest-hide'), true);
       showToast('Hidden');
-      render();
-    };
-  });
-  root.querySelectorAll('[data-tag-suggestions-toggle]').forEach((el) => {
-    el.onclick = () => {
-      TAG_SUGGESTIONS_OPEN = !TAG_SUGGESTIONS_OPEN;
       render();
     };
   });
@@ -4190,8 +3823,10 @@ function attachRootHandlers() {
   if (bulkSweepBtn) bulkSweepBtn.onclick = runBulkMatchSweep;
   const stopSweepBtn = root.querySelector('[data-stop-bulk-sweep]');
   if (stopSweepBtn) stopSweepBtn.onclick = cancelBulkMatchSweep;
-  const syncDriveBtn = root.querySelector('[data-sync-drive-images]');
-  if (syncDriveBtn) syncDriveBtn.onclick = () => hydrateAllMissingDriveImages(true);
+  const imageBackfillBtn = root.querySelector('[data-run-image-backfill]');
+  if (imageBackfillBtn) imageBackfillBtn.onclick = runImageBackfill;
+  const stopImageBackfillBtn = root.querySelector('[data-stop-image-backfill]');
+  if (stopImageBackfillBtn) stopImageBackfillBtn.onclick = cancelImageBackfill;
   const dbSearch = root.querySelector('#db-search');
   if (dbSearch) dbSearch.oninput = () => {
     const q = dbSearch.value.toLowerCase();
@@ -4259,20 +3894,6 @@ function attachRootHandlers() {
       render();
     };
   });
-  root.querySelectorAll('[data-dup-merge-into]').forEach((el) => {
-    el.onclick = async () => {
-      const keepId = el.getAttribute('data-dup-merge-into');
-      const keep = getEntry(keepId);
-      if (!keep) return;
-      const group = findDuplicateGroups().find((g) => g.some((ge) => ge.id === keepId));
-      const others = (group || []).filter((ge) => ge.id !== keepId);
-      if (!others.length) return;
-      if (!confirm(`Merge the other ${others.length} cop${others.length === 1 ? 'y' : 'ies'} into "${keep.title}"? The others will be deleted after their data is copied over.`)) return;
-      for (const other of others) {
-        await mergeIntoTarget(other.id, keepId);
-      }
-    };
-  });
   root.querySelectorAll('[data-dup-not-duplicate]').forEach((el) => {
     el.onclick = async () => {
       const sig = el.getAttribute('data-dup-not-duplicate');
@@ -4304,12 +3925,12 @@ function renderHomeInPlace() {
       if (group.length === 0) return;
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
       body += `<div class="section-title">${escapeHtml(shelf)} <span style="opacity:.6">(${group.length})</span></div>`;
-      body += scrollRow(rowId, group.map((e) => renderCoverCard(e)).join(''));
+      body += scrollRow(rowId, group.map(renderCoverCard).join(''));
     });
     if (!body) body = `<div class="empty-state">Nothing here yet.</div>`;
   } else {
     body = entries.length
-      ? `<div class="cover-grid">${entries.map((e) => renderCoverCard(e)).join('')}</div>`
+      ? `<div class="cover-grid">${entries.map(renderCoverCard).join('')}</div>`
       : `<div class="empty-state">No matches. Try clearing filters.</div>`;
   }
   if (main) {
@@ -4360,99 +3981,14 @@ document.addEventListener('click', (ev) => {
       mergeIntoTarget(MERGE_SOURCE_ID, targetId);
     }
   }
-  if (t.matches('[data-tagmgr-merge-confirm]')) {
-    const keepName = t.getAttribute('data-tagmgr-merge-confirm');
-    const dropName = t.getAttribute('data-tagmgr-merge-source');
-    (async () => {
-      for (const en of ALL_ENTRIES) {
-        let changed = false;
-        if ((en.tags || []).includes(dropName)) {
-          en.tags = en.tags.filter((x) => x !== dropName);
-          if (!en.tags.includes(keepName) && !(en.customTags || []).includes(keepName)) en.tags.push(keepName);
-          changed = true;
-        }
-        if ((en.customTags || []).includes(dropName)) {
-          en.customTags = en.customTags.filter((x) => x !== dropName);
-          if (!(en.tags || []).includes(keepName) && !en.customTags.includes(keepName)) en.customTags.push(keepName);
-          changed = true;
-        }
-        if (changed) await saveEntry(en);
-      }
-      closeModal();
-      showToast(`Merged "${dropName}" into "${keepName}"`);
-      render();
-    })();
-  }
-  if (t.matches('[data-detach-image-entry]')) {
-    const entryId = t.getAttribute('data-detach-image-entry');
-    const src = t.getAttribute('data-detach-image-src');
-    (async () => {
-      const entry = getEntry(entryId);
-      if (!entry) return;
-      const idx = (entry.screencaps || []).indexOf(src);
-      if (idx === -1) return;
-      entry.screencaps.splice(idx, 1);
-      // Don't delete the underlying Drive file here — the same image may
-      // still be attached to other reads (that's the whole point of this
-      // feature), so only this entry's local reference is removed.
-      if (entry.screencapDriveIds && entry.screencapDriveIds[idx]) {
-        entry.screencapDriveIds.splice(idx, 1);
-      }
-      await saveEntry(entry);
-      showToast(`Removed from "${entry.title}"`);
-      openImageAttachmentsModal(src);
-    })();
-  }
-  if (t.matches('[data-attach-image-to-entry]')) {
-    const entryId = t.getAttribute('data-attach-image-to-entry');
-    const src = t.getAttribute('data-attach-image-src');
-    (async () => {
-      const entry = getEntry(entryId);
-      if (!entry) return;
-      entry.screencaps = entry.screencaps || [];
-      if (!entry.screencaps.includes(src)) entry.screencaps.push(src);
-      await saveEntry(entry);
-      showToast(`Attached to "${entry.title}"`);
-      openImageAttachmentsModal(src);
-    })();
-  }
-  if (t.matches('[data-toggle-use-as-reaction]')) {
-    const src = t.getAttribute('data-toggle-use-as-reaction');
-    (async () => {
-      const existing = ALL_REACTIONS.find((r) => r.dataUrl === src);
-      if (existing) {
-        await deleteReaction(existing.id);
-        showToast('Removed from Reactions');
-      } else {
-        const reaction = { id: uid('reaction'), dataUrl: src, hash: await hashDataUrl(src), mediaType: 'image', moodTags: [], note: '', createdAt: new Date().toISOString() };
-        await saveReaction(reaction);
-        showToast('Added to Reactions');
-      }
-      renderScreencapLightbox(src);
-    })();
-  }
-  if (t.matches('[data-create-reaction-group]')) {
-    const input = document.getElementById('new-group-title-input');
-    const title = (input ? input.value : '').trim();
-    if (title) {
-      const group = { id: 'grp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title };
-      REACTION_GROUPS.push(group);
-      idbPut(STORE_META, { key: 'reactionGroups', value: REACTION_GROUPS });
-      pushMetaField('reactionGroups', REACTION_GROUPS);
-      MEME_STATE.groupFilter = group.id;
-      closeModal();
-      render();
-    }
-  }
-  if (t.matches('[data-meme-toggle-group]')) {
+  if (t.matches('[data-meme-toggle-mood]')) {
     const id = t.getAttribute('data-meme-id');
-    const groupId = t.getAttribute('data-meme-toggle-group');
+    const mood = t.getAttribute('data-meme-toggle-mood');
     const r = ALL_REACTIONS.find((x) => x.id === id);
     if (r) {
-      const ids = reactionGroupIds(r).slice();
-      const idx = ids.indexOf(groupId);
-      if (idx === -1) ids.push(groupId); else ids.splice(idx, 1);
-      r.groupIds = ids;
+      r.moodTags = r.moodTags || [];
+      if (r.moodTags.includes(mood)) r.moodTags = r.moodTags.filter((m) => m !== mood);
+      else r.moodTags.push(mood);
       saveReaction(r);
       openMemeEditModal(id);
     }
@@ -4615,6 +4151,90 @@ function cancelBulkMatchSweep() {
   BULK_SWEEP.cancel = true;
 }
 
+// One-time (or run-whenever-needed) backfill: images added BEFORE Drive
+// storage existed — or added while Drive was disconnected — only ever got
+// saved locally (IndexedDB) on the device that uploaded them, with no
+// *DriveId set. That's exactly why a device with a fresh sign-in (like a
+// laptop) never receives them: hydrateDriveImages() only pulls a copy down
+// when the Firestore doc HAS a Drive id to fetch, and this device never
+// pushed one up. This walks every entry/reaction, uploads anything still
+// local-only, and saves the resulting id so it finally syncs.
+const IMAGE_BACKFILL = { running: false, checked: 0, total: 0, uploaded: 0, cancel: false };
+function imageBackfillCandidates() {
+  const tasks = [];
+  ALL_ENTRIES.forEach((e) => {
+    if (e.coverUrl && !e.coverDriveId) tasks.push({ kind: 'cover', entry: e });
+    if (e.semi && e.semi.photo && !e.semi.photoDriveId) tasks.push({ kind: 'semi', entry: e });
+    if (e.uke && e.uke.photo && !e.uke.photoDriveId) tasks.push({ kind: 'uke', entry: e });
+    if (e.screencaps && e.screencaps.length > (e.screencapDriveIds || []).length) tasks.push({ kind: 'screencaps', entry: e });
+  });
+  ALL_REACTIONS.forEach((r) => {
+    if (r.dataUrl && !r.driveId) tasks.push({ kind: 'reaction', reaction: r });
+  });
+  return tasks;
+}
+async function runImageBackfill() {
+  if (IMAGE_BACKFILL.running) return;
+  if (!driveTokenValid()) { showToast('Reconnect Google Drive first, then try this again.'); return; }
+  const candidates = imageBackfillCandidates();
+  if (!candidates.length) { showToast('Nothing to upload — every image already has a Drive copy.'); return; }
+  IMAGE_BACKFILL.running = true;
+  IMAGE_BACKFILL.checked = 0;
+  IMAGE_BACKFILL.total = candidates.length;
+  IMAGE_BACKFILL.uploaded = 0;
+  IMAGE_BACKFILL.cancel = false;
+  if (STATE.view === 'database') render();
+  for (const t of candidates) {
+    if (IMAGE_BACKFILL.cancel) break;
+    if (!driveTokenValid()) {
+      // Token lapsed mid-run (redirect/reconnect isn't available from
+      // inside this loop) — stop cleanly instead of burning through the
+      // rest of the list failing silently.
+      showToast('Google Drive disconnected mid-upload — reconnect and run this again to finish the rest.');
+      break;
+    }
+    try {
+      if (t.kind === 'cover') {
+        const id = await tryUploadImageToDrive(t.entry.coverUrl, `${t.entry.id}-cover.jpg`);
+        if (id) { t.entry.coverDriveId = id; await saveEntry(t.entry); IMAGE_BACKFILL.uploaded++; }
+      } else if (t.kind === 'semi') {
+        const id = await tryUploadImageToDrive(t.entry.semi.photo, `${t.entry.id}-semi-photo.jpg`);
+        if (id) { t.entry.semi.photoDriveId = id; await saveEntry(t.entry); IMAGE_BACKFILL.uploaded++; }
+      } else if (t.kind === 'uke') {
+        const id = await tryUploadImageToDrive(t.entry.uke.photo, `${t.entry.id}-uke-photo.jpg`);
+        if (id) { t.entry.uke.photoDriveId = id; await saveEntry(t.entry); IMAGE_BACKFILL.uploaded++; }
+      } else if (t.kind === 'screencaps') {
+        const e = t.entry;
+        e.screencapDriveIds = e.screencapDriveIds || [];
+        for (let i = e.screencapDriveIds.length; i < e.screencaps.length; i++) {
+          if (IMAGE_BACKFILL.cancel || !driveTokenValid()) break;
+          const id = await tryUploadImageToDrive(e.screencaps[i], `${e.id}-screencap-${Date.now()}-${i}.jpg`);
+          if (id) { e.screencapDriveIds.push(id); IMAGE_BACKFILL.uploaded++; }
+          await new Promise((resolve) => setTimeout(resolve, 350));
+        }
+        await saveEntry(e);
+      } else if (t.kind === 'reaction') {
+        const id = await tryUploadImageToDrive(t.reaction.dataUrl, `reaction-${t.reaction.id}.jpg`);
+        if (id) { t.reaction.driveId = id; await saveReaction(t.reaction); IMAGE_BACKFILL.uploaded++; }
+      }
+    } catch (err) {
+      console.error('Image backfill item failed:', err);
+    }
+    IMAGE_BACKFILL.checked++;
+    if (STATE.view === 'database' && IMAGE_BACKFILL.checked % 2 === 0) render();
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  }
+  const wasCancelled = IMAGE_BACKFILL.cancel;
+  IMAGE_BACKFILL.running = false;
+  if (STATE.view === 'database') render();
+  showToast(wasCancelled || !driveTokenValid()
+    ? `Stopped — uploaded ${IMAGE_BACKFILL.uploaded} of ${IMAGE_BACKFILL.checked} checked`
+    : `Done — uploaded ${IMAGE_BACKFILL.uploaded} image${IMAGE_BACKFILL.uploaded === 1 ? '' : 's'} to Drive`);
+}
+function cancelImageBackfill() {
+  IMAGE_BACKFILL.cancel = true;
+}
+
 // A stale service worker used to be able to get permanently stuck in the
 // "waiting" state — new code would deploy and pass CI, but the browser tab
 // kept being served by the old cached copy indefinitely (even after a hard
@@ -4662,29 +4282,6 @@ async function boot() {
     if (savedUserHidden && Array.isArray(savedUserHidden.value)) USER_HIDDEN_TAG_KEYS = new Set(savedUserHidden.value);
     const savedIgnoredSugg = await idbGet(STORE_META, 'ignoredTagSuggestions');
     if (savedIgnoredSugg && Array.isArray(savedIgnoredSugg.value)) IGNORED_TAG_SUGGESTIONS = new Set(savedIgnoredSugg.value);
-    const savedReactionGroups = await idbGet(STORE_META, 'reactionGroups');
-    if (savedReactionGroups && Array.isArray(savedReactionGroups.value)) REACTION_GROUPS = savedReactionGroups.value;
-    const DEFAULT_MOOD_GROUPS = [
-      { id: 'mood-angry', title: '😡 Angry' },
-      { id: 'mood-funny', title: '😂 Funny' },
-      { id: 'mood-horny', title: '🍆 Horny' },
-      { id: 'mood-confused', title: '😵\u200d💫 Confused' },
-    ];
-    let reactionGroupsChanged = false;
-    DEFAULT_MOOD_GROUPS.forEach((dg) => {
-      if (!REACTION_GROUPS.some((g) => g.id === dg.id)) { REACTION_GROUPS.push(dg); reactionGroupsChanged = true; }
-    });
-    const legacyMoodToGroupId = { angry: 'mood-angry', funny: 'mood-funny', horny: 'mood-horny', confused: 'mood-confused' };
-    ALL_REACTIONS.forEach((r) => {
-      if (!r.groupId && r.moodTags && r.moodTags.length) {
-        const gid = legacyMoodToGroupId[r.moodTags[0]];
-        if (gid) { r.groupId = gid; idbPut(STORE_REACTIONS, r); }
-      }
-    });
-    if (reactionGroupsChanged) {
-      idbPut(STORE_META, { key: 'reactionGroups', value: REACTION_GROUPS });
-      pushMetaField('reactionGroups', REACTION_GROUPS);
-    }
     if ('serviceWorker' in navigator) {
       setupAutoUpdatingServiceWorker();
     }
@@ -4693,12 +4290,41 @@ async function boot() {
     // reconnectGoogleDrive()) — onAuthStateChanged alone tells us a user is
     // signed in, but only getRedirectResult() hands back the Google OAuth
     // credential/access token needed for Drive calls.
-    // Drive access tokens are now minted directly via Google Identity
-    // Services (see requestDriveAccessToken()/reconnectGoogleDrive() below) —
-    // the old getRedirectResult()-based flow that used to live here depended
-    // on a cross-origin relay through the Firebase authDomain that modern
-    // browsers' third-party storage partitioning silently breaks (confirmed
-    // live: it always came back with no user/credential). Retired.
+    let wasReconnect = false;
+    try { wasReconnect = localStorage.getItem('driveReconnectPending') === '1'; } catch (e) {}
+    try {
+      const redirectResult = await fbAuth.getRedirectResult();
+      console.log('[drive-reconnect] getRedirectResult ->', redirectResult);
+      if (redirectResult && redirectResult.user) {
+        const credential = firebase.auth.GoogleAuthProvider.credentialFromResult(redirectResult);
+        console.log('[drive-reconnect] credentialFromResult ->', credential);
+        if (credential && credential.accessToken) {
+          DRIVE_ACCESS_TOKEN = credential.accessToken;
+          DRIVE_TOKEN_EXPIRES_AT = Date.now() + 55 * 60 * 1000;
+          DRIVE_NEEDS_RECONNECT = false;
+          if (wasReconnect) showToast('Reconnected to Google Drive.');
+        } else if (wasReconnect) {
+          // Signed back in (redirectResult.user is set) but Google/Firebase
+          // didn't hand back an OAuth access token on the credential — this
+          // is a real, distinct failure mode (as opposed to no toast at all)
+          // so surface it instead of leaving the banner unexplained.
+          showToast('Signed in, but no Drive access token came back — try Reconnect again.');
+        }
+      } else if (wasReconnect) {
+        // We navigated back from Google (driveReconnectPending was set) but
+        // getRedirectResult() came back completely empty — most likely
+        // cause is third-party storage/cookie restrictions blocking the
+        // cross-origin relay between this origin and the authDomain
+        // (yaoi-journal.firebaseapp.com) that Firebase's redirect flow
+        // depends on to reconstruct the result after the round trip.
+        showToast("Reconnect didn't go through — no result came back from Google.");
+      }
+    } catch (err) {
+      console.error('Redirect sign-in failed:', err);
+      if (wasReconnect) showToast('Reconnect failed: ' + (err && (err.code || err.message) || 'unknown error'));
+      if (err && err.code !== 'auth/no-auth-event') AUTH_ERROR = authErrorMessage(err);
+    }
+    try { localStorage.removeItem('driveReconnectPending'); } catch (e) {}
     fbAuth.onAuthStateChanged(async (user) => {
       CURRENT_USER = user;
       if (user) {
@@ -4708,7 +4334,6 @@ async function boot() {
           await syncReactionsWithFirestore(user);
           await pullMetaState();
           startFirestoreListener(user);
-          hydrateAllMissingDriveImages(false).catch(() => {});
         } catch (err) {
           console.error('Firestore sync failed:', err);
           showToast("Couldn't sync — check your connection");
