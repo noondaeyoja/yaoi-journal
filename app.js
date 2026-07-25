@@ -945,9 +945,12 @@ function renderAuthScreen() {
         <div class="auth-title">💜 Yaoi Journal</div>
         <div class="auth-sub">Sign in with Google to keep your journal — and your images, stored in your own Google Drive — in sync between your phone and desktop.</div>
         ${AUTH_ERROR ? `<div class="auth-error">${escapeHtml(AUTH_ERROR)}</div>` : ''}
-        <button class="btn-primary auth-submit-btn" data-google-signin="1" ${AUTH_BUSY ? 'disabled' : ''}>
-          ${AUTH_BUSY ? 'Please wait…' : 'Continue with Google'}
-        </button>
+        ${AUTH_BUSY ? `<button class="btn-primary auth-submit-btn" disabled>Please wait…</button>` : `
+          <div id="gsi-button-container" style="display:flex;justify-content:center;margin-top:6px;min-height:44px;"></div>
+          <div style="text-align:center;">
+            <span data-google-signin-fallback="1" style="font-size:11.5px;color:var(--text-dim);text-decoration:underline;cursor:pointer;">Button not showing? Tap here</span>
+          </div>
+        `}
         <p style="font-size:11px;color:var(--text-dim);text-align:center;margin-top:12px;line-height:1.5;">
           You'll be asked to grant access to a private app folder in your Drive — this app can only see files it creates itself, nothing else in your Drive.
         </p>
@@ -957,16 +960,77 @@ function renderAuthScreen() {
 
 function attachAuthHandlers() {
   const root = document.getElementById('view-root');
-  const googleBtn = root.querySelector('[data-google-signin]');
-  if (googleBtn) googleBtn.onclick = signInWithGoogle;
+  const fallback = root.querySelector('[data-google-signin-fallback]');
+  if (fallback) fallback.onclick = signInWithGoogle;
+  if (!AUTH_BUSY) mountGisSignInButton();
+}
+
+// Renders Google's own "Sign in with Google" widget into #gsi-button-container.
+// This is the fix for mobile/standalone-PWA sign-in stalling: it does NOT go
+// through Firebase's signInWithPopup/signInWithRedirect at all (see the big
+// comment above isStandalonePWA()/GOOGLE_OAUTH_CLIENT_ID for the underlying
+// cross-origin-relay bug those depend on). Instead Google's own script talks
+// directly to accounts.google.com and hands back an ID token via
+// handleGisIdentityCredential(), which we exchange for a Firebase credential
+// with signInWithCredential() — no popup window, no redirect navigation, no
+// authDomain relay, so it isn't exposed to that failure mode on a standalone
+// home-screen PWA the way signInWithRedirect was.
+let GIS_IDENTITY_INITIALIZED = false;
+function mountGisSignInButton(attempt) {
+  attempt = attempt || 0;
+  const container = document.getElementById('gsi-button-container');
+  if (!container) return; // auth screen isn't mounted (e.g. already signed in)
+  if (!window.google || !google.accounts || !google.accounts.id) {
+    // GIS's script tag is `async defer`, so on a cold load it may not be
+    // ready yet the first time the auth screen renders. Poll briefly rather
+    // than giving up — the "Tap here" fallback link covers the case where it
+    // never loads at all (e.g. blocked by a content blocker).
+    if (attempt < 20) setTimeout(() => mountGisSignInButton(attempt + 1), 250);
+    return;
+  }
+  if (!GIS_IDENTITY_INITIALIZED) {
+    google.accounts.id.initialize({
+      client_id: GOOGLE_OAUTH_CLIENT_ID,
+      callback: handleGisIdentityCredential,
+      auto_select: false,
+    });
+    GIS_IDENTITY_INITIALIZED = true;
+  }
+  container.innerHTML = '';
+  google.accounts.id.renderButton(container, {
+    type: 'standard', theme: 'filled_blue', size: 'large', shape: 'pill',
+    text: 'continue_with', logo_alignment: 'center', width: 280,
+  });
+}
+
+async function handleGisIdentityCredential(response) {
+  AUTH_BUSY = true; AUTH_ERROR = ''; render();
+  try {
+    const cred = firebase.auth.GoogleAuthProvider.credential(response.credential);
+    await fbAuth.signInWithCredential(cred);
+    // onAuthStateChanged (boot()) takes it from here and swaps off the auth
+    // screen. While we're still close to this click/tap gesture, also try to
+    // grab a Drive token — best effort, the Reconnect banner covers failure.
+    try {
+      const resp = await requestDriveToken(true);
+      DRIVE_ACCESS_TOKEN = resp.access_token;
+      DRIVE_TOKEN_EXPIRES_AT = Date.now() + (Number(resp.expires_in || 3300) * 1000) - 60000;
+      DRIVE_NEEDS_RECONNECT = false;
+    } catch (driveErr) {
+      console.error('Initial Drive token request failed:', driveErr);
+    }
+  } catch (err) {
+    AUTH_ERROR = authErrorMessage(err);
+  } finally {
+    AUTH_BUSY = false;
+    render();
+  }
 }
 
 // Installed/home-screen PWAs (especially iOS Safari "Add to Home Screen" and
 // most Android WebAPK installs) frequently can't open or return a real
 // signInWithPopup() window — there's no separate browser chrome to host it,
-// so the popup silently fails to appear. signInWithRedirect() (full-page
-// navigate to Google and back) is the standard, reliable fallback for that
-// context, so we detect standalone mode and use redirect there.
+// so the popup silently fails to appear.
 function isStandalonePWA() {
   return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
     window.navigator.standalone === true;
@@ -1018,17 +1082,20 @@ function requestDriveToken(promptConsent) {
   });
 }
 
+// Fallback path only — the primary sign-in control is Google's own rendered
+// button (mountGisSignInButton()/handleGisIdentityCredential() above), wired
+// up because it was confirmed to actually work in a standalone/home-screen
+// PWA where signInWithRedirect() previously stalled (same cross-origin
+// authDomain relay bug as the old Drive-reconnect failure — see the comment
+// above GOOGLE_OAUTH_CLIENT_ID). This function is now only reached via the
+// small "Button not showing? Tap here" link, for the rare case GIS's script
+// itself fails to load (e.g. blocked by a content/ad blocker).
 async function signInWithGoogle() {
   AUTH_BUSY = true; AUTH_ERROR = ''; render();
   const provider = new firebase.auth.GoogleAuthProvider();
   if (isStandalonePWA()) {
     try {
       await fbAuth.signInWithRedirect(provider);
-      // Page navigates away here; onAuthStateChanged (boot()) picks up the
-      // signed-in user on return. The Drive token itself still needs one
-      // explicit tap on the "Reconnect Google Drive" banner afterward,
-      // since GIS's popup needs a fresh user gesture we don't have right
-      // after a page load.
       return;
     } catch (err) {
       AUTH_ERROR = authErrorMessage(err);
