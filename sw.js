@@ -1,4 +1,4 @@
-const CACHE_NAME = 'yaoi-journal-v18';
+const CACHE_NAME = 'yaoi-journal-v19';
 const SHELL_FILES = [
   './',
   './index.html',
@@ -54,8 +54,15 @@ self.addEventListener('fetch', (event) => {
     return;
   }
   if (isNetworkFirst(url)) {
+    // `cache: 'no-store'` here is deliberate and important: without it, this
+    // "network-first" fetch still goes through the browser's normal HTTP
+    // cache, so a still-fresh (per GitHub Pages' Cache-Control header)
+    // cached response can get served with NO actual network round-trip —
+    // meaning a brand new deploy can silently not show up for several
+    // minutes even though this code says "network-first". Forcing no-store
+    // guarantees every load of the app shell actually hits the network.
     event.respondWith(
-      fetch(event.request).then((resp) => {
+      fetch(event.request, { cache: 'no-store' }).then((resp) => {
         const copy = resp.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy)).catch(() => {});
         return resp;
