@@ -291,12 +291,15 @@ function pushReactionToFirestore(reaction) {
   if (!col) return;
   // Once it's up on Drive, the base64 copy doesn't need to also ride along
   // in Firestore — keeps this doc tiny regardless of image size.
-  const safe = (reaction.driveId && reaction.dataUrl) ? { ...reaction, dataUrl: null } : reaction;
-  const json = JSON.stringify(safe);
-  if (json.length > 900 * 1024) {
-    console.error(`Reaction image too large to sync to Firestore (kept locally on this device only).`);
-    showToast(`That reaction image is too big to back up to the cloud — kept on this device only.`);
-    return;
+  let safe = (reaction.driveId && reaction.dataUrl) ? { ...reaction, dataUrl: null } : reaction;
+  if (JSON.stringify(safe).length > 900 * 1024) {
+    // Still too big — Drive upload hasn't finished or succeeded yet. Sync
+    // the record now with the image stripped instead of losing it entirely;
+    // the image itself backfills via Drive once the upload completes/retries.
+    safe = { ...safe, dataUrl: null, reactionImageTooLargeForSync: true };
+    if (!reaction.driveId) {
+      showToast(`That reaction image is large — backing it up via Drive in the background.`);
+    }
   }
   col.doc(reaction.id).set(safe).catch((err) => {
     console.error('Reaction sync failed:', err);
@@ -754,10 +757,26 @@ async function hydrateDriveReaction(reaction) {
 // no local copy yet and re-fetches it. Called quietly once per sign-in, and
 // also exposed as a "Sync images from Drive" button in Database so it can
 // be re-run on demand.
+function reactionNeedsDriveUpload(r) {
+  return !!(r.dataUrl && !r.driveId);
+}
+
+async function uploadPendingReaction(reaction) {
+  if (!reactionNeedsDriveUpload(reaction)) return;
+  const ext = reaction.mediaType === 'video' ? 'mp4' : (reaction.mediaType === 'gif' ? 'gif' : 'jpg');
+  const fileId = await tryUploadImageToDrive(reaction.dataUrl, `reaction-${reaction.id}.${ext}`);
+  if (!fileId) return;
+  const fresh = ALL_REACTIONS.find((r) => r.id === reaction.id);
+  if (!fresh) return;
+  fresh.driveId = fileId;
+  await saveReaction(fresh);
+}
+
 async function hydrateAllMissingDriveImages(notify) {
   const entryTargets = ALL_ENTRIES.filter(entryNeedsImageHydration);
   const reactionTargets = ALL_REACTIONS.filter((r) => r.driveId && !r.dataUrl);
-  const total = entryTargets.length + reactionTargets.length;
+  const reactionUploadTargets = ALL_REACTIONS.filter(reactionNeedsDriveUpload);
+  const total = entryTargets.length + reactionTargets.length + reactionUploadTargets.length;
   if (!total) {
     if (notify) showToast('Everything is already synced from Drive.');
     return { total: 0, succeeded: 0 };
@@ -765,9 +784,10 @@ async function hydrateAllMissingDriveImages(notify) {
   if (notify) showToast(`Syncing ${total} item${total === 1 ? '' : 's'} from Drive…`);
   await Promise.all(entryTargets.map((e) => hydrateDriveImages(e).catch((err) => console.error('Hydrate failed for', e.title, err))));
   await Promise.all(reactionTargets.map((r) => hydrateDriveReaction(r).catch((err) => console.error('Reaction hydrate failed:', err))));
+  await Promise.all(reactionUploadTargets.map((r) => uploadPendingReaction(r).catch((err) => console.error('Reaction upload failed:', err))));
   // Re-check afterward rather than assuming success — a download can fail
   // silently (e.g. Drive needs reconnecting), so report what actually landed.
-  const stillMissing = ALL_ENTRIES.filter(entryNeedsImageHydration).length + ALL_REACTIONS.filter((r) => r.driveId && !r.dataUrl).length;
+  const stillMissing = ALL_ENTRIES.filter(entryNeedsImageHydration).length + ALL_REACTIONS.filter((r) => r.driveId && !r.dataUrl).length + ALL_REACTIONS.filter(reactionNeedsDriveUpload).length;
   const succeeded = total - stillMissing;
   render();
   if (notify) {
@@ -2787,7 +2807,7 @@ function renderDatabase() {
   const rows = ALL_ENTRIES.slice().sort((a, b) => a.title.localeCompare(b.title));
   const reviewCount = ALL_ENTRIES.filter(needsReview).length;
   const dupCount = findDuplicateGroups().length;
-  const missingImagesCount = ALL_ENTRIES.filter(entryNeedsImageHydration).length + ALL_REACTIONS.filter((r) => r.driveId && !r.dataUrl).length;
+  const missingImagesCount = ALL_ENTRIES.filter(entryNeedsImageHydration).length + ALL_REACTIONS.filter((r) => r.driveId && !r.dataUrl).length + ALL_REACTIONS.filter(reactionNeedsDriveUpload).length;
   const cols = ['Title', 'Format', 'Shelf', 'Author', 'Tags', 'Semi Flag', 'Uke Flag', 'Smut', 'Quality', 'Favorite', 'Notes'];
   const trs = rows.map((e) => `
     <tr>
