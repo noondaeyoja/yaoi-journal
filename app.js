@@ -1500,12 +1500,12 @@ function renderHome() {
       if (group.length === 0) return;
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
       body += `<div class="section-title">${escapeHtml(shelf)} <span style="opacity:.6">(${group.length})</span></div>`;
-      body += scrollRow(rowId, group.map(renderCoverCard).join(''));
+      body += scrollRow(rowId, group.map((e) => renderCoverCard(e)).join(''));
     });
     if (!body) body = `<div class="empty-state">Nothing here yet. Tap + to add a ${STATE.format === 'reading' ? 'manhwa/manga' : 'anime'}.</div>`;
   } else {
     body = entries.length
-      ? `<div class="cover-grid">${entries.map(renderCoverCard).join('')}</div>`
+      ? `<div class="cover-grid">${entries.map((e) => renderCoverCard(e)).join('')}</div>`
       : `<div class="empty-state">No matches. Try clearing filters.</div>`;
   }
 
@@ -1755,7 +1755,7 @@ function renderTagEntries() {
   const t = TAG_ENTRIES_FILTER;
   const entries = t ? ALL_ENTRIES.filter((e) => (e.tags || []).concat(e.customTags || []).includes(t)) : [];
   const body = entries.length
-    ? `<div class="cover-grid">${entries.map(renderCoverCard).join('')}</div>`
+    ? `<div class="cover-grid">${entries.map((e) => renderCoverCard(e)).join('')}</div>`
     : `<div class="empty-state">No entries have this tag.</div>`;
   return `
     <div class="app-header">
@@ -2176,9 +2176,67 @@ function renderMemeGrid() {
     : `<div class="empty-state">No reactions match. ${MEME_STATE.moodFilter || MEME_STATE.search ? 'Try clearing the filter/search.' : 'Tap "Add" to upload your first meme.'}</div>`;
 }
 
+// Possible-Duplicates for the Reactions library — same perceptual (average)
+// hash approach as the Images tab's duplicate scanner (see perceptualHash()/
+// hammingDistance() above), just scoped to ALL_REACTIONS instead of journal
+// entry images. Compares by actual image content, not file size, since a
+// hash comparison catches the same picture saved/compressed differently in
+// a way file size alone can't.
+let MEME_DUP_GROUPS = null; // null = not scanned yet this session
+let MEME_DUP_SCANNING = false;
+let MEME_SHOWING_DUPLICATES = false;
+async function scanForMemeDuplicates() {
+  MEME_DUP_SCANNING = true;
+  render();
+  // Anything still waiting on a Drive download (see hydrateMissingReactions())
+  // has no dataUrl yet to hash — skip those for now rather than block the
+  // whole scan on them; re-running the scan later will pick them up.
+  const items = ALL_REACTIONS.filter((r) => r.dataUrl);
+  const withHashes = [];
+  for (const r of items) {
+    const hash = await perceptualHash(r.dataUrl);
+    withHashes.push({ r, hash });
+  }
+  const groups = [];
+  const used = new Set();
+  for (let i = 0; i < withHashes.length; i++) {
+    if (used.has(i) || !withHashes[i].hash) continue;
+    const group = [withHashes[i].r];
+    used.add(i);
+    for (let j = i + 1; j < withHashes.length; j++) {
+      if (used.has(j) || !withHashes[j].hash) continue;
+      if (hammingDistance(withHashes[i].hash, withHashes[j].hash) <= 6) {
+        group.push(withHashes[j].r);
+        used.add(j);
+      }
+    }
+    if (group.length > 1) groups.push(group);
+  }
+  MEME_DUP_GROUPS = groups;
+  MEME_DUP_SCANNING = false;
+  render();
+}
+
+function memeMainBody() {
+  if (!MEME_SHOWING_DUPLICATES) return renderMemeGrid();
+  if (MEME_DUP_SCANNING) return `<div class="empty-state">Scanning ${ALL_REACTIONS.length} reactions for duplicates…</div>`;
+  if (MEME_DUP_GROUPS === null) return `<div style="padding:8px 0;"><button class="btn-primary" style="width:100%;" data-scan-meme-duplicates="1">🔍 Scan for possible duplicates</button></div>`;
+  if (!MEME_DUP_GROUPS.length) return `<div class="empty-state">No possible duplicates found. 🎉</div><button class="ref-btn" style="width:100%;" data-scan-meme-duplicates="1">Scan again</button>`;
+  return `<button class="ref-btn" style="width:100%;margin-bottom:10px;" data-scan-meme-duplicates="1">Scan again</button>` +
+    MEME_DUP_GROUPS.map((group) => `
+      <div class="panel">
+        <div class="panel-title">Possible duplicate (${group.length} reactions)</div>
+        <div class="image-masonry">${group.map((r) => `
+          <div class="masonry-item" data-open-meme="${r.id}">
+            <img src="${r.dataUrl}" alt="" loading="lazy">
+            <button class="del" data-del-reaction="${r.id}">✕</button>
+          </div>`).join('')}</div>
+      </div>`).join('');
+}
+
 function renderMemeLibraryInPlace() {
   const main = document.querySelector('#view-root main');
-  if (main) main.innerHTML = renderMemeGrid();
+  if (main) main.innerHTML = memeMainBody();
   attachMemeGridHandlers();
 }
 
@@ -2191,9 +2249,13 @@ function renderMemeLibrary() {
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${ALL_REACTIONS.length} meme${ALL_REACTIONS.length === 1 ? '' : 's'} saved${untaggedCount ? ` · ${untaggedCount} untagged` : ''}.</div>
       <label class="upload-btn" style="margin-bottom:10px;">📎 Add reaction(s)<input type="file" accept="image/*" multiple id="meme-upload-input"></label>
       <div class="search-bar" style="margin-bottom:8px;"><span>🔍</span><input type="search" id="meme-search-input" placeholder="Search captions/keywords..." value="${escapeHtml(MEME_STATE.search)}"></div>
-      <div class="rating-pick-row">${moodChips}<span class="rating-pick-icon flag-filter-icon" data-meme-add-mood="1" title="Create a new mood group">➕</span></div>
+      <div class="tagmgr-tabs" style="margin-bottom:8px;">
+        <button class="tagmgr-tab ${!MEME_SHOWING_DUPLICATES ? 'active' : ''}" data-meme-tab="grid">Gallery</button>
+        <button class="tagmgr-tab ${MEME_SHOWING_DUPLICATES ? 'active' : ''}" data-meme-tab="duplicates">Possible Duplicates</button>
+      </div>
+      ${!MEME_SHOWING_DUPLICATES ? `<div class="rating-pick-row">${moodChips}<span class="rating-pick-icon flag-filter-icon" data-meme-add-mood="1" title="Create a new mood group">➕</span></div>` : ''}
     </div>
-    <main>${renderMemeGrid()}</main>
+    <main>${memeMainBody()}</main>
     ${renderBottomNav('meme')}
   `;
 }
@@ -2202,6 +2264,11 @@ function attachMemeGridHandlers() {
   document.querySelectorAll('[data-open-meme]').forEach((el) => {
     el.onclick = () => openMemeEditModal(el.getAttribute('data-open-meme'));
   });
+  document.querySelectorAll('[data-meme-tab]').forEach((el) => {
+    el.onclick = () => { MEME_SHOWING_DUPLICATES = el.getAttribute('data-meme-tab') === 'duplicates'; render(); };
+  });
+  const scanMemeDupBtn = document.querySelector('[data-scan-meme-duplicates]');
+  if (scanMemeDupBtn) scanMemeDupBtn.onclick = () => scanForMemeDuplicates();
 }
 
 function openMemeEditModal(id) {
@@ -2238,7 +2305,15 @@ function openMemeEditModal(id) {
 async function addReactionFiles(fileList) {
   const added = [];
   for (const file of fileList) {
-    const dataUrl = await fileToCompressedDataUrl(file, 800);
+    // GIFs (and animated WebP) lose their animation the moment they get
+    // redrawn onto a <canvas> and re-encoded — fileToCompressedDataUrl()
+    // does exactly that, which is why every reaction used to end up a
+    // static single frame. Keep the original bytes untouched for anything
+    // animated so the <img> tag can autoplay it natively, both in the
+    // gallery grid and in the single-reaction edit view; only flatten/
+    // downscale the normal static-image case.
+    const isAnimated = file.type === 'image/gif' || file.type === 'image/webp';
+    const dataUrl = isAnimated ? await fileToDataUrl(file) : await fileToCompressedDataUrl(file, 800);
     const hash = await hashDataUrl(dataUrl);
     const dupe = findReactionByHash(hash);
     if (dupe) {
@@ -2247,7 +2322,8 @@ async function addReactionFiles(fileList) {
     const reaction = { id: uid('reaction'), dataUrl, hash, moodTags: [], note: '', createdAt: new Date().toISOString() };
     await saveReaction(reaction);
     added.push(reaction);
-    tryUploadImageToDrive(dataUrl, `reaction-${reaction.id}.jpg`).then((fileId) => {
+    const ext = isAnimated ? (file.type === 'image/gif' ? 'gif' : 'webp') : 'jpg';
+    tryUploadImageToDrive(dataUrl, `reaction-${reaction.id}.${ext}`).then((fileId) => {
       if (!fileId) return;
       const fresh = ALL_REACTIONS.find((r) => r.id === reaction.id);
       if (!fresh) return;
@@ -4136,12 +4212,12 @@ function renderHomeInPlace() {
       if (group.length === 0) return;
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
       body += `<div class="section-title">${escapeHtml(shelf)} <span style="opacity:.6">(${group.length})</span></div>`;
-      body += scrollRow(rowId, group.map(renderCoverCard).join(''));
+      body += scrollRow(rowId, group.map((e) => renderCoverCard(e)).join(''));
     });
     if (!body) body = `<div class="empty-state">Nothing here yet.</div>`;
   } else {
     body = entries.length
-      ? `<div class="cover-grid">${entries.map(renderCoverCard).join('')}</div>`
+      ? `<div class="cover-grid">${entries.map((e) => renderCoverCard(e)).join('')}</div>`
       : `<div class="empty-state">No matches. Try clearing filters.</div>`;
   }
   if (main) {
