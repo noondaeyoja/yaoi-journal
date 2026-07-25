@@ -695,6 +695,16 @@ async function tryUploadImageToDrive(dataUrl, filename) {
 // Every existing render path already expects e.coverUrl/screencaps/photo to
 // just be data: URLs, so this is the only place that needs to know Drive
 // exists — nothing else has to change.
+// True if this entry references a Drive file (cover/semi/uke/screencaps)
+// that hasn't been downloaded to this device yet.
+function entryNeedsImageHydration(e) {
+  if (e.coverDriveId && !e.coverUrl) return true;
+  if (e.semi && e.semi.photoDriveId && !e.semi.photo) return true;
+  if (e.uke && e.uke.photoDriveId && !e.uke.photo) return true;
+  if (e.screencapDriveIds && e.screencapDriveIds.length && (!e.screencaps || e.screencaps.length < e.screencapDriveIds.length)) return true;
+  return false;
+}
+
 async function hydrateDriveImages(entry) {
   if (!entry) return;
   const jobs = [];
@@ -736,6 +746,28 @@ async function hydrateDriveReaction(reaction) {
   } catch (err) {
     console.error('Reaction hydrate failed:', err);
   }
+}
+
+// Manual + automatic safety net for when a background Drive download
+// silently failed earlier (e.g. the Drive connection dropped mid-sync) and
+// was never retried — rescans every entry/reaction for a Drive file id with
+// no local copy yet and re-fetches it. Called quietly once per sign-in, and
+// also exposed as a "Sync images from Drive" button in Database so it can
+// be re-run on demand.
+async function hydrateAllMissingDriveImages(notify) {
+  const entryTargets = ALL_ENTRIES.filter(entryNeedsImageHydration);
+  const reactionTargets = ALL_REACTIONS.filter((r) => r.driveId && !r.dataUrl);
+  const total = entryTargets.length + reactionTargets.length;
+  if (!total) {
+    if (notify) showToast('Everything is already synced from Drive.');
+    return total;
+  }
+  if (notify) showToast(`Syncing ${total} item${total === 1 ? '' : 's'} from Drive…`);
+  await Promise.all(entryTargets.map((e) => hydrateDriveImages(e).catch((err) => console.error('Hydrate failed for', e.title, err))));
+  await Promise.all(reactionTargets.map((r) => hydrateDriveReaction(r).catch((err) => console.error('Reaction hydrate failed:', err))));
+  render();
+  if (notify) showToast(`Synced ${total} item${total === 1 ? '' : 's'} from Drive.`);
+  return total;
 }
 
 // Runs once right after sign-in. If this account has never synced before
@@ -2109,20 +2141,29 @@ function renderScreencapLightbox(src) {
 function openImageAttachmentsModal(dataUrl) {
   const entries = ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(dataUrl));
   const candidates = ALL_ENTRIES.filter((e) => !entryImageUrls(e).includes(dataUrl)).slice().sort((a, b) => a.title.localeCompare(b.title));
-  const resultsHtml = (list) => list.length
-    ? list.slice(0, 30).map((e) => `<button class="ref-btn" style="text-align:left;" data-attach-image-to-entry="${e.id}" data-attach-image-src="${escapeHtml(dataUrl)}">${escapeHtml(e.title)}</button>`).join('')
-    : '<div class="empty-state" style="padding:6px 0;">No matches.</div>';
+  const resultsHtml = (list, query) => {
+    if (!query) return '<div class="empty-state" style="padding:6px 0;font-size:12px;">Type to search…</div>';
+    return list.length
+      ? list.slice(0, 30).map((e) => `<button class="ref-btn" style="text-align:left;" data-attach-image-to-entry="${e.id}" data-attach-image-src="${escapeHtml(dataUrl)}">${escapeHtml(e.title)}</button>`).join('')
+      : '<div class="empty-state" style="padding:6px 0;">No matches.</div>';
+  };
+  const attachedRow = (e) => {
+    const canDetach = (e.screencaps || []).includes(dataUrl);
+    return `<div style="display:flex;align-items:center;gap:6px;">
+      <button class="ref-btn" style="flex:1;text-align:left;" data-goto-entry-from-modal="${e.id}">${escapeHtml(e.title)}</button>
+      ${canDetach ? `<button class="icon-btn" data-detach-image-entry="${e.id}" data-detach-image-src="${escapeHtml(dataUrl)}" title="Remove from this read">✕</button>` : ''}
+    </div>`;
+  };
   openImageLightbox(dataUrl, `
     <div class="lightbox-actions">
       <div class="panel-title" style="margin-top:0;">Attached to</div>
       ${entries.length
-         ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px;">${entries.map((e) => `
-            <button class="ref-btn" style="text-align:left;" data-goto-entry-from-modal="${e.id}">${escapeHtml(e.title)}</button>`).join('')}</div>`
+         ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px;">${entries.map(attachedRow).join('')}</div>`
         : `<div class="empty-state" style="padding:6px 0 14px;">Not attached to any read yet.</div>`}
       <div class="panel-title">Attach to another read</div>
       <input type="text" id="image-attach-search-input" placeholder="Search titles..." style="width:100%;margin-bottom:8px;">
       <div id="image-attach-results" style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow-y:auto;">
-        ${resultsHtml(candidates)}
+        ${resultsHtml(candidates, '')}
       </div>
     </div>`);
   const searchInput = document.getElementById('image-attach-search-input');
@@ -2130,7 +2171,7 @@ function openImageAttachmentsModal(dataUrl) {
     const q = searchInput.value.trim().toLowerCase();
     const filtered = candidates.filter((e) => e.title.toLowerCase().includes(q));
     const resultsEl = document.getElementById('image-attach-results');
-    if (resultsEl) resultsEl.innerHTML = resultsHtml(filtered);
+    if (resultsEl) resultsEl.innerHTML = resultsHtml(filtered, q);
   };
 }
 
@@ -2735,6 +2776,7 @@ function renderDatabase() {
   const rows = ALL_ENTRIES.slice().sort((a, b) => a.title.localeCompare(b.title));
   const reviewCount = ALL_ENTRIES.filter(needsReview).length;
   const dupCount = findDuplicateGroups().length;
+  const missingImagesCount = ALL_ENTRIES.filter(entryNeedsImageHydration).length + ALL_REACTIONS.filter((r) => r.driveId && !r.dataUrl).length;
   const cols = ['Title', 'Format', 'Shelf', 'Author', 'Tags', 'Semi Flag', 'Uke Flag', 'Smut', 'Quality', 'Favorite', 'Notes'];
   const trs = rows.map((e) => `
     <tr>
@@ -2783,6 +2825,10 @@ function renderDatabase() {
           </div>
           <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">Searches Anime-Planet/MangaGo for every unmatched entry in one pass instead of the usual 20-a-day auto-sweep — paced to be gentle on the proxy, so it can take a while for a big backlog. Requires a proxy URL in Settings.</p>
         `}
+        <div class="export-row" style="margin-top:8px;">
+          <button class="ref-btn" data-sync-drive-images="1">🔄 Sync images from Drive${missingImagesCount ? ` (${missingImagesCount})` : ''}</button>
+        </div>
+        <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">Re-checks every read/reaction against Google Drive and re-downloads anything that's missing locally — use this if images uploaded on another device aren't showing up here yet.</p>
       </div>
       <div class="panel" style="margin-bottom:14px;">
         <div class="panel-title" data-toggle-db-settings="1" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">⚙️ Settings <span style="font-size:11px;">${DB_SETTINGS_OPEN ? '▲ Hide' : '▼ Show'}</span></div>
@@ -4113,6 +4159,8 @@ function attachRootHandlers() {
   if (bulkSweepBtn) bulkSweepBtn.onclick = runBulkMatchSweep;
   const stopSweepBtn = root.querySelector('[data-stop-bulk-sweep]');
   if (stopSweepBtn) stopSweepBtn.onclick = cancelBulkMatchSweep;
+  const syncDriveBtn = root.querySelector('[data-sync-drive-images]');
+  if (syncDriveBtn) syncDriveBtn.onclick = () => hydrateAllMissingDriveImages(true);
   const dbSearch = root.querySelector('#db-search');
   if (dbSearch) dbSearch.oninput = () => {
     const q = dbSearch.value.toLowerCase();
@@ -4302,6 +4350,26 @@ document.addEventListener('click', (ev) => {
       closeModal();
       showToast(`Merged "${dropName}" into "${keepName}"`);
       render();
+    })();
+  }
+  if (t.matches('[data-detach-image-entry]')) {
+    const entryId = t.getAttribute('data-detach-image-entry');
+    const src = t.getAttribute('data-detach-image-src');
+    (async () => {
+      const entry = getEntry(entryId);
+      if (!entry) return;
+      const idx = (entry.screencaps || []).indexOf(src);
+      if (idx === -1) return;
+      entry.screencaps.splice(idx, 1);
+      // Don't delete the underlying Drive file here — the same image may
+      // still be attached to other reads (that's the whole point of this
+      // feature), so only this entry's local reference is removed.
+      if (entry.screencapDriveIds && entry.screencapDriveIds[idx]) {
+        entry.screencapDriveIds.splice(idx, 1);
+      }
+      await saveEntry(entry);
+      showToast(`Removed from "${entry.title}"`);
+      openImageAttachmentsModal(src);
     })();
   }
   if (t.matches('[data-attach-image-to-entry]')) {
@@ -4609,6 +4677,7 @@ async function boot() {
           await syncReactionsWithFirestore(user);
           await pullMetaState();
           startFirestoreListener(user);
+          hydrateAllMissingDriveImages(false).catch(() => {});
         } catch (err) {
           console.error('Firestore sync failed:', err);
           showToast("Couldn't sync — check your connection");
