@@ -2016,13 +2016,12 @@ const MOOD_OPTIONS = [
   { key: 'horny', emoji: '🍆', label: 'Horny' },
   { key: 'confused', emoji: '😵‍💫', label: 'Confused' },
 ];
-let MEME_STATE = { moodFilter: null, groupFilter: null, search: '' };
+let MEME_STATE = { groupFilter: null, search: '' };
 let REACTION_GROUPS = [];
 
 function memeFilteredItems() {
   const q = MEME_STATE.search.trim().toLowerCase();
   let items = ALL_REACTIONS.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-  if (MEME_STATE.moodFilter) items = items.filter((r) => (r.moodTags || []).includes(MEME_STATE.moodFilter));
   if (MEME_STATE.groupFilter) items = items.filter((r) => r.groupId === MEME_STATE.groupFilter);
   if (q) items = items.filter((r) => (r.note || '').toLowerCase().includes(q));
   return items;
@@ -2046,8 +2045,7 @@ function renderMemeLibraryInPlace() {
 }
 
 function renderMemeLibrary() {
-  const untaggedCount = ALL_REACTIONS.filter((r) => !(r.moodTags || []).length).length;
-  const moodChips = MOOD_OPTIONS.map((m) => `<span class="rating-pick-icon flag-filter-icon ${MEME_STATE.moodFilter === m.key ? 'active' : ''}" data-meme-mood-filter="${m.key}" title="${m.label}">${m.emoji}</span>`).join('');
+  const untaggedCount = ALL_REACTIONS.filter((r) => !r.groupId).length;
   const groupChips = REACTION_GROUPS.map((g) => `<span class="rating-pick-icon flag-filter-icon ${MEME_STATE.groupFilter === g.id ? 'active' : ''}" style="width:auto;min-width:28px;padding:0 10px;white-space:nowrap;" data-meme-group-filter="${g.id}" title="Filter: ${escapeHtml(g.title)}">${escapeHtml(g.title)}</span>`).join('');
   return `
     <div class="app-header">
@@ -2055,8 +2053,7 @@ function renderMemeLibrary() {
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${ALL_REACTIONS.length} meme${ALL_REACTIONS.length === 1 ? '' : 's'} saved${untaggedCount ? ` · ${untaggedCount} untagged` : ''}.</div>
       <label class="upload-btn" style="margin-bottom:10px;">📎 Add reaction(s)<input type="file" accept="image/*" multiple id="meme-upload-input"></label>
       <div class="search-bar" style="margin-bottom:8px;"><span>🔍</span><input type="search" id="meme-search-input" placeholder="Search captions/keywords..." value="${escapeHtml(MEME_STATE.search)}"></div>
-      <div class="rating-pick-row">${moodChips}</div>
-      <div class="rating-pick-row" style="margin-top:6px;">${groupChips}<span class="rating-pick-icon flag-filter-icon" style="width:auto;padding:0 10px;" data-add-reaction-group="1" title="New grouping">➕</span></div>
+      <div class="rating-pick-row">${groupChips}<span class="rating-pick-icon flag-filter-icon" style="width:auto;padding:0 10px;" data-add-reaction-group="1" title="New grouping">➕</span></div>
     </div>
     <main>${renderMemeGrid()}</main>
     ${renderBottomNav('meme')}
@@ -2092,13 +2089,7 @@ function openMemeEditModal(id) {
     <img src="${r.dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">
     <div class="field-row"><label>Caption/keywords (for search)</label><input type="text" id="meme-note-input" value="${escapeHtml(r.note || '')}" placeholder="e.g. blushing, screaming, oh no"></div>
     <div class="field-row">
-      <label>Mood ${!(r.moodTags || []).length ? '<span style="color:var(--red-flag);">— pick at least one</span>' : ''}</label>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">
-        ${MOOD_OPTIONS.map((m) => `<button class="mood-chip ${(r.moodTags || []).includes(m.key) ? 'active' : ''}" data-meme-toggle-mood="${m.key}" data-meme-id="${r.id}">${m.emoji} ${m.label}</button>`).join('')}
-      </div>
-    </div>
-    <div class="field-row">
-      <label>Grouping</label>
+      <label>Mood</label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">
         ${REACTION_GROUPS.length ? [`<button class="mood-chip ${!r.groupId ? 'active' : ''}" data-meme-set-group="" data-meme-id="${r.id}">None</button>`].concat(REACTION_GROUPS.map((g) => `<button class="mood-chip ${r.groupId === g.id ? 'active' : ''}" data-meme-set-group="${g.id}" data-meme-id="${r.id}">${escapeHtml(g.title)}</button>`)).join('') : '<span style="font-size:12px;color:var(--text-dim);">No groupings yet — tap the ➕ in the Reactions header to create one.</span>'}
       </div>
@@ -2806,7 +2797,7 @@ async function mergeIntoTarget(sourceId, targetId) {
   await deleteEntry(sourceId);
   showToast('Merged and deleted');
   closeModal();
-  navigate('detail', targetId);
+  render();
 }
 
 function findDuplicateGroups() {
@@ -2840,7 +2831,7 @@ function renderDuplicateGroup(group) {
       : `<div class="cover-placeholder">🍆</div>`;
     return `
       <div class="dup-item">
-        <div class="cover-thumb" style="width:64px;flex:0 0 64px;">${cover}</div>
+        <div class="cover-thumb" style="width:100%;aspect-ratio:1/1;">${cover}</div>
         <div class="review-card-info">
           <strong>${escapeHtml(e.title)}</strong>
           <div style="font-size:11px;color:var(--text-dim);">${escapeHtml(e.shelf)}${e.author ? ' · ' + escapeHtml(formatNames(e.author)) : ''}</div>
@@ -2854,7 +2845,7 @@ function renderDuplicateGroup(group) {
         </div>
       </div>`;
   }).join('');
-  return `<div class="panel"><div class="panel-title">Possible duplicate</div>${items}<button class="ref-btn" style="width:100%;margin-top:8px;" data-dup-not-duplicate="${dupGroupSignature(group)}">Not duplicates — keep both, stop asking</button></div>`;
+  return `<div class="panel"><div class="panel-title">Possible duplicate</div><div class="dup-items-row">${items}</div><button class="ref-btn" style="width:100%;margin-top:8px;" data-dup-not-duplicate="${dupGroupSignature(group)}">Not duplicates — keep both, stop asking</button></div>`;
 }
 
 function renderDuplicates() {
@@ -3694,13 +3685,6 @@ function attachRootHandlers() {
     memeSearchInput.focus();
     memeSearchInput.setSelectionRange(memeSearchInput.value.length, memeSearchInput.value.length);
   }
-  root.querySelectorAll('[data-meme-mood-filter]').forEach((el) => {
-    el.onclick = () => {
-      const mood = el.getAttribute('data-meme-mood-filter');
-      MEME_STATE.moodFilter = MEME_STATE.moodFilter === mood ? null : mood;
-      render();
-    };
-  });
   root.querySelectorAll('[data-meme-group-filter]').forEach((el) => {
     el.onclick = () => {
       const gid = el.getAttribute('data-meme-group-filter');
@@ -4106,18 +4090,6 @@ document.addEventListener('click', (ev) => {
       mergeIntoTarget(MERGE_SOURCE_ID, targetId);
     }
   }
-  if (t.matches('[data-meme-toggle-mood]')) {
-    const id = t.getAttribute('data-meme-id');
-    const mood = t.getAttribute('data-meme-toggle-mood');
-    const r = ALL_REACTIONS.find((x) => x.id === id);
-    if (r) {
-      r.moodTags = r.moodTags || [];
-      if (r.moodTags.includes(mood)) r.moodTags = r.moodTags.filter((m) => m !== mood);
-      else r.moodTags.push(mood);
-      saveReaction(r);
-      openMemeEditModal(id);
-    }
-  }
   if (t.matches('[data-create-reaction-group]')) {
     const input = document.getElementById('new-group-title-input');
     const title = (input ? input.value : '').trim();
@@ -4348,6 +4320,27 @@ async function boot() {
     if (savedIgnoredSugg && Array.isArray(savedIgnoredSugg.value)) IGNORED_TAG_SUGGESTIONS = new Set(savedIgnoredSugg.value);
     const savedReactionGroups = await idbGet(STORE_META, 'reactionGroups');
     if (savedReactionGroups && Array.isArray(savedReactionGroups.value)) REACTION_GROUPS = savedReactionGroups.value;
+    const DEFAULT_MOOD_GROUPS = [
+      { id: 'mood-angry', title: '😡 Angry' },
+      { id: 'mood-funny', title: '😂 Funny' },
+      { id: 'mood-horny', title: '🍆 Horny' },
+      { id: 'mood-confused', title: '😵\u200d💫 Confused' },
+    ];
+    let reactionGroupsChanged = false;
+    DEFAULT_MOOD_GROUPS.forEach((dg) => {
+      if (!REACTION_GROUPS.some((g) => g.id === dg.id)) { REACTION_GROUPS.push(dg); reactionGroupsChanged = true; }
+    });
+    const legacyMoodToGroupId = { angry: 'mood-angry', funny: 'mood-funny', horny: 'mood-horny', confused: 'mood-confused' };
+    ALL_REACTIONS.forEach((r) => {
+      if (!r.groupId && r.moodTags && r.moodTags.length) {
+        const gid = legacyMoodToGroupId[r.moodTags[0]];
+        if (gid) { r.groupId = gid; idbPut(STORE_REACTIONS, r); }
+      }
+    });
+    if (reactionGroupsChanged) {
+      idbPut(STORE_META, { key: 'reactionGroups', value: REACTION_GROUPS });
+      pushMetaField('reactionGroups', REACTION_GROUPS);
+    }
     if ('serviceWorker' in navigator) {
       setupAutoUpdatingServiceWorker();
     }
