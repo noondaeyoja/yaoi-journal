@@ -369,8 +369,8 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
    as the Smut/Overall rating rows above this panel. */
 .flag-picker { display: flex; justify-content: space-between; gap: 6px; width: 78%; margin: 0 auto 10px; }
 .flag-picker .flag-dot { flex: 1; }
-.review-card-row { display: flex; gap: 10px; flex-direction: column; }
-.review-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.review-card-row { display: flex; gap: 10px; }
+.review-grid { display: flex; flex-direction: column; gap: 10px; }
 .review-card-info { flex: 1; min-width: 0; font-size: 12.5px; }
 .review-card-info strong { display: block; font-size: 13.5px; margin-bottom: 2px; }
 .dup-group { display: flex; flex-direction: column; gap: 10px; }
