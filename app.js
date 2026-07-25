@@ -2659,7 +2659,7 @@ function renderReviewCard(e) {
   return `
     <div class="panel review-card" data-entry="${e.id}">
       <div class="review-card-row">
-        <div class="cover-thumb" style="width:100%;aspect-ratio:1/1;">${cover}</div>
+        <div class="cover-thumb" style="width:78px;flex:0 0 78px;">${cover}</div>
         <div class="review-card-info">
           <strong>${escapeHtml(e.title)}</strong>
           <div style="font-size:11px;color:var(--text-dim);margin:2px 0 4px;">${e.format === 'reading' ? '📖' : '📺'} ${escapeHtml(e.shelf)}${e.author ? ' · ' + escapeHtml(formatNames(e.author)) : ''}</div>
