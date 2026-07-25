@@ -40,6 +40,7 @@ try { fbStore.enablePersistence({ synchronizeTabs: true }).catch(() => {}); } ca
 
 let CURRENT_USER = null;         // signed-in Firebase user, or null = show the sign-in screen
 let FIRESTORE_UNSUB = null;      // unsubscribe fn for the live cross-device entries listener
+let REACTIONS_FIRESTORE_UNSUB = null; // same, for the Reactions library — see startReactionsFirestoreListener()
 let AUTH_ERROR = '';
 let AUTH_BUSY = false;
 let SYNC_BUSY = false;           // true while the initial pull/push migration is running
@@ -79,6 +80,7 @@ let TAG_ENTRIES_FILTER = null;     // which tag name the "view entries with this
 let TAG_FILTER_OPEN = false;       // whether the homepage tag multi-select dropdown panel is open
 let FILTERS_COLLAPSED = false;     // whether the homepage search/tabs/format/Status/Tags/Ratings&Flags block is tucked away
 let SEARCH_INPUT_SHOULD_FOCUS = false; // one-shot flag: refocus the global search box after it causes a view jump
+let MEME_SEARCH_INPUT_SHOULD_FOCUS = false; // stays false on a fresh nav into Reactions so the mobile keyboard doesn't pop uninvited
 let STATE = {
   view: 'home',            // 'home' | 'detail' | 'tags' | 'database' | 'review' | 'duplicates'
   entryId: null,
@@ -861,6 +863,51 @@ function startFirestoreListener(user) {
   }, (err) => console.error('Firestore listener error:', err));
 }
 
+// Reactions used to only ever sync at boot (syncReactionsWithFirestore()),
+// with no live listener at all — unlike entries, which get updates from
+// another device without needing a reload. That's exactly why a reaction
+// added on the phone never showed up on the already-open desktop tab: there
+// was nothing telling desktop anything had changed until its next full
+// reload. This mirrors startFirestoreListener() above for the reactions
+// collection so new/edited/deleted reactions show up live everywhere.
+function startReactionsFirestoreListener(user) {
+  if (REACTIONS_FIRESTORE_UNSUB) { REACTIONS_FIRESTORE_UNSUB(); REACTIONS_FIRESTORE_UNSUB = null; }
+  const col = fbStore.collection('users').doc(user.uid).collection('reactions');
+  let skippedFirst = false;
+  REACTIONS_FIRESTORE_UNSUB = col.onSnapshot((snap) => {
+    if (!skippedFirst) { skippedFirst = true; return; }
+    let changed = false;
+    snap.docChanges().forEach((change) => {
+      const data = change.doc.data();
+      if (change.type === 'removed') {
+        if (ALL_REACTIONS.some((r) => r.id === data.id)) {
+          ALL_REACTIONS = ALL_REACTIONS.filter((r) => r.id !== data.id);
+          idbDelete(STORE_REACTIONS, data.id).catch(() => {});
+          changed = true;
+        }
+        return;
+      }
+      const idx = ALL_REACTIONS.findIndex((r) => r.id === data.id);
+      const local = idx > -1 ? ALL_REACTIONS[idx] : null;
+      const rt = new Date(data.updatedAt || data.createdAt || 0).getTime();
+      const lt = local ? new Date(local.updatedAt || local.createdAt || 0).getTime() : -1;
+      if (rt >= lt) {
+        // Same reasoning as restoreLocallyKeptImages() for entries: the
+        // incoming doc has dataUrl stripped once a driveId exists (see
+        // reactionSafeForFirestore()), so keep this device's own copy of the
+        // image bytes instead of blanking it back to "still downloading".
+        const patched = { ...data };
+        if (!patched.dataUrl && local && local.dataUrl) patched.dataUrl = local.dataUrl;
+        if (idx > -1) ALL_REACTIONS[idx] = patched; else ALL_REACTIONS.push(patched);
+        idbPut(STORE_REACTIONS, patched).catch(() => {});
+        hydrateDriveReaction(patched).catch(() => {});
+        changed = true;
+      }
+    });
+    if (changed && ['reactions', 'meme'].includes(STATE.view)) render();
+  }, (err) => console.error('Reactions listener error:', err));
+}
+
 /* ---------------------------------------------------------------------- */
 /* Utilities                                                              */
 /* ---------------------------------------------------------------------- */
@@ -1241,6 +1288,7 @@ function authErrorMessage(err) {
 
 async function signOutOfAccount() {
   if (FIRESTORE_UNSUB) { FIRESTORE_UNSUB(); FIRESTORE_UNSUB = null; }
+  if (REACTIONS_FIRESTORE_UNSUB) { REACTIONS_FIRESTORE_UNSUB(); REACTIONS_FIRESTORE_UNSUB = null; }
   DRIVE_ACCESS_TOKEN = null;
   DRIVE_TOKEN_EXPIRES_AT = 0;
   DRIVE_FOLDER_ID = null;
@@ -2146,6 +2194,58 @@ function addCustomMood(rawName) {
   }
   return key;
 }
+function persistCustomMoods() {
+  idbPut(STORE_META, { key: 'customMoods', value: Array.from(CUSTOM_MOODS) });
+  pushMetaField('customMoods', Array.from(CUSTOM_MOODS));
+}
+// Renaming/deleting a custom mood has to touch every reaction that's
+// actually tagged with it, not just the CUSTOM_MOODS list — otherwise the
+// group would disappear from the filter row but reactions would still be
+// carrying around the old (or a now-orphaned) tag string invisibly.
+function renameCustomMood(oldKey, rawNewName) {
+  const newName = String(rawNewName || '').trim();
+  if (!newName || newName === oldKey) return;
+  CUSTOM_MOODS.delete(oldKey);
+  const mergedInto = [...MOOD_OPTIONS.map((m) => m.key), ...CUSTOM_MOODS].find((k) => k.toLowerCase() === newName.toLowerCase());
+  const finalKey = mergedInto || newName;
+  if (!mergedInto) CUSTOM_MOODS.add(finalKey);
+  persistCustomMoods();
+  ALL_REACTIONS.forEach((r) => {
+    if ((r.moodTags || []).includes(oldKey)) {
+      const tags = new Set(r.moodTags.filter((t) => t !== oldKey));
+      tags.add(finalKey);
+      r.moodTags = Array.from(tags);
+      saveReaction(r);
+    }
+  });
+  if (MEME_STATE.moodFilter === oldKey) MEME_STATE.moodFilter = finalKey;
+}
+function deleteCustomMood(key) {
+  CUSTOM_MOODS.delete(key);
+  persistCustomMoods();
+  ALL_REACTIONS.forEach((r) => {
+    if ((r.moodTags || []).includes(key)) {
+      r.moodTags = r.moodTags.filter((t) => t !== key);
+      saveReaction(r);
+    }
+  });
+  if (MEME_STATE.moodFilter === key) MEME_STATE.moodFilter = null;
+}
+function openManageMoodsModal() {
+  const list = Array.from(CUSTOM_MOODS).sort((a, b) => a.localeCompare(b));
+  openModal(`
+    <h3>Manage custom moods</h3>
+    ${list.length ? `<div style="display:flex;flex-direction:column;gap:8px;">${list.map((name) => `
+      <div style="display:flex;align-items:center;gap:8px;justify-content:space-between;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;">
+        <span>🏷️ ${escapeHtml(name)}</span>
+        <div style="display:flex;gap:6px;">
+          <button class="ref-btn" data-rename-mood="${escapeHtml(name)}">Rename</button>
+          <button class="btn-ghost" data-delete-mood="${escapeHtml(name)}">Delete</button>
+        </div>
+      </div>`).join('')}</div>` : `<div class="empty-state">No custom moods yet.</div>`}
+    <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Done</button></div>
+  `);
+}
 let MEME_STATE = { moodFilter: null, search: '' };
 
 function memeFilteredItems() {
@@ -2242,7 +2342,15 @@ function renderMemeLibraryInPlace() {
 
 function renderMemeLibrary() {
   const untaggedCount = ALL_REACTIONS.filter((r) => !(r.moodTags || []).length).length;
-  const moodChips = allMoodOptions().map((m) => `<span class="rating-pick-icon flag-filter-icon ${MEME_STATE.moodFilter === m.key ? 'active' : ''}" data-meme-mood-filter="${m.key}" title="${escapeHtml(m.label)}">${m.emoji}</span>`).join('');
+  // Built-ins stay as compact single-emoji chips (they're the same 4 known
+  // icons every time, easy to recognize at a glance). Custom moods can't
+  // work that way — there's no way to guess what "🏷️" alone was supposed to
+  // mean once there's more than one of them, which was exactly the bug: they
+  // all rendered identically with no visible name anywhere. These render as
+  // small text pills showing the actual name instead.
+  const builtinChips = MOOD_OPTIONS.map((m) => `<span class="rating-pick-icon flag-filter-icon ${MEME_STATE.moodFilter === m.key ? 'active' : ''}" data-meme-mood-filter="${m.key}" title="${escapeHtml(m.label)}">${m.emoji}</span>`).join('');
+  const customMoodList = Array.from(CUSTOM_MOODS).sort((a, b) => a.localeCompare(b));
+  const customChips = customMoodList.map((name) => `<button class="mood-chip small ${MEME_STATE.moodFilter === name ? 'active' : ''}" data-meme-mood-filter="${escapeHtml(name)}">🏷️ ${escapeHtml(name)}</button>`).join('');
   return `
     <div class="app-header">
       <div class="brand-row"><h1>🎭 Reactions</h1></div>
@@ -2253,7 +2361,10 @@ function renderMemeLibrary() {
         <button class="tagmgr-tab ${!MEME_SHOWING_DUPLICATES ? 'active' : ''}" data-meme-tab="grid">Gallery</button>
         <button class="tagmgr-tab ${MEME_SHOWING_DUPLICATES ? 'active' : ''}" data-meme-tab="duplicates">Possible Duplicates</button>
       </div>
-      ${!MEME_SHOWING_DUPLICATES ? `<div class="rating-pick-row">${moodChips}<span class="rating-pick-icon flag-filter-icon" data-meme-add-mood="1" title="Create a new mood group">➕</span></div>` : ''}
+      ${!MEME_SHOWING_DUPLICATES ? `
+        <div class="rating-pick-row" style="margin-bottom:${customMoodList.length ? '8px' : '0'};">${builtinChips}<span class="rating-pick-icon flag-filter-icon" data-meme-add-mood="1" title="Create a new mood group">➕</span>${customMoodList.length ? `<span class="rating-pick-icon flag-filter-icon" data-meme-manage-moods="1" title="Edit or delete custom mood groups">✏️</span>` : ''}</div>
+        ${customMoodList.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">${customChips}</div>` : ''}
+      ` : ''}
     </div>
     <main>${memeMainBody()}</main>
     ${renderBottomNav('meme')}
@@ -2277,7 +2388,7 @@ function openMemeEditModal(id) {
   openModal(`
     <h3>Edit reaction</h3>
     ${r.dataUrl
-      ? `<img src="${r.dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">`
+      ? `<img src="${r.dataUrl}" alt="" style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`
       : `<div class="cover-placeholder" style="height:180px;margin-bottom:10px;">⏳ Still downloading from Drive…</div>`}
     <div class="field-row"><label>Caption/keywords (for search)</label><input type="text" id="meme-note-input" value="${escapeHtml(r.note || '')}" placeholder="e.g. blushing, screaming, oh no"></div>
     <div class="field-row">
@@ -2668,10 +2779,10 @@ function renderDetail(e) {
           </div>
           <div>
             ${topFieldsHtml}
-            ${confirmedSummaryHtml}
-            ${matchColumnHtml}
           </div>
         </div>
+        ${confirmedSummaryHtml}
+        ${matchColumnHtml}
       </div>
 
       <!-- 2. Ratings -->
@@ -3873,8 +3984,15 @@ function attachRootHandlers() {
   const memeSearchInput = root.querySelector('#meme-search-input');
   if (memeSearchInput) {
     memeSearchInput.oninput = (ev) => { MEME_STATE.search = ev.target.value; renderMemeLibraryInPlace(); };
-    memeSearchInput.focus();
-    memeSearchInput.setSelectionRange(memeSearchInput.value.length, memeSearchInput.value.length);
+    // Only restore focus/cursor if the user was already mid-typing (flagged by
+    // renderMemeLibraryInPlace before its in-place re-render). Don't autofocus
+    // on a fresh nav into the Reactions tab — that was popping the mobile
+    // keyboard every single time the tab was opened, even with no intent to search.
+    if (MEME_SEARCH_INPUT_SHOULD_FOCUS) {
+      MEME_SEARCH_INPUT_SHOULD_FOCUS = false;
+      memeSearchInput.focus();
+      memeSearchInput.setSelectionRange(memeSearchInput.value.length, memeSearchInput.value.length);
+    }
   }
   root.querySelectorAll('[data-meme-mood-filter]').forEach((el) => {
     el.onclick = () => {
@@ -4291,6 +4409,24 @@ document.addEventListener('click', (ev) => {
       openMemeEditModal(id);
     }
   }
+  if (t.matches('[data-meme-manage-moods]')) openManageMoodsModal();
+  if (t.matches('[data-rename-mood]')) {
+    const oldKey = t.getAttribute('data-rename-mood');
+    const newName = prompt(`Rename "${oldKey}" to:`, oldKey);
+    if (newName && newName.trim() && newName.trim() !== oldKey) {
+      renameCustomMood(oldKey, newName);
+      render();
+      openManageMoodsModal();
+    }
+  }
+  if (t.matches('[data-delete-mood]')) {
+    const key = t.getAttribute('data-delete-mood');
+    if (confirm(`Delete the "${key}" mood group? This removes the tag from every reaction — the reactions themselves are kept.`)) {
+      deleteCustomMood(key);
+      render();
+      openManageMoodsModal();
+    }
+  }
   if (t.matches('[data-carousel-use]')) {
     const entryId = MATCH_REVIEW_QUEUE[MATCH_REVIEW_INDEX];
     applySuggestedMatch(entryId).then(() => {
@@ -4458,16 +4594,27 @@ function cancelBulkMatchSweep() {
 // pushed one up. This walks every entry/reaction, uploads anything still
 // local-only, and saves the resulting id so it finally syncs.
 const IMAGE_BACKFILL = { running: false, checked: 0, total: 0, uploaded: 0, cancel: false };
+// Only actual base64 data: URLs can be uploaded to Drive (dataUrlToBlob()
+// needs real base64 payload to decode) — a coverUrl copied straight from a
+// confirmed cross-reference match is a plain https:// link to someone
+// else's CDN, not a locally-stored image, and doesn't need (or support)
+// backing up to Drive at all. Counting those as "pending" made this button
+// permanently stuck reporting leftover items that could never actually
+// succeed — every attempt failed with "atob: not correctly encoded" and the
+// count never moved. Filtering to data: URLs only is the actual fix.
+function isLocalDataUrl(v) {
+  return typeof v === 'string' && v.startsWith('data:');
+}
 function imageBackfillCandidates() {
   const tasks = [];
   ALL_ENTRIES.forEach((e) => {
-    if (e.coverUrl && !e.coverDriveId) tasks.push({ kind: 'cover', entry: e });
-    if (e.semi && e.semi.photo && !e.semi.photoDriveId) tasks.push({ kind: 'semi', entry: e });
-    if (e.uke && e.uke.photo && !e.uke.photoDriveId) tasks.push({ kind: 'uke', entry: e });
-    if (e.screencaps && e.screencaps.length > (e.screencapDriveIds || []).length) tasks.push({ kind: 'screencaps', entry: e });
+    if (isLocalDataUrl(e.coverUrl) && !e.coverDriveId) tasks.push({ kind: 'cover', entry: e });
+    if (e.semi && isLocalDataUrl(e.semi.photo) && !e.semi.photoDriveId) tasks.push({ kind: 'semi', entry: e });
+    if (e.uke && isLocalDataUrl(e.uke.photo) && !e.uke.photoDriveId) tasks.push({ kind: 'uke', entry: e });
+    if (e.screencaps && e.screencaps.filter(isLocalDataUrl).length > (e.screencapDriveIds || []).length) tasks.push({ kind: 'screencaps', entry: e });
   });
   ALL_REACTIONS.forEach((r) => {
-    if (r.dataUrl && !r.driveId) tasks.push({ kind: 'reaction', reaction: r });
+    if (isLocalDataUrl(r.dataUrl) && !r.driveId) tasks.push({ kind: 'reaction', reaction: r });
   });
   return tasks;
 }
@@ -4613,6 +4760,7 @@ async function boot() {
           await syncReactionsWithFirestore(user);
           await pullMetaState();
           startFirestoreListener(user);
+          startReactionsFirestoreListener(user);
         } catch (err) {
           console.error('Firestore sync failed:', err);
           showToast("Couldn't sync — check your connection");
