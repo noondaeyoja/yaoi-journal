@@ -906,7 +906,23 @@ function uid(prefix) {
 
 function closeModal() {
   document.getElementById('overlay').classList.remove('open');
+  document.getElementById('overlay').classList.remove('lightbox-mode');
   document.getElementById('modal-sheet').innerHTML = '';
+}
+
+// A true centered/fullscreen image viewer (as opposed to the usual bottom
+// sheet used for forms/menus) — used for screencap and Images-tab viewing.
+// belowHtml is optional extra content rendered under the image, inside the
+// overlay's own solid panel (the overlay's background goes transparent in
+// lightbox mode so the photo itself is the star).
+function openImageLightbox(dataUrl, belowHtml) {
+  openModal(`
+    <div class="lightbox-wrap">
+      <img src="${dataUrl}" class="lightbox-img" alt="Tap and hold to save">
+      ${belowHtml || ''}
+      <button class="lightbox-close" data-close-modal="1">✕ Close</button>
+    </div>`);
+  document.getElementById('overlay').classList.add('lightbox-mode');
 }
 
 function openModal(html) {
@@ -1205,6 +1221,31 @@ function renderGlobalHeader(showAddEntry) {
         <span>🔌 Google Drive needs reconnecting to sync images.</span>
         <button data-reconnect-drive="1">Reconnect</button>
       </div>` : ''}`;
+}
+
+async function addScreencapFiles(files) {
+  const e = getEntry(STATE.entryId);
+  if (!e) return;
+  e.screencaps = e.screencaps || [];
+  e.screencapDriveIds = e.screencapDriveIds || [];
+  const newDataUrls = [];
+  for (const file of files) {
+    if (!file.type.startsWith('image/')) continue;
+    const dataUrl = await fileToCompressedDataUrl(file, 900);
+    e.screencaps.push(dataUrl);
+    newDataUrls.push(dataUrl);
+  }
+  await saveEntry(e); render();
+  newDataUrls.forEach((dataUrl, i) => {
+    tryUploadImageToDrive(dataUrl, `${e.id}-screencap-${Date.now()}-${i}.jpg`).then((fileId) => {
+      if (!fileId) return;
+      const fresh = getEntry(e.id);
+      if (!fresh) return;
+      fresh.screencapDriveIds = fresh.screencapDriveIds || [];
+      fresh.screencapDriveIds.push(fileId);
+      saveEntry(fresh);
+    });
+  });
 }
 
 function render() {
@@ -2040,7 +2081,7 @@ function renderReactionsLibrary() {
     <div class="app-header">
       <div class="brand-row"><h1>🖼️ Images</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${items.length} image${items.length === 1 ? '' : 's'} across the app. Tap one to see which reads it's attached to.</div>
-      <label class="upload-btn">📎 Add image(s)<input type="file" accept="image/*" multiple id="reaction-upload-input"></label>
+      <label class="upload-btn">📎 Add image(s)<input type="file" accept="image/*,video/*" multiple id="reaction-upload-input"></label>
       <div class="tagmgr-tabs" style="margin-top:10px;">
         <button class="tagmgr-tab ${IMAGES_TAB === 'attached' ? 'active' : ''}" data-images-tab="attached">Attached (${attached.length})</button>
         <button class="tagmgr-tab ${IMAGES_TAB === 'unattached' ? 'active' : ''}" data-images-tab="unattached">Unattached (${unattached.length})</button>
@@ -2052,17 +2093,45 @@ function renderReactionsLibrary() {
   `;
 }
 
+// A screencap already saved on this entry can also double as a Reactions-
+// library item — toggled from within the lightbox itself so you don't have
+// to leave the read to go re-upload the same picture over in Reactions.
+function renderScreencapLightbox(src) {
+  const isReaction = ALL_REACTIONS.some((r) => r.dataUrl === src);
+  openImageLightbox(src, `
+    <div class="lightbox-actions">
+      <button class="reaction-toggle-btn ${isReaction ? 'on' : 'off'}" data-toggle-use-as-reaction="${escapeHtml(src)}">
+        Use as reaction? ${isReaction ? '✅' : '❌'}
+      </button>
+    </div>`);
+}
+
 function openImageAttachmentsModal(dataUrl) {
   const entries = ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(dataUrl));
-  openModal(`
-    <h3>Attached to</h3>
-    <img src="${dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">
-    ${entries.length
-      ? `<div style="display:flex;flex-direction:column;gap:6px;">${entries.map((e) => `
-          <button class="ref-btn" style="text-align:left;" data-goto-entry-from-modal="${e.id}">${escapeHtml(e.title)}</button>`).join('')}</div>`
-      : `<div class="empty-state">Not attached to any read yet.</div>`}
-    <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Close</button></div>
-  `);
+  const candidates = ALL_ENTRIES.filter((e) => !entryImageUrls(e).includes(dataUrl)).slice().sort((a, b) => a.title.localeCompare(b.title));
+  const resultsHtml = (list) => list.length
+    ? list.slice(0, 30).map((e) => `<button class="ref-btn" style="text-align:left;" data-attach-image-to-entry="${e.id}" data-attach-image-src="${escapeHtml(dataUrl)}">${escapeHtml(e.title)}</button>`).join('')
+    : '<div class="empty-state" style="padding:6px 0;">No matches.</div>';
+  openImageLightbox(dataUrl, `
+    <div class="lightbox-actions">
+      <div class="panel-title" style="margin-top:0;">Attached to</div>
+      ${entries.length
+         ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px;">${entries.map((e) => `
+            <button class="ref-btn" style="text-align:left;" data-goto-entry-from-modal="${e.id}">${escapeHtml(e.title)}</button>`).join('')}</div>`
+        : `<div class="empty-state" style="padding:6px 0 14px;">Not attached to any read yet.</div>`}
+      <div class="panel-title">Attach to another read</div>
+      <input type="text" id="image-attach-search-input" placeholder="Search titles..." style="width:100%;margin-bottom:8px;">
+      <div id="image-attach-results" style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow-y:auto;">
+        ${resultsHtml(candidates)}
+      </div>
+    </div>`);
+  const searchInput = document.getElementById('image-attach-search-input');
+  if (searchInput) searchInput.oninput = () => {
+    const q = searchInput.value.trim().toLowerCase();
+    const filtered = candidates.filter((e) => e.title.toLowerCase().includes(q));
+    const resultsEl = document.getElementById('image-attach-results');
+    if (resultsEl) resultsEl.innerHTML = resultsHtml(filtered);
+  };
 }
 
 /* ---------------------------------------------------------------------- */
@@ -2110,7 +2179,9 @@ function renderMemeGrid() {
   return items.length
     ? `<div class="image-masonry">${items.map((r) => `
         <div class="masonry-item" data-open-meme="${r.id}">
-          <img src="${r.dataUrl}" alt="" loading="lazy">
+          ${r.mediaType === 'video'
+            ? `<video src="${r.dataUrl}" autoplay muted loop playsinline></video>`
+            : `<img src="${r.dataUrl}" alt="" loading="lazy">`}
           ${!reactionGroupIds(r).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
         </div>`).join('')}</div>`
     : `<div class="empty-state">No reactions match. ${MEME_STATE.moodFilter || MEME_STATE.search ? 'Try clearing the filter/search.' : 'Tap "Add" to upload your first meme.'}</div>`;
@@ -2129,7 +2200,7 @@ function renderMemeLibrary() {
     <div class="app-header">
       <div class="brand-row"><h1>🎭 Reactions</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${ALL_REACTIONS.length} meme${ALL_REACTIONS.length === 1 ? '' : 's'} saved${untaggedCount ? ` · ${untaggedCount} untagged` : ''}.</div>
-      <label class="upload-btn" style="margin-bottom:10px;">📎 Add reaction(s)<input type="file" accept="image/*" multiple id="meme-upload-input"></label>
+      <label class="upload-btn" style="margin-bottom:10px;">📎 Add reaction(s)<input type="file" accept="image/*,video/*" multiple id="meme-upload-input"></label>
       <div class="search-bar" style="margin-bottom:8px;"><span>🔍</span><input type="search" id="meme-search-input" placeholder="Search captions/keywords..." value="${escapeHtml(MEME_STATE.search)}"></div>
       <div class="rating-pick-row">${groupChips}<span class="rating-pick-icon flag-filter-icon" style="width:auto;padding:0 10px;" data-add-reaction-group="1" title="New grouping">➕</span></div>
     </div>
@@ -2164,7 +2235,9 @@ function openMemeEditModal(id) {
   if (!r) return;
   openModal(`
     <h3>Edit reaction</h3>
-    <img src="${r.dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">
+    ${r.mediaType === 'video'
+      ? `<video src="${r.dataUrl}" autoplay muted loop playsinline controls style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;"></video>`
+      : `<img src="${r.dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">`}
     <div class="field-row"><label>Caption/keywords (for search)</label><input type="text" id="meme-note-input" value="${escapeHtml(r.note || '')}" placeholder="e.g. blushing, screaming, oh no"></div>
     <div class="field-row">
       <label>Mood ${reactionGroupIds(r).length ? '' : '<span style="font-weight:400;color:var(--text-dim);">(none yet)</span>'}</label>
@@ -2191,16 +2264,24 @@ function openMemeEditModal(id) {
 async function addReactionFiles(fileList) {
   const added = [];
   for (const file of fileList) {
-    const dataUrl = await fileToCompressedDataUrl(file, 800);
+    const isVideo = file.type.startsWith('video/');
+    const isGif = file.type === 'image/gif';
+    const mediaType = isVideo ? 'video' : (isGif ? 'gif' : 'image');
+    // Animated GIFs and videos can't go through the canvas-based compressor
+    // below — canvas would flatten a GIF to a single static frame, and an
+    // <img> can't decode video at all — so store those as-is to keep them
+    // animating/playing.
+    const dataUrl = mediaType === 'image' ? await fileToCompressedDataUrl(file, 800) : await fileToDataUrl(file);
     const hash = await hashDataUrl(dataUrl);
     const dupe = findReactionByHash(hash);
     if (dupe) {
       if (!confirm('This looks like a duplicate of a reaction/meme you already saved. Add it again anyway?')) continue;
     }
-    const reaction = { id: uid('reaction'), dataUrl, hash, moodTags: [], note: '', createdAt: new Date().toISOString() };
+    const reaction = { id: uid('reaction'), dataUrl, hash, mediaType, moodTags: [], note: '', createdAt: new Date().toISOString() };
     await saveReaction(reaction);
     added.push(reaction);
-    tryUploadImageToDrive(dataUrl, `reaction-${reaction.id}.jpg`).then((fileId) => {
+    const ext = mediaType === 'video' ? ((file.name || '').split('.').pop() || 'mp4') : (mediaType === 'gif' ? 'gif' : 'jpg');
+    tryUploadImageToDrive(dataUrl, `reaction-${reaction.id}.${ext}`).then((fileId) => {
       if (!fileId) return;
       const fresh = ALL_REACTIONS.find((r) => r.id === reaction.id);
       if (!fresh) return;
@@ -2628,8 +2709,10 @@ function renderDetail(e) {
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
           <label class="upload-btn" style="flex:1;">📎 Add photo(s)<input type="file" accept="image/*" multiple id="screencap-input"></label>
         </div>
-        <div class="screencap-grid">
-          ${(e.screencaps || []).map((src, i) => `<div class="screencap-thumb"><img src="${src}" data-view-screencap="${i}"><button class="del" data-del-screencap="${i}">✕</button></div>`).join('')}
+        <div class="screencap-grid" data-screencap-dropzone="1">
+          ${(e.screencaps || []).length
+            ? (e.screencaps || []).map((src, i) => `<div class="screencap-thumb"><img src="${src}" data-view-screencap="${i}"><button class="del" data-del-screencap="${i}">✕</button></div>`).join('')
+            : '<div class="screencap-drop-hint">Drag &amp; drop images here, or use Add photo(s) above</div>'}
         </div>
       </div>
 
@@ -3727,30 +3810,19 @@ function attachRootHandlers() {
   }
   const screencapInput = root.querySelector('#screencap-input');
   if (screencapInput) screencapInput.onchange = async () => {
-    const e = getEntry(STATE.entryId);
-    e.screencaps = e.screencaps || [];
-    e.screencapDriveIds = e.screencapDriveIds || [];
-    const newDataUrls = [];
-    for (const file of screencapInput.files) {
-      const dataUrl = await fileToCompressedDataUrl(file, 900);
-      e.screencaps.push(dataUrl);
-      newDataUrls.push(dataUrl);
-    }
-    await saveEntry(e); render();
-    // Upload each new screencap to Drive in the background and append its
-    // id once it resolves — order isn't guaranteed against further edits in
-    // the meantime, so re-fetch the entry fresh before each append.
-    newDataUrls.forEach((dataUrl, i) => {
-      tryUploadImageToDrive(dataUrl, `${e.id}-screencap-${Date.now()}-${i}.jpg`).then((fileId) => {
-        if (!fileId) return;
-        const fresh = getEntry(e.id);
-        if (!fresh) return;
-        fresh.screencapDriveIds = fresh.screencapDriveIds || [];
-        fresh.screencapDriveIds.push(fileId);
-        saveEntry(fresh);
-      });
-    });
+    if (screencapInput.files.length) await addScreencapFiles(screencapInput.files);
   };
+  const screencapDropzone = root.querySelector('[data-screencap-dropzone]');
+  if (screencapDropzone) {
+    screencapDropzone.ondragover = (ev) => { ev.preventDefault(); screencapDropzone.classList.add('drag-over'); };
+    screencapDropzone.ondragleave = () => { screencapDropzone.classList.remove('drag-over'); };
+    screencapDropzone.ondrop = (ev) => {
+      ev.preventDefault();
+      screencapDropzone.classList.remove('drag-over');
+      const files = ev.dataTransfer && ev.dataTransfer.files;
+      if (files && files.length) addScreencapFiles(files);
+    };
+  }
   root.querySelectorAll('[data-del-screencap]').forEach((el) => {
     el.onclick = async (ev) => {
       ev.stopPropagation();
@@ -3816,11 +3888,7 @@ function attachRootHandlers() {
   if (addGroupBtn) addGroupBtn.onclick = openCreateReactionGroupModal;
   root.querySelectorAll('[data-view-screencap]').forEach((imgEl) => {
     imgEl.onclick = () => {
-      openModal(`
-        <div class="lightbox-wrap">
-          <img src="${imgEl.getAttribute('src')}" class="lightbox-img" alt="Screencap, tap and hold to save">
-          <button class="lightbox-close" data-close-modal="1">✕ Close</button>
-        </div>`);
+      renderScreencapLightbox(imgEl.getAttribute('src'));
     };
   });
   const crossRefBtn = root.querySelector('[data-open-crossref]');
@@ -4234,6 +4302,34 @@ document.addEventListener('click', (ev) => {
       closeModal();
       showToast(`Merged "${dropName}" into "${keepName}"`);
       render();
+    })();
+  }
+  if (t.matches('[data-attach-image-to-entry]')) {
+    const entryId = t.getAttribute('data-attach-image-to-entry');
+    const src = t.getAttribute('data-attach-image-src');
+    (async () => {
+      const entry = getEntry(entryId);
+      if (!entry) return;
+      entry.screencaps = entry.screencaps || [];
+      if (!entry.screencaps.includes(src)) entry.screencaps.push(src);
+      await saveEntry(entry);
+      showToast(`Attached to "${entry.title}"`);
+      openImageAttachmentsModal(src);
+    })();
+  }
+  if (t.matches('[data-toggle-use-as-reaction]')) {
+    const src = t.getAttribute('data-toggle-use-as-reaction');
+    (async () => {
+      const existing = ALL_REACTIONS.find((r) => r.dataUrl === src);
+      if (existing) {
+        await deleteReaction(existing.id);
+        showToast('Removed from Reactions');
+      } else {
+        const reaction = { id: uid('reaction'), dataUrl: src, hash: await hashDataUrl(src), mediaType: 'image', moodTags: [], note: '', createdAt: new Date().toISOString() };
+        await saveReaction(reaction);
+        showToast('Added to Reactions');
+      }
+      renderScreencapLightbox(src);
     })();
   }
   if (t.matches('[data-create-reaction-group]')) {
