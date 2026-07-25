@@ -374,7 +374,8 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 .review-card-info { flex: 1; min-width: 0; font-size: 12.5px; }
 .review-card-info strong { display: block; font-size: 13.5px; margin-bottom: 2px; }
 .dup-group { display: flex; flex-direction: column; gap: 10px; }
-.dup-item { display: flex; gap: 10px; align-items: center; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.dup-items-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.dup-item { display: flex; flex-direction: column; gap: 6px; align-items: stretch; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); flex: 1 1 45%; min-width: 130px; }
 .dup-item .review-card-info { flex: 1; }
 
 .flag-dot { width: 44px; height: 44px; border-radius: 10px; border: 2px solid var(--border); background: var(--card); cursor: pointer; display:flex; align-items:center; justify-content:center; }
