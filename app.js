@@ -65,6 +65,10 @@ let HD_RESOLVED_RAW = new Set();
 // keep both" for — see Review Duplicates. Prevents that same pair from
 // re-surfacing every visit.
 let IGNORED_DUP_GROUPS = new Set();
+// User-created custom mood groups for the Reactions library (e.g. "creepy",
+// "cute") on top of the 4 built-in moods — synced across devices the same
+// way as the sets above (Firestore meta doc + local IDB mirror).
+let CUSTOM_MOODS = new Set();
 
 let db = null;
 let ALL_ENTRIES = [];              // in-memory cache, synced with IndexedDB
@@ -407,6 +411,10 @@ async function pullMetaState() {
     // typed in on this device with an older/blank remote one.
     if (typeof data.proxyUrl === 'string' && data.proxyUrl && !localStorage.getItem('yj_proxy_url')) {
       localStorage.setItem('yj_proxy_url', data.proxyUrl);
+    }
+    if (Array.isArray(data.customMoods) && data.customMoods.length) {
+      CUSTOM_MOODS = new Set([...CUSTOM_MOODS, ...data.customMoods]);
+      await idbPut(STORE_META, { key: 'customMoods', value: Array.from(CUSTOM_MOODS) });
     }
   } catch (err) {
     console.error('Meta pull failed:', err);
@@ -2118,11 +2126,38 @@ const MOOD_OPTIONS = [
   { key: 'horny', emoji: '🍆', label: 'Horny' },
   { key: 'confused', emoji: '😵‍💫', label: 'Confused' },
 ];
+// The 4 built-ins above used to be the only moods it was possible to tag —
+// there was no way to add a new grouping like "creepy" or "cute" without
+// editing this array in code. This layers user-created custom moods (synced
+// via CUSTOM_MOODS, see pullMetaState()/boot()) on top, everywhere the fixed
+// list used to be used directly.
+function allMoodOptions() {
+  return [...MOOD_OPTIONS, ...Array.from(CUSTOM_MOODS).sort((a, b) => a.localeCompare(b)).map((name) => ({ key: name, emoji: '🏷️', label: name }))];
+}
+function addCustomMood(rawName) {
+  const name = String(rawName || '').trim();
+  if (!name) return null;
+  const existing = [...MOOD_OPTIONS.map((m) => m.key), ...CUSTOM_MOODS].find((k) => k.toLowerCase() === name.toLowerCase());
+  const key = existing || name;
+  if (!existing) {
+    CUSTOM_MOODS.add(key);
+    idbPut(STORE_META, { key: 'customMoods', value: Array.from(CUSTOM_MOODS) });
+    pushMetaField('customMoods', Array.from(CUSTOM_MOODS));
+  }
+  return key;
+}
 let MEME_STATE = { moodFilter: null, search: '' };
 
 function memeFilteredItems() {
   const q = MEME_STATE.search.trim().toLowerCase();
-  let items = ALL_REACTIONS.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  // Untagged reactions surface first (they're the ones that still need
+  // sorting into a mood), then newest-first within each bucket.
+  let items = ALL_REACTIONS.slice().sort((a, b) => {
+    const aUntagged = !(a.moodTags || []).length;
+    const bUntagged = !(b.moodTags || []).length;
+    if (aUntagged !== bUntagged) return aUntagged ? -1 : 1;
+    return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+  });
   if (MEME_STATE.moodFilter) items = items.filter((r) => (r.moodTags || []).includes(MEME_STATE.moodFilter));
   if (q) items = items.filter((r) => (r.note || '').toLowerCase().includes(q));
   return items;
@@ -2149,14 +2184,14 @@ function renderMemeLibraryInPlace() {
 
 function renderMemeLibrary() {
   const untaggedCount = ALL_REACTIONS.filter((r) => !(r.moodTags || []).length).length;
-  const moodChips = MOOD_OPTIONS.map((m) => `<span class="rating-pick-icon flag-filter-icon ${MEME_STATE.moodFilter === m.key ? 'active' : ''}" data-meme-mood-filter="${m.key}" title="${m.label}">${m.emoji}</span>`).join('');
+  const moodChips = allMoodOptions().map((m) => `<span class="rating-pick-icon flag-filter-icon ${MEME_STATE.moodFilter === m.key ? 'active' : ''}" data-meme-mood-filter="${m.key}" title="${escapeHtml(m.label)}">${m.emoji}</span>`).join('');
   return `
     <div class="app-header">
       <div class="brand-row"><h1>🎭 Reactions</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${ALL_REACTIONS.length} meme${ALL_REACTIONS.length === 1 ? '' : 's'} saved${untaggedCount ? ` · ${untaggedCount} untagged` : ''}.</div>
       <label class="upload-btn" style="margin-bottom:10px;">📎 Add reaction(s)<input type="file" accept="image/*" multiple id="meme-upload-input"></label>
       <div class="search-bar" style="margin-bottom:8px;"><span>🔍</span><input type="search" id="meme-search-input" placeholder="Search captions/keywords..." value="${escapeHtml(MEME_STATE.search)}"></div>
-      <div class="rating-pick-row">${moodChips}</div>
+      <div class="rating-pick-row">${moodChips}<span class="rating-pick-icon flag-filter-icon" data-meme-add-mood="1" title="Create a new mood group">➕</span></div>
     </div>
     <main>${renderMemeGrid()}</main>
     ${renderBottomNav('meme')}
@@ -2181,7 +2216,8 @@ function openMemeEditModal(id) {
     <div class="field-row">
       <label>Mood ${!(r.moodTags || []).length ? '<span style="color:var(--red-flag);">— pick at least one</span>' : ''}</label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">
-        ${MOOD_OPTIONS.map((m) => `<button class="mood-chip ${(r.moodTags || []).includes(m.key) ? 'active' : ''}" data-meme-toggle-mood="${m.key}" data-meme-id="${r.id}">${m.emoji} ${m.label}</button>`).join('')}
+        ${allMoodOptions().map((m) => `<button class="mood-chip ${(r.moodTags || []).includes(m.key) ? 'active' : ''}" data-meme-toggle-mood="${escapeHtml(m.key)}" data-meme-id="${r.id}">${m.emoji} ${escapeHtml(m.label)}</button>`).join('')}
+        <button class="mood-chip" data-meme-add-mood-for="${r.id}">➕ New mood</button>
       </div>
     </div>
     <div class="modal-actions">
@@ -3771,6 +3807,11 @@ function attachRootHandlers() {
       render();
     };
   });
+  const addMoodBtn = root.querySelector('[data-meme-add-mood]');
+  if (addMoodBtn) addMoodBtn.onclick = () => {
+    const key = addCustomMood(prompt('Name this new mood group (e.g. "creepy", "cute"):'));
+    if (key) { MEME_STATE.moodFilter = key; render(); }
+  };
   root.querySelectorAll('[data-view-screencap]').forEach((imgEl) => {
     imgEl.onclick = () => {
       openModal(`
@@ -4163,6 +4204,17 @@ document.addEventListener('click', (ev) => {
       openMemeEditModal(id);
     }
   }
+  if (t.matches('[data-meme-add-mood-for]')) {
+    const id = t.getAttribute('data-meme-add-mood-for');
+    const key = addCustomMood(prompt('Name this new mood group (e.g. "creepy", "cute"):'));
+    const r = ALL_REACTIONS.find((x) => x.id === id);
+    if (key && r) {
+      r.moodTags = r.moodTags || [];
+      if (!r.moodTags.includes(key)) r.moodTags.push(key);
+      saveReaction(r);
+      openMemeEditModal(id);
+    }
+  }
   if (t.matches('[data-carousel-use]')) {
     const entryId = MATCH_REVIEW_QUEUE[MATCH_REVIEW_INDEX];
     applySuggestedMatch(entryId).then(() => {
@@ -4452,6 +4504,8 @@ async function boot() {
     if (savedUserHidden && Array.isArray(savedUserHidden.value)) USER_HIDDEN_TAG_KEYS = new Set(savedUserHidden.value);
     const savedIgnoredSugg = await idbGet(STORE_META, 'ignoredTagSuggestions');
     if (savedIgnoredSugg && Array.isArray(savedIgnoredSugg.value)) IGNORED_TAG_SUGGESTIONS = new Set(savedIgnoredSugg.value);
+    const savedCustomMoods = await idbGet(STORE_META, 'customMoods');
+    if (savedCustomMoods && Array.isArray(savedCustomMoods.value)) CUSTOM_MOODS = new Set(savedCustomMoods.value);
     if ('serviceWorker' in navigator) {
       setupAutoUpdatingServiceWorker();
     }
