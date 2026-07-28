@@ -17,7 +17,7 @@
 
 <div id="view-root"></div>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast"><span id="toast-msg"></span><button id="toast-ok" class="toast-ok-btn">OK</button></div>
 
 <div class="overlay" id="overlay">
   <div class="modal-sheet" id="modal-sheet"></div>
@@ -26,7 +26,11 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
-<script src="https://accounts.google.com/gsi/client"></script>
+<!-- Google Identity Services: used to mint the Google Drive OAuth access
+     token directly (see requestDriveToken() in app.js), bypassing
+     Firebase's cross-origin redirect/popup result relay which can silently
+     fail when the app's own domain differs from Firebase's authDomain. -->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -300,6 +300,13 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
   overflow: hidden; background: var(--navy-2); cursor: pointer;
 }
 .masonry-item img { width: 100%; height: auto; display: block; }
+.masonry-item.selectable { cursor: pointer; }
+.masonry-item.selected { box-shadow: 0 0 0 3px var(--purple) inset; }
+.masonry-item .select-check {
+  position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border-radius: 999px;
+  background: rgba(18,22,46,0.85); display: flex; align-items: center; justify-content: center;
+  font-size: 14px; line-height: 1; z-index: 2; pointer-events: none;
+}
 
 .mood-chip {
   padding: 7px 14px; border-radius: 999px; font-size: 13px; font-weight: 600;
@@ -358,6 +365,11 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
   border: 1px dashed var(--border); overflow: hidden; display: flex; align-items: center; justify-content: center;
 }
 .cover-slot img { width: 100%; height: 100%; object-fit: cover; }
+/* Drag-and-drop target feedback (desktop only — see wireImageDropZone). */
+.cover-slot.drag-over, .char-photo-slot.drag-over {
+  border-color: var(--purple); border-style: solid; background: var(--purple-soft);
+  box-shadow: 0 0 0 2px rgba(155,109,255,.25) inset;
+}
 
 .field-row { margin-bottom: 8px; }
 .field-row label { display: block; font-size: 10.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
@@ -507,10 +519,17 @@ textarea {
   /* Moved from a small top banner to dead-center of the screen — easier to
      notice/read, especially for longer status messages (backfill/sweep
      progress, sync results) that used to get cut off or missed entirely
-     up in the corner. */
+     up in the corner. Now also stays up until explicitly dismissed via the
+     OK button (see showToast/hideToast) instead of vanishing in ~2s. */
   position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--purple); color: #170b26;
-  padding: 14px 22px; border-radius: 14px; font-size: 14px; font-weight: 700; z-index: 60; display: none;
+  padding: 14px 18px; border-radius: 14px; font-size: 14px; font-weight: 700; z-index: 60; display: none;
   max-width: 85vw; text-align: center; box-shadow: 0 8px 30px rgba(0,0,0,.45);
+  align-items: center; gap: 14px;
+}
+.toast #toast-msg { flex: 1; text-align: left; }
+.toast-ok-btn {
+  flex-shrink: 0; background: #170b26; color: var(--purple); border: none; border-radius: 999px;
+  padding: 7px 16px; font-size: 13px; font-weight: 700; cursor: pointer;
 }
 
 /* ---------- Database / reference mode ---------- */

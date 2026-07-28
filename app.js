@@ -422,6 +422,14 @@ async function pullMetaState() {
       CUSTOM_MOODS = new Set([...CUSTOM_MOODS, ...data.customMoods]);
       await idbPut(STORE_META, { key: 'customMoods', value: Array.from(CUSTOM_MOODS) });
     }
+    if (Array.isArray(data.imageGroups) && data.imageGroups.length) {
+      IMAGE_GROUPS = new Set([...IMAGE_GROUPS, ...data.imageGroups]);
+      await idbPut(STORE_META, { key: 'imageGroups', value: Array.from(IMAGE_GROUPS) });
+    }
+    if (data.imageTagMap && typeof data.imageTagMap === 'object') {
+      IMAGE_TAG_MAP = { ...data.imageTagMap, ...IMAGE_TAG_MAP };
+      await idbPut(STORE_META, { key: 'imageTagMap', value: IMAGE_TAG_MAP });
+    }
   } catch (err) {
     console.error('Meta pull failed:', err);
   }
@@ -953,12 +961,22 @@ function formatNames(s) {
   return String(s == null ? '' : s).replace(/,(?!\s)/g, ', ');
 }
 
+// Toasts used to auto-vanish after 2.2s with no way to dismiss them early or
+// keep them up longer — too quick to actually read, per direct feedback.
+// Now: stays up until the user taps OK (or 8s passes, as a safety net in
+// case a toast fires while nothing's focused to click it, e.g. a background
+// sync completing).
 function showToast(msg) {
   const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.style.display = 'block';
+  const msgEl = document.getElementById('toast-msg');
+  if (msgEl) msgEl.textContent = msg; else t.textContent = msg;
+  t.style.display = 'flex';
   clearTimeout(showToast._t);
-  showToast._t = setTimeout(() => { t.style.display = 'none'; }, 2200);
+  showToast._t = setTimeout(() => { t.style.display = 'none'; }, 8000);
+}
+function hideToast() {
+  document.getElementById('toast').style.display = 'none';
+  clearTimeout(showToast._t);
 }
 
 function uid(prefix) {
@@ -1005,6 +1023,72 @@ function fileToCompressedDataUrl(file, maxDim = 900, quality = 0.82) {
   });
 }
 
+// Shared by both the tap-to-pick file inputs AND the drag-and-drop zones
+// below, so cover/semi/uke photo uploads only have one code path to keep in
+// sync (compress → save locally → Drive upload in the background).
+async function applyCoverFile(file) {
+  if (!file) return;
+  const dataUrl = await fileToCompressedDataUrl(file, 700);
+  const e = getEntry(STATE.entryId);
+  if (!e) return;
+  e.coverUrl = dataUrl;
+  await saveEntry(e);
+  showToast('Cover updated!');
+  render();
+  tryUploadImageToDrive(dataUrl, `${e.id}-cover.jpg`).then((fileId) => {
+    if (!fileId) return;
+    const fresh = getEntry(e.id);
+    if (!fresh) return;
+    fresh.coverDriveId = fileId;
+    saveEntry(fresh);
+  });
+}
+async function applyCharPhotoFile(who, file) {
+  if (!file) return;
+  const dataUrl = await fileToCompressedDataUrl(file, 500);
+  const e = getEntry(STATE.entryId);
+  if (!e) return;
+  e[who].photo = dataUrl;
+  await saveEntry(e);
+  render();
+  tryUploadImageToDrive(dataUrl, `${e.id}-${who}-photo.jpg`).then((fileId) => {
+    if (!fileId) return;
+    const fresh = getEntry(e.id);
+    if (!fresh) return;
+    fresh[who].photoDriveId = fileId;
+    saveEntry(fresh);
+  });
+}
+// Makes any element a drag-and-drop target for a single image file, with a
+// `.drag-over` class toggled for visual feedback while a file is dragged
+// over it. Previously the cover/semi/uke photo slots only accepted a tap
+// that opened the native file picker — drag-and-drop is desktop-only by
+// nature (there's no equivalent gesture on a touchscreen), so this is purely
+// additive on top of the picker, not a replacement for it.
+function wireImageDropZone(el, onFile) {
+  let depth = 0;
+  el.addEventListener('dragenter', (ev) => {
+    ev.preventDefault();
+    depth++;
+    el.classList.add('drag-over');
+  });
+  el.addEventListener('dragover', (ev) => {
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy';
+  });
+  el.addEventListener('dragleave', () => {
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) el.classList.remove('drag-over');
+  });
+  el.addEventListener('drop', (ev) => {
+    ev.preventDefault();
+    depth = 0;
+    el.classList.remove('drag-over');
+    const file = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) onFile(file);
+  });
+}
+
 function getProxyUrl() {
   return localStorage.getItem('yj_proxy_url') || '';
 }
@@ -1030,6 +1114,34 @@ function setProxyUrl(url) {
 // opened from somewhere other than the home grid (Tag Entries, Database's
 // Review/Duplicates tools, etc.) since it always dumped you at Home instead.
 let NAV_HISTORY = [];
+// The stack lives in a plain JS variable, which is wiped by ANY full reload —
+// including ones the user never asked for: the auto-updating service worker
+// below forces window.location.reload() the instant a new deploy takes over
+// (so pushes show up without manual steps), and iOS routinely kills/reloads
+// a backgrounded PWA's whole JS context on its own. Either one mid-session
+// used to dump the user back at Home with an empty stack, which looked like
+// "the back button randomly goes to the homepage" even though the button
+// itself was working fine — the state it depended on just hadn't survived.
+// Persisting to sessionStorage on every navigation and rehydrating at boot
+// means a reload resumes on the same screen with history intact.
+const NAV_STATE_KEY = 'yj_nav_state_v1';
+function persistNavState() {
+  try {
+    sessionStorage.setItem(NAV_STATE_KEY, JSON.stringify({ view: STATE.view, entryId: STATE.entryId, history: NAV_HISTORY }));
+  } catch (err) { /* private-browsing or storage-full — non-fatal, just won't survive that one reload */ }
+}
+function restoreNavState() {
+  try {
+    const raw = sessionStorage.getItem(NAV_STATE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (saved && typeof saved.view === 'string') {
+      STATE.view = saved.view;
+      STATE.entryId = saved.entryId || null;
+    }
+    if (saved && Array.isArray(saved.history)) NAV_HISTORY = saved.history;
+  } catch (err) { /* corrupt/missing — just boots to Home like before */ }
+}
 function navigate(view, entryId, opts) {
   const isBack = !!(opts && opts.isBack);
   // A modal (e.g. the Suggested Match Review carousel) is a separate overlay
@@ -1049,6 +1161,7 @@ function navigate(view, entryId, opts) {
   TAG_EDIT_MODE = false;
   TAG_FILTER_OPEN = false;
   window.scrollTo(0, 0);
+  persistNavState();
   render();
   // Best-effort retries for Drive-backed images that may have missed their
   // only previous hydration attempt (e.g. this device's Drive token wasn't
@@ -1319,6 +1432,8 @@ async function signOutOfAccount() {
   DRIVE_ACCESS_TOKEN = null;
   DRIVE_TOKEN_EXPIRES_AT = 0;
   DRIVE_FOLDER_ID = null;
+  NAV_HISTORY = [];
+  try { sessionStorage.removeItem(NAV_STATE_KEY); } catch (err) {}
   await fbAuth.signOut();
 }
 
@@ -2054,13 +2169,192 @@ function entryImageUrls(e) {
 function allAppImages() {
   const map = new Map();
   ALL_ENTRIES.forEach((e) => {
-    entryImageUrls(e).forEach((src) => {
-      if (!map.has(src)) map.set(src, { dataUrl: src, reactionId: null, createdAt: e.updatedAt || e.createdAt });
+    if (e.semi && e.semi.photo) {
+      const rec = map.get(e.semi.photo) || { dataUrl: e.semi.photo, reactionId: null, createdAt: e.updatedAt || e.createdAt, kinds: new Set() };
+      rec.kinds.add('semi'); map.set(e.semi.photo, rec);
+    }
+    if (e.uke && e.uke.photo) {
+      const rec = map.get(e.uke.photo) || { dataUrl: e.uke.photo, reactionId: null, createdAt: e.updatedAt || e.createdAt, kinds: new Set() };
+      rec.kinds.add('uke'); map.set(e.uke.photo, rec);
+    }
+    (e.screencaps || []).forEach((src) => {
+      const rec = map.get(src) || { dataUrl: src, reactionId: null, createdAt: e.updatedAt || e.createdAt, kinds: new Set() };
+      rec.kinds.add('screencap'); map.set(src, rec);
     });
   });
   return Array.from(map.values())
-    .map((img) => ({ ...img, attachedEntries: ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(img.dataUrl)) }))
+    .map((img) => ({
+      ...img,
+      kinds: Array.from(img.kinds),
+      attachedEntries: ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(img.dataUrl)),
+    }))
     .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+}
+
+/* ---------------------------------------------------------------------- */
+/* Image groupings + per-image tags — same idea as Reactions' custom moods */
+/* (create a group, filter by it), but for the Images tab. Images here     */
+/* are derived from entries rather than being their own persisted record, */
+/* so tags are stored in a lookup map keyed by a fast (non-cryptographic)  */
+/* hash of the data-URL rather than on the image "object" itself.         */
+/* ---------------------------------------------------------------------- */
+
+// Deliberately NOT a security/dedup hash (that's hashDataUrl, SHA-256, used
+// for reaction duplicate detection) — this just needs to be fast enough to
+// run on hundreds of images synchronously during a render, and stable for
+// the same string. Sampling ~256 points instead of every character keeps it
+// O(1)-ish regardless of how big a given data URL is.
+function imageKey(dataUrl) {
+  const s = String(dataUrl || '');
+  const len = s.length;
+  let h1 = 0, h2 = 0;
+  const step = Math.max(1, Math.floor(len / 256));
+  for (let i = 0; i < len; i += step) {
+    const c = s.charCodeAt(i);
+    h1 = (h1 * 31 + c) | 0;
+    h2 = (h2 * 131 + c) | 0;
+  }
+  return len.toString(36) + '-' + (h1 >>> 0).toString(36) + (h2 >>> 0).toString(36);
+}
+let IMAGE_GROUPS = new Set();
+let IMAGE_TAG_MAP = {}; // { [imageKey]: string[] group names }
+function persistImageGroups() {
+  idbPut(STORE_META, { key: 'imageGroups', value: Array.from(IMAGE_GROUPS) });
+  pushMetaField('imageGroups', Array.from(IMAGE_GROUPS));
+}
+function persistImageTagMap() {
+  idbPut(STORE_META, { key: 'imageTagMap', value: IMAGE_TAG_MAP });
+  pushMetaField('imageTagMap', IMAGE_TAG_MAP);
+}
+function addImageGroup(rawName) {
+  const name = String(rawName || '').trim();
+  if (!name) return null;
+  const existing = Array.from(IMAGE_GROUPS).find((k) => k.toLowerCase() === name.toLowerCase());
+  const key = existing || name;
+  if (!existing) { IMAGE_GROUPS.add(key); persistImageGroups(); }
+  return key;
+}
+function renameImageGroup(oldKey, rawNewName) {
+  const newName = String(rawNewName || '').trim();
+  if (!newName || newName === oldKey) return;
+  IMAGE_GROUPS.delete(oldKey);
+  const mergedInto = Array.from(IMAGE_GROUPS).find((k) => k.toLowerCase() === newName.toLowerCase());
+  const finalKey = mergedInto || newName;
+  if (!mergedInto) IMAGE_GROUPS.add(finalKey);
+  persistImageGroups();
+  Object.keys(IMAGE_TAG_MAP).forEach((k) => {
+    if (IMAGE_TAG_MAP[k].includes(oldKey)) {
+      const tags = new Set(IMAGE_TAG_MAP[k].filter((t) => t !== oldKey));
+      tags.add(finalKey);
+      IMAGE_TAG_MAP[k] = Array.from(tags);
+    }
+  });
+  persistImageTagMap();
+  if (IMAGE_GROUP_FILTER === oldKey) IMAGE_GROUP_FILTER = finalKey;
+}
+function deleteImageGroup(key) {
+  IMAGE_GROUPS.delete(key);
+  persistImageGroups();
+  Object.keys(IMAGE_TAG_MAP).forEach((k) => {
+    if (IMAGE_TAG_MAP[k].includes(key)) IMAGE_TAG_MAP[k] = IMAGE_TAG_MAP[k].filter((t) => t !== key);
+  });
+  persistImageTagMap();
+  if (IMAGE_GROUP_FILTER === key) IMAGE_GROUP_FILTER = null;
+}
+function getImageTags(dataUrl) {
+  return IMAGE_TAG_MAP[imageKey(dataUrl)] || [];
+}
+function toggleImageTag(dataUrl, tag) {
+  const key = imageKey(dataUrl);
+  const tags = new Set(IMAGE_TAG_MAP[key] || []);
+  if (tags.has(tag)) tags.delete(tag); else tags.add(tag);
+  IMAGE_TAG_MAP[key] = Array.from(tags);
+  persistImageTagMap();
+}
+function openManageImageGroupsModal() {
+  const list = Array.from(IMAGE_GROUPS).sort((a, b) => a.localeCompare(b));
+  openModal(`
+    <h3>Manage image groups</h3>
+    ${list.length ? `<div style="display:flex;flex-direction:column;gap:8px;">${list.map((name) => `
+      <div style="display:flex;align-items:center;gap:8px;justify-content:space-between;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;">
+        <span>🏷️ ${escapeHtml(name)}</span>
+        <div style="display:flex;gap:6px;">
+          <button class="ref-btn" data-rename-image-group="${escapeHtml(name)}">Rename</button>
+          <button class="btn-ghost" data-delete-image-group="${escapeHtml(name)}">Delete</button>
+        </div>
+      </div>`).join('')}</div>` : `<div class="empty-state">No image groups yet.</div>`}
+    <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Done</button></div>
+  `);
+}
+
+// Selecting several images at once, then attaching them all to one entry —
+// previously the only way to attach an image to a read was one at a time
+// from inside that entry's own page.
+let IMAGE_SELECT_MODE = false;
+let IMAGE_SELECTED = new Set();
+let IMAGE_KIND_FILTER = null; // null | 'semi' | 'uke'
+let IMAGE_GROUP_FILTER = null;
+
+function openAttachImagesToEntryModal(dataUrls) {
+  const candidates = ALL_ENTRIES.slice().sort((a, b) => a.title.localeCompare(b.title));
+  const renderList = (list) => list.length
+    ? list.slice(0, 40).map((c) => `<button class="ref-btn" style="width:100%;text-align:left;" data-attach-images-target="${c.id}">${escapeHtml(c.title)}</button>`).join('')
+    : '<div class="empty-state">No matches.</div>';
+  openModal(`
+    <h3>Attach ${dataUrls.length} image${dataUrls.length === 1 ? '' : 's'} to…</h3>
+    <p style="font-size:12px;color:var(--text-dim);">Picked images are added to that read's screencaps.</p>
+    <input type="text" id="attach-images-search" placeholder="Search titles..." style="width:100%;margin-bottom:10px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--navy-2);color:var(--text);box-sizing:border-box;">
+    <div id="attach-images-list" style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;">${renderList(candidates)}</div>
+    <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Cancel</button></div>
+  `);
+  const searchEl = document.getElementById('attach-images-search');
+  const listEl = document.getElementById('attach-images-list');
+  if (searchEl) {
+    searchEl.oninput = () => {
+      const q = searchEl.value.trim().toLowerCase();
+      const filtered = q ? candidates.filter((c) => c.title.toLowerCase().includes(q)) : candidates;
+      listEl.innerHTML = renderList(filtered);
+      listEl.querySelectorAll('[data-attach-images-target]').forEach((el) => {
+        el.onclick = () => attachImagesToEntry(dataUrls, el.getAttribute('data-attach-images-target'));
+      });
+    };
+    searchEl.focus();
+  }
+  listEl.querySelectorAll('[data-attach-images-target]').forEach((el) => {
+    el.onclick = () => attachImagesToEntry(dataUrls, el.getAttribute('data-attach-images-target'));
+  });
+}
+async function attachImagesToEntry(dataUrls, entryId) {
+  const e = getEntry(entryId);
+  if (!e) return;
+  e.screencaps = e.screencaps || [];
+  let added = 0;
+  dataUrls.forEach((src) => {
+    if (!e.screencaps.includes(src)) { e.screencaps.push(src); added++; }
+  });
+  await saveEntry(e);
+  closeModal();
+  IMAGE_SELECT_MODE = false;
+  IMAGE_SELECTED = new Set();
+  showToast(`Attached ${added} image${added === 1 ? '' : 's'} to "${e.title}"`);
+  render();
+}
+// Cross-link into the standalone Reactions library — an image already on a
+// read can also be dropped straight into the mood-tagged meme collection
+// instead of having to re-download/re-upload it separately.
+async function addImageAsReaction(dataUrl) {
+  const hash = await hashDataUrl(dataUrl);
+  if (findReactionByHash(hash)) return null;
+  const reaction = { id: uid('reaction'), dataUrl, hash, moodTags: [], note: '', createdAt: new Date().toISOString() };
+  await saveReaction(reaction);
+  tryUploadImageToDrive(dataUrl, `reaction-${reaction.id}.jpg`).then((fileId) => {
+    if (!fileId) return;
+    const fresh = ALL_REACTIONS.find((r) => r.id === reaction.id);
+    if (!fresh) return;
+    fresh.driveId = fileId;
+    saveReaction(fresh);
+  });
+  return reaction;
 }
 
 // Perceptual (average) hash — resizes to a tiny 8x8 grayscale grid and
@@ -2141,15 +2435,18 @@ async function scanForImageDuplicates() {
 }
 
 function renderReactionsLibrary() {
-  const items = allAppImages();
+  let items = allAppImages();
+  if (IMAGE_KIND_FILTER) items = items.filter((i) => i.kinds.includes(IMAGE_KIND_FILTER));
+  if (IMAGE_GROUP_FILTER) items = items.filter((i) => getImageTags(i.dataUrl).includes(IMAGE_GROUP_FILTER));
   const attached = items.filter((i) => i.attachedEntries.length > 0);
   const unattached = items.filter((i) => i.attachedEntries.length === 0);
 
   const masonryItem = (img) => `
-    <div class="masonry-item" data-view-image-attachments="${escapeHtml(img.dataUrl)}">
+    <div class="masonry-item ${IMAGE_SELECT_MODE ? 'selectable' : ''} ${IMAGE_SELECTED.has(img.dataUrl) ? 'selected' : ''}" data-images-item="${escapeHtml(img.dataUrl)}">
       <img src="${img.dataUrl}" alt="" loading="lazy">
-      ${img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : ''}
-      ${img.reactionId ? `<button class="del" data-del-reaction="${img.reactionId}">✕</button>` : ''}
+      ${IMAGE_SELECT_MODE ? `<span class="select-check">${IMAGE_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : ''}
+      ${!IMAGE_SELECT_MODE && img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : ''}
+      ${!IMAGE_SELECT_MODE && img.reactionId ? `<button class="del" data-del-reaction="${img.reactionId}">✕</button>` : ''}
     </div>`;
 
   let tabBody;
@@ -2174,16 +2471,40 @@ function renderReactionsLibrary() {
     tabBody = attached.length ? `<div class="image-masonry">${attached.map(masonryItem).join('')}</div>` : `<div class="empty-state">No attached images yet.</div>`;
   }
 
+  const groupList = Array.from(IMAGE_GROUPS).sort((a, b) => a.localeCompare(b));
+  const groupChips = groupList.map((name) => `<button class="mood-chip ${IMAGE_GROUP_FILTER === name ? 'active' : ''}" data-images-group-filter="${escapeHtml(name)}">🏷️ ${escapeHtml(name)}</button>`).join('');
+
   return `
     <div class="app-header">
       <div class="brand-row"><h1>🖼️ Images</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${items.length} image${items.length === 1 ? '' : 's'} across the app. Tap one to see which reads it's attached to.</div>
-      <label class="upload-btn">📎 Add image(s)<input type="file" accept="image/*" multiple id="reaction-upload-input"></label>
-      <div class="tagmgr-tabs" style="margin-top:10px;">
+      <div class="export-row" style="margin-bottom:10px;">
+        <label class="upload-btn" style="flex:1;">📎 Add image(s)<input type="file" accept="image/*" multiple id="reaction-upload-input"></label>
+        <button class="ref-btn" data-images-toggle-select="1">${IMAGE_SELECT_MODE ? '✕ Cancel select' : '☑️ Select'}</button>
+      </div>
+      ${IMAGE_SELECT_MODE ? `
+        <div class="export-row" style="margin-bottom:10px;background:var(--card);border:1px solid var(--purple);border-radius:var(--radius-sm);padding:8px;">
+          <div style="flex:1;font-size:12.5px;color:var(--text-dim);align-self:center;">${IMAGE_SELECTED.size} selected</div>
+          <button class="ref-btn" data-images-attach-selected="1" ${IMAGE_SELECTED.size ? '' : 'disabled'}>📎 Attach to a read…</button>
+          <button class="ref-btn" data-images-add-selected-reactions="1" ${IMAGE_SELECTED.size ? '' : 'disabled'}>🎭 Add as reactions</button>
+        </div>
+      ` : ''}
+      <div class="tagmgr-tabs" style="margin-bottom:8px;">
         <button class="tagmgr-tab ${IMAGES_TAB === 'attached' ? 'active' : ''}" data-images-tab="attached">Attached (${attached.length})</button>
         <button class="tagmgr-tab ${IMAGES_TAB === 'unattached' ? 'active' : ''}" data-images-tab="unattached">Unattached (${unattached.length})</button>
         <button class="tagmgr-tab ${IMAGES_TAB === 'duplicates' ? 'active' : ''}" data-images-tab="duplicates">Possible Duplicates</button>
+        <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-images-manage-groups="1" title="Manage image groups (rename/delete)">✏️ Manage</button>
       </div>
+      ${IMAGES_TAB !== 'duplicates' ? `
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">
+          <button class="mood-chip ${IMAGE_KIND_FILTER === 'semi' ? 'active' : ''}" data-images-kind-filter="semi">Semi only</button>
+          <button class="mood-chip ${IMAGE_KIND_FILTER === 'uke' ? 'active' : ''}" data-images-kind-filter="uke">Uke only</button>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center;">
+          ${groupChips}
+          <button class="mood-chip" data-images-add-group="1">➕ New group</button>
+        </div>
+      ` : ''}
     </div>
     <main>${tabBody}</main>
     ${renderBottomNav('reactions')}
@@ -2192,14 +2513,27 @@ function renderReactionsLibrary() {
 
 function openImageAttachmentsModal(dataUrl) {
   const entries = ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(dataUrl));
+  const groupList = Array.from(IMAGE_GROUPS).sort((a, b) => a.localeCompare(b));
+  const currentTags = getImageTags(dataUrl);
   openModal(`
     <h3>Attached to</h3>
     <img src="${dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">
     ${entries.length
-      ? `<div style="display:flex;flex-direction:column;gap:6px;">${entries.map((e) => `
+      ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;">${entries.map((e) => `
           <button class="ref-btn" style="text-align:left;" data-goto-entry-from-modal="${e.id}">${escapeHtml(e.title)}</button>`).join('')}</div>`
       : `<div class="empty-state">Not attached to any read yet.</div>`}
-    <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Close</button></div>
+    ${groupList.length ? `
+      <div class="field-row">
+        <label>Groups</label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
+          ${groupList.map((name) => `<button class="mood-chip ${currentTags.includes(name) ? 'active' : ''}" data-toggle-image-tag="${escapeHtml(name)}" data-image-url="${escapeHtml(dataUrl)}">🏷️ ${escapeHtml(name)}</button>`).join('')}
+        </div>
+      </div>
+    ` : ''}
+    <div class="modal-actions">
+      <button class="btn-ghost" data-close-modal="1">Close</button>
+      <button class="btn-primary" data-use-as-reaction="${escapeHtml(dataUrl)}">🎭 Use as reaction</button>
+    </div>
   `);
 }
 
@@ -3859,41 +4193,20 @@ function attachRootHandlers() {
     };
   });
   root.querySelectorAll('[data-char-photo]').forEach((el) => {
-    el.onchange = async () => {
-      if (!el.files[0]) return;
-      const who = el.getAttribute('data-char-photo');
-      const dataUrl = await fileToCompressedDataUrl(el.files[0], 500);
-      const e = getEntry(STATE.entryId);
-      e[who].photo = dataUrl;
-      await saveEntry(e); render();
-      // Local save/display already happened above — the Drive upload runs
-      // after, purely so this photo can cross-sync to her other device.
-      tryUploadImageToDrive(dataUrl, `${e.id}-${who}-photo.jpg`).then((fileId) => {
-        if (!fileId) return;
-        const fresh = getEntry(e.id);
-        if (!fresh) return;
-        fresh[who].photoDriveId = fileId;
-        saveEntry(fresh);
-      });
-    };
+    el.onchange = () => applyCharPhotoFile(el.getAttribute('data-char-photo'), el.files[0]);
   });
   const coverUploadInput = root.querySelector('#cover-upload-input');
-  if (coverUploadInput) coverUploadInput.onchange = async () => {
-    if (!coverUploadInput.files[0]) return;
-    const dataUrl = await fileToCompressedDataUrl(coverUploadInput.files[0], 700);
-    const e = getEntry(STATE.entryId);
-    e.coverUrl = dataUrl;
-    await saveEntry(e);
-    showToast('Cover updated!');
-    render();
-    tryUploadImageToDrive(dataUrl, `${e.id}-cover.jpg`).then((fileId) => {
-      if (!fileId) return;
-      const fresh = getEntry(e.id);
-      if (!fresh) return;
-      fresh.coverDriveId = fileId;
-      saveEntry(fresh);
-    });
-  };
+  if (coverUploadInput) coverUploadInput.onchange = () => applyCoverFile(coverUploadInput.files[0]);
+  // Drag-and-drop onto the cover / semi / uke photo slots, in addition to the
+  // existing tap-to-pick file inputs — previously requested, wasn't wired up.
+  const coverSlotEl = root.querySelector('.cover-slot');
+  if (coverSlotEl) wireImageDropZone(coverSlotEl, applyCoverFile);
+  root.querySelectorAll('.char-photo-slot').forEach((slotEl) => {
+    const input = slotEl.querySelector('[data-char-photo]');
+    if (!input) return;
+    const who = input.getAttribute('data-char-photo');
+    wireImageDropZone(slotEl, (file) => applyCharPhotoFile(who, file));
+  });
   const editToggleBtn = root.querySelector('[data-edit-toggle]');
   if (editToggleBtn) editToggleBtn.onclick = () => { DETAIL_EDIT_MODE = true; render(); };
   const cancelEditBtn = root.querySelector('[data-cancel-edit]');
@@ -4061,12 +4374,64 @@ function attachRootHandlers() {
       render();
     };
   });
-  root.querySelectorAll('[data-view-image-attachments]').forEach((el) => {
-    el.onclick = () => openImageAttachmentsModal(el.getAttribute('data-view-image-attachments'));
+  root.querySelectorAll('[data-images-item]').forEach((el) => {
+    el.onclick = () => {
+      const url = el.getAttribute('data-images-item');
+      if (IMAGE_SELECT_MODE) {
+        if (IMAGE_SELECTED.has(url)) IMAGE_SELECTED.delete(url); else IMAGE_SELECTED.add(url);
+        render();
+      } else {
+        openImageAttachmentsModal(url);
+      }
+    };
   });
+  const toggleSelectBtn = root.querySelector('[data-images-toggle-select]');
+  if (toggleSelectBtn) toggleSelectBtn.onclick = () => {
+    IMAGE_SELECT_MODE = !IMAGE_SELECT_MODE;
+    IMAGE_SELECTED = new Set();
+    render();
+  };
+  const attachSelectedBtn = root.querySelector('[data-images-attach-selected]');
+  if (attachSelectedBtn) attachSelectedBtn.onclick = () => {
+    if (IMAGE_SELECTED.size) openAttachImagesToEntryModal(Array.from(IMAGE_SELECTED));
+  };
+  const addSelectedReactionsBtn = root.querySelector('[data-images-add-selected-reactions]');
+  if (addSelectedReactionsBtn) addSelectedReactionsBtn.onclick = async () => {
+    const urls = Array.from(IMAGE_SELECTED);
+    let added = 0;
+    for (const url of urls) {
+      const r = await addImageAsReaction(url);
+      if (r) added++;
+    }
+    IMAGE_SELECT_MODE = false;
+    IMAGE_SELECTED = new Set();
+    showToast(`Added ${added} of ${urls.length} to Reactions${added < urls.length ? ' (rest were already in there)' : ''}`);
+    render();
+  };
   root.querySelectorAll('[data-images-tab]').forEach((el) => {
     el.onclick = () => { IMAGES_TAB = el.getAttribute('data-images-tab'); render(); };
   });
+  root.querySelectorAll('[data-images-kind-filter]').forEach((el) => {
+    el.onclick = () => {
+      const kind = el.getAttribute('data-images-kind-filter');
+      IMAGE_KIND_FILTER = IMAGE_KIND_FILTER === kind ? null : kind;
+      render();
+    };
+  });
+  root.querySelectorAll('[data-images-group-filter]').forEach((el) => {
+    el.onclick = () => {
+      const g = el.getAttribute('data-images-group-filter');
+      IMAGE_GROUP_FILTER = IMAGE_GROUP_FILTER === g ? null : g;
+      render();
+    };
+  });
+  const addImageGroupBtn = root.querySelector('[data-images-add-group]');
+  if (addImageGroupBtn) addImageGroupBtn.onclick = () => {
+    const key = addImageGroup(prompt('Name this new image group (e.g. "favorites", "wallpaper-worthy"):'));
+    if (key) { IMAGE_GROUP_FILTER = key; render(); }
+  };
+  const manageImageGroupsBtn = root.querySelector('[data-images-manage-groups]');
+  if (manageImageGroupsBtn) manageImageGroupsBtn.onclick = openManageImageGroupsModal;
   const scanDupBtn = root.querySelector('[data-scan-duplicates]');
   if (scanDupBtn) scanDupBtn.onclick = () => scanForImageDuplicates();
 
@@ -4554,6 +4919,36 @@ document.addEventListener('click', (ev) => {
       openManageMoodsModal();
     }
   }
+  if (t.matches('[data-rename-image-group]')) {
+    const oldKey = t.getAttribute('data-rename-image-group');
+    const newName = prompt(`Rename "${oldKey}" to:`, oldKey);
+    if (newName && newName.trim() && newName.trim() !== oldKey) {
+      renameImageGroup(oldKey, newName);
+      render();
+      openManageImageGroupsModal();
+    }
+  }
+  if (t.matches('[data-delete-image-group]')) {
+    const key = t.getAttribute('data-delete-image-group');
+    if (confirm(`Delete the "${key}" image group? This removes the tag from every image — the images themselves are kept.`)) {
+      deleteImageGroup(key);
+      render();
+      openManageImageGroupsModal();
+    }
+  }
+  if (t.matches('[data-toggle-image-tag]')) {
+    const tag = t.getAttribute('data-toggle-image-tag');
+    const url = t.getAttribute('data-image-url');
+    toggleImageTag(url, tag);
+    openImageAttachmentsModal(url);
+  }
+  if (t.matches('[data-use-as-reaction]')) {
+    const url = t.getAttribute('data-use-as-reaction');
+    addImageAsReaction(url).then((r) => {
+      showToast(r ? 'Added to Reactions — tag it with a mood from the Reactions tab' : 'Already in your Reactions library');
+      closeModal();
+    });
+  }
   if (t.matches('[data-carousel-use]')) {
     const entryId = MATCH_REVIEW_QUEUE[MATCH_REVIEW_INDEX];
     applySuggestedMatch(entryId).then(() => {
@@ -4598,6 +4993,7 @@ document.addEventListener('click', (ev) => {
 document.getElementById('overlay').addEventListener('click', (ev) => {
   if (ev.target.id === 'overlay') closeModal();
 });
+document.getElementById('toast-ok').addEventListener('click', hideToast);
 
 /* ---------------------------------------------------------------------- */
 /* Filter section collapse (home view) — manual arrow toggle only, no     */
@@ -4834,6 +5230,10 @@ function setupAutoUpdatingServiceWorker() {
 
 async function boot() {
   try {
+    // Rehydrate whatever screen/history the user was on before this reload —
+    // see the big comment above NAV_HISTORY for why a reload can happen
+    // without the user ever touching the back button.
+    restoreNavState();
     db = await openDB();
     await ensureSeeded();
     await loadAllEntries();
@@ -4852,6 +5252,10 @@ async function boot() {
     if (savedCustomMoods && Array.isArray(savedCustomMoods.value)) CUSTOM_MOODS = new Set(savedCustomMoods.value);
     const savedSuggCollapsed = await idbGet(STORE_META, 'tagSuggestionsCollapsed');
     if (savedSuggCollapsed && typeof savedSuggCollapsed.value === 'boolean') TAG_SUGGESTIONS_COLLAPSED = savedSuggCollapsed.value;
+    const savedImageGroups = await idbGet(STORE_META, 'imageGroups');
+    if (savedImageGroups && Array.isArray(savedImageGroups.value)) IMAGE_GROUPS = new Set(savedImageGroups.value);
+    const savedImageTagMap = await idbGet(STORE_META, 'imageTagMap');
+    if (savedImageTagMap && savedImageTagMap.value && typeof savedImageTagMap.value === 'object') IMAGE_TAG_MAP = savedImageTagMap.value;
     if ('serviceWorker' in navigator) {
       setupAutoUpdatingServiceWorker();
     }
