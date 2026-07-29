@@ -3293,8 +3293,8 @@ async function openImageAttachmentsModal(dataUrl) {
       <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
       <h3>Attached to</h3>
     ${isVideoUrl(dataUrl)
-      ? `<video src="${dataUrl}" autoplay loop muted controls playsinline style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
-      : `<img src="${dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">`}
+      ? `<video src="${dataUrl}" autoplay loop muted controls playsinline style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
+      : `<img src="${dataUrl}" alt="" style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`}
     ${entries.length
       ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;">${entries.map((e) => `
           <button class="ref-btn" style="text-align:left;" data-goto-entry-from-modal="${e.id}">${escapeHtml(e.title)}</button>`).join('')}</div>`
