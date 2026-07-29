@@ -1260,8 +1260,14 @@ function closeModal() {
   document.getElementById('modal-sheet').innerHTML = '';
 }
 
-function openModal(html) {
+function openModal(html, opts) {
   document.getElementById('modal-sheet').innerHTML = html;
+  // Individual Images/Reactions/H file modals always want to open dead
+  // center on screen (per her "core app setting" spec) rather than the
+  // usual bottom-anchored sheet every other modal in the app uses — that
+  // toggle lives on the overlay itself so it never leaks onto whatever
+  // opens next.
+  document.getElementById('overlay').classList.toggle('overlay-centered', !!(opts && opts.centered));
   document.getElementById('overlay').classList.add('open');
 }
 
@@ -2565,13 +2571,29 @@ function allAppImages() {
       kinds: Array.from(img.kinds),
       attachedEntries: ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(img.dataUrl)),
     }));
+  // Standalone reactions that were uploaded straight into the Images tab (via
+  // #reaction-upload-input -> addReactionFiles()) never touch any entry, so
+  // they'd never show up in the `map` built above — that's what made direct
+  // uploads to Images invisible (no count bump, nothing in "Unattached").
+  // Fold in any ALL_REACTIONS record whose dataUrl isn't already accounted
+  // for by an entry, skipping anything already pulled into H.
+  const standaloneReactions = ALL_REACTIONS
+    .filter((r) => r.dataUrl && !map.has(r.dataUrl) && !H_IMAGE_KEYS.has(imageKey(r.dataUrl)))
+    .map((r) => ({
+      dataUrl: r.dataUrl,
+      reactionId: r.id,
+      createdAt: r.createdAt,
+      pending: false,
+      kinds: [],
+      attachedEntries: ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(r.dataUrl)),
+    }));
   const pendingItems = pending.map((p) => ({
     ...p,
     dataUrl: null,
     reactionId: null,
     attachedEntries: [{ id: p.entryId, title: p.entryTitle }],
   }));
-  return [...hydrated, ...pendingItems]
+  return [...hydrated, ...standaloneReactions, ...pendingItems]
     .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 }
 
@@ -2865,7 +2887,7 @@ function renderReactionsLibrary() {
     : `<div class="masonry-item ${IMAGE_SELECT_MODE ? 'selectable' : ''} ${IMAGE_SELECTED.has(img.dataUrl) ? 'selected' : ''}" data-images-item="${escapeHtml(img.dataUrl)}">
       ${isVideoUrl(img.dataUrl) ? `<video src="${img.dataUrl}" autoplay loop muted playsinline></video>` : `<img src="${img.dataUrl}" alt="" loading="lazy">`}
       ${IMAGE_SELECT_MODE ? `<span class="select-check">${IMAGE_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : ''}
-      ${!IMAGE_SELECT_MODE && img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : ''}
+      ${!IMAGE_SELECT_MODE && !getImageTags(img.dataUrl).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : (!IMAGE_SELECT_MODE && img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : '')}
       ${!IMAGE_SELECT_MODE && img.reactionId ? `<button class="del" data-del-reaction="${img.reactionId}">✕</button>` : ''}
     </div>`;
 
@@ -2985,8 +3007,11 @@ async function openImageAttachmentsModal(dataUrl) {
   const currentTags = getImageTags(dataUrl);
   const inReactions = await isDataUrlInReactions(dataUrl);
   const inH = isDataUrlInH(dataUrl);
+  const croppable = !isVideoUrl(dataUrl) && !/^data:image\/(gif|webp)/.test(dataUrl || '');
   openModal(`
-    <h3>Attached to</h3>
+    <div class="modal-close-corner-wrap">
+      <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
+      <h3>Attached to</h3>
     ${isVideoUrl(dataUrl)
       ? `<video src="${dataUrl}" autoplay loop muted controls playsinline style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
       : `<img src="${dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">`}
@@ -3009,9 +3034,11 @@ async function openImageAttachmentsModal(dataUrl) {
       </div>
     </div>
     <div class="modal-actions">
-      <button class="btn-ghost" data-close-modal="1">Close</button>
+      ${croppable ? `<button class="btn-ghost" data-crop-image="${escapeHtml(dataUrl)}">✂️ Crop</button>` : ''}
+      <button class="btn-primary" data-close-modal="1">Close</button>
     </div>
-  `);
+    </div>
+  `, { centered: true });
 }
 
 /* ---------------------------------------------------------------------- */
@@ -3329,7 +3356,6 @@ function openMemeEditModal(id) {
             ? `<video src="${r.dataUrl}" autoplay loop muted controls playsinline style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
             : `<img src="${r.dataUrl}" alt="" style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`)
         : `<div class="cover-placeholder" style="height:180px;margin-bottom:10px;">⏳ Still downloading from Drive…</div>`}
-    <div class="field-row"><label>Caption/keywords (for search)</label><input type="text" id="meme-note-input" value="${escapeHtml(r.note || '')}" placeholder="e.g. blushing, screaming, oh no"></div>
     <div class="field-row">
       <label>Mood ${!(r.moodTags || []).length ? '<span style="color:var(--red-flag);">— pick at least one</span>' : ''}</label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">
@@ -3351,12 +3377,7 @@ function openMemeEditModal(id) {
         <button class="btn-primary" data-close-modal="1">Done</button>
       </div>
     </div>
-  `);
-  const noteInput = document.getElementById('meme-note-input');
-  if (noteInput) noteInput.onblur = async () => {
-    const rr = ALL_REACTIONS.find((x) => x.id === id);
-    if (rr) { rr.note = noteInput.value; await saveReaction(rr); }
-  };
+  `, { centered: true });
 }
 
 // Simple drag-to-move, drag-corner-to-resize crop box over the reaction
@@ -3364,15 +3385,19 @@ function openMemeEditModal(id) {
 // Static images only (see the Crop button's animated-file check above):
 // cropping via canvas would flatten a GIF/WebP to its first frame, which
 // would silently kill the animation, so the button never appears for those.
-function openCropReactionModal(id) {
-  const r = ALL_REACTIONS.find((x) => x.id === id);
-  if (!r || !r.dataUrl) return;
+// Generic crop stage, shared by Images/Reactions/H — used to only live here
+// keyed to a single reaction id. `onSave(newDataUrl)` gets called once the
+// user hits Save; each gallery supplies its own logic for where the cropped
+// result needs to land (a reaction record, an entry's photo field, a
+// standalone H upload, or all of the above at once for a shared image).
+function openCropModal(dataUrl, onSave, title) {
+  if (!dataUrl) return;
   openModal(`
     <div class="modal-close-corner-wrap">
       <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
-      <h3>Crop reaction</h3>
+      <h3>${escapeHtml(title || 'Crop image')}</h3>
       <div class="crop-stage" id="crop-stage">
-        <img src="${r.dataUrl}" id="crop-img" alt="" draggable="false">
+        <img src="${dataUrl}" id="crop-img" alt="" draggable="false">
         <div class="crop-box" id="crop-box">
           <div class="crop-handle" id="crop-handle-br"></div>
         </div>
@@ -3380,11 +3405,204 @@ function openCropReactionModal(id) {
       <p style="font-size:11px;color:var(--text-dim);margin-top:8px;">Drag the box to move it, drag the corner dot to resize, then Save.</p>
       <div class="modal-actions">
         <button class="btn-ghost" data-close-modal="1">Cancel</button>
-        <button class="btn-primary" data-save-crop="${r.id}">✂️ Save Crop</button>
+        <button class="btn-primary" id="crop-save-btn">✂️ Save Crop</button>
       </div>
     </div>
-  `);
+  `, { centered: true });
   wireCropStage();
+  const saveBtn = document.getElementById('crop-save-btn');
+  if (saveBtn) saveBtn.onclick = async () => {
+    const newDataUrl = computeCroppedDataUrl();
+    if (!newDataUrl) return;
+    saveBtn.disabled = true;
+    await onSave(newDataUrl);
+  };
+}
+
+function computeCroppedDataUrl() {
+  const img = document.getElementById('crop-img');
+  const box = document.getElementById('crop-box');
+  if (!img || !box || !box._imgOffset) return null;
+  const off = box._imgOffset;
+  const scaleX = img.naturalWidth / off.w;
+  const scaleY = img.naturalHeight / off.h;
+  const boxLeft = parseFloat(box.style.left) - off.left;
+  const boxTop = parseFloat(box.style.top) - off.top;
+  const boxW = parseFloat(box.style.width);
+  const boxH = parseFloat(box.style.height);
+  const sx = boxLeft * scaleX, sy = boxTop * scaleY, sw = boxW * scaleX, sh = boxH * scaleY;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(sw));
+  canvas.height = Math.max(1, Math.round(sh));
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', 0.9);
+}
+
+// Cropping changes the image's bytes, which changes its imageKey() hash —
+// every per-image tag/note/H-membership map is keyed by that hash, so
+// without this they'd silently orphan onto the old (now-gone) key the
+// moment a crop saves. Carries them over to the new key instead.
+function migrateImageKeyMetadata(oldDataUrl, newDataUrl) {
+  const oldKey = imageKey(oldDataUrl);
+  const newKey = imageKey(newDataUrl);
+  if (oldKey === newKey) return;
+  if (IMAGE_TAG_MAP[oldKey]) { IMAGE_TAG_MAP[newKey] = IMAGE_TAG_MAP[oldKey]; delete IMAGE_TAG_MAP[oldKey]; persistImageTagMap(); }
+  if (H_TAG_MAP[oldKey]) { H_TAG_MAP[newKey] = H_TAG_MAP[oldKey]; delete H_TAG_MAP[oldKey]; persistHTagMap(); }
+  if (H_NOTE_MAP[oldKey]) { H_NOTE_MAP[newKey] = H_NOTE_MAP[oldKey]; delete H_NOTE_MAP[oldKey]; persistHNoteMap(); }
+  if (H_IMAGE_KEYS.has(oldKey)) { H_IMAGE_KEYS.delete(oldKey); H_IMAGE_KEYS.add(newKey); persistHImageKeys(); }
+}
+
+function openCropReactionModal(id) {
+  const r = ALL_REACTIONS.find((x) => x.id === id);
+  if (!r || !r.dataUrl) return;
+  openCropModal(r.dataUrl, async (newDataUrl) => {
+    const fresh = ALL_REACTIONS.find((x) => x.id === id);
+    if (!fresh) return;
+    const oldDataUrl = fresh.dataUrl;
+    fresh.dataUrl = newDataUrl;
+    fresh.hash = await hashDataUrl(newDataUrl);
+    fresh.driveId = null;
+    await saveReaction(fresh);
+    migrateImageKeyMetadata(oldDataUrl, newDataUrl);
+    showToast('Cropped!');
+    closeModal();
+    openMemeEditModal(id);
+    tryUploadImageToDrive(newDataUrl, `reaction-${fresh.id}.jpg`, 'reaction').then((fileId) => {
+      if (!fileId) return;
+      const f2 = ALL_REACTIONS.find((x) => x.id === id);
+      if (!f2) return;
+      f2.driveId = fileId;
+      saveReaction(f2);
+    });
+  }, 'Crop reaction');
+}
+
+// Images-tab crop: the same dataUrl can live on an entry's semi/uke photo
+// and/or its screencaps, and (since the direct-upload fix) may ALSO be a
+// standalone reaction — update every place it's found so nothing goes out
+// of sync with a stale, uncropped copy.
+async function openCropImageModal(dataUrl) {
+  openCropModal(dataUrl, async (newDataUrl) => {
+    for (const e of ALL_ENTRIES) {
+      let changed = false;
+      if (e.semi && e.semi.photo === dataUrl) {
+        e.semi.photo = newDataUrl; e.semi.photoDriveId = null; changed = true;
+        tryUploadImageToDrive(newDataUrl, `${e.id}-semi-photo.jpg`).then((fileId) => {
+          if (!fileId) return;
+          const fresh = ALL_ENTRIES.find((x) => x.id === e.id);
+          if (fresh && fresh.semi) { fresh.semi.photoDriveId = fileId; saveEntry(fresh); }
+        });
+      }
+      if (e.uke && e.uke.photo === dataUrl) {
+        e.uke.photo = newDataUrl; e.uke.photoDriveId = null; changed = true;
+        tryUploadImageToDrive(newDataUrl, `${e.id}-uke-photo.jpg`).then((fileId) => {
+          if (!fileId) return;
+          const fresh = ALL_ENTRIES.find((x) => x.id === e.id);
+          if (fresh && fresh.uke) { fresh.uke.photoDriveId = fileId; saveEntry(fresh); }
+        });
+      }
+      if (e.screencaps && e.screencaps.includes(dataUrl)) {
+        const idx = e.screencaps.indexOf(dataUrl);
+        e.screencaps[idx] = newDataUrl;
+        if (e.screencapDriveIds && e.screencapDriveIds[idx]) e.screencapDriveIds[idx] = null;
+        changed = true;
+        tryUploadImageToDrive(newDataUrl, `${e.id}-screencap-${Date.now()}-${idx}.jpg`).then((fileId) => {
+          if (!fileId) return;
+          const fresh = ALL_ENTRIES.find((x) => x.id === e.id);
+          if (fresh && fresh.screencapDriveIds) { fresh.screencapDriveIds[idx] = fileId; saveEntry(fresh); }
+        });
+      }
+      if (changed) await saveEntry(e);
+    }
+    const reaction = ALL_REACTIONS.find((r) => r.dataUrl === dataUrl);
+    if (reaction) {
+      reaction.dataUrl = newDataUrl;
+      reaction.hash = await hashDataUrl(newDataUrl);
+      reaction.driveId = null;
+      await saveReaction(reaction);
+      tryUploadImageToDrive(newDataUrl, `reaction-${reaction.id}.jpg`, 'reaction').then((fileId) => {
+        if (!fileId) return;
+        const fresh = ALL_REACTIONS.find((x) => x.id === reaction.id);
+        if (fresh) { fresh.driveId = fileId; saveReaction(fresh); }
+      });
+    }
+    migrateImageKeyMetadata(dataUrl, newDataUrl);
+    showToast('Cropped!');
+    closeModal();
+    openImageAttachmentsModal(newDataUrl);
+  }, 'Crop image');
+}
+
+// H-tab crop: a standalone H upload has its own record to update; an
+// entry-sourced H image (just flagged via H_IMAGE_KEYS, no copy of its own)
+// gets updated the same way an Images-tab crop would.
+async function openCropHModal(dataUrl) {
+  const upload = ALL_H_IMAGES.find((h) => h.dataUrl === dataUrl);
+  openCropModal(dataUrl, async (newDataUrl) => {
+    if (upload) {
+      const fresh = ALL_H_IMAGES.find((h) => h.id === upload.id);
+      if (fresh) {
+        fresh.dataUrl = newDataUrl;
+        fresh.hash = await hashDataUrl(newDataUrl);
+        fresh.driveId = null;
+        await saveHImage(fresh);
+        tryUploadImageToDrive(newDataUrl, `h-${fresh.id}.jpg`, 'h').then((fileId) => {
+          if (!fileId) return;
+          const f2 = ALL_H_IMAGES.find((h) => h.id === fresh.id);
+          if (f2) { f2.driveId = fileId; saveHImage(f2); }
+        });
+      }
+    } else {
+      for (const e of ALL_ENTRIES) {
+        let changed = false;
+        if (e.semi && e.semi.photo === dataUrl) {
+          e.semi.photo = newDataUrl; e.semi.photoDriveId = null; changed = true;
+          tryUploadImageToDrive(newDataUrl, `${e.id}-semi-photo.jpg`).then((fileId) => {
+            if (!fileId) return;
+            const fresh = ALL_ENTRIES.find((x) => x.id === e.id);
+            if (fresh && fresh.semi) { fresh.semi.photoDriveId = fileId; saveEntry(fresh); }
+          });
+        }
+        if (e.uke && e.uke.photo === dataUrl) {
+          e.uke.photo = newDataUrl; e.uke.photoDriveId = null; changed = true;
+          tryUploadImageToDrive(newDataUrl, `${e.id}-uke-photo.jpg`).then((fileId) => {
+            if (!fileId) return;
+            const fresh = ALL_ENTRIES.find((x) => x.id === e.id);
+            if (fresh && fresh.uke) { fresh.uke.photoDriveId = fileId; saveEntry(fresh); }
+          });
+        }
+        if (e.screencaps && e.screencaps.includes(dataUrl)) {
+          const idx = e.screencaps.indexOf(dataUrl);
+          e.screencaps[idx] = newDataUrl;
+          if (e.screencapDriveIds && e.screencapDriveIds[idx]) e.screencapDriveIds[idx] = null;
+          changed = true;
+          tryUploadImageToDrive(newDataUrl, `${e.id}-screencap-${Date.now()}-${idx}.jpg`).then((fileId) => {
+            if (!fileId) return;
+            const fresh = ALL_ENTRIES.find((x) => x.id === e.id);
+            if (fresh && fresh.screencapDriveIds) { fresh.screencapDriveIds[idx] = fileId; saveEntry(fresh); }
+          });
+        }
+        if (changed) await saveEntry(e);
+      }
+      const reaction = ALL_REACTIONS.find((r) => r.dataUrl === dataUrl);
+      if (reaction) {
+        reaction.dataUrl = newDataUrl;
+        reaction.hash = await hashDataUrl(newDataUrl);
+        reaction.driveId = null;
+        await saveReaction(reaction);
+        tryUploadImageToDrive(newDataUrl, `reaction-${reaction.id}.jpg`, 'reaction').then((fileId) => {
+          if (!fileId) return;
+          const fresh = ALL_REACTIONS.find((x) => x.id === reaction.id);
+          if (fresh) { fresh.driveId = fileId; saveReaction(fresh); }
+        });
+      }
+    }
+    migrateImageKeyMetadata(dataUrl, newDataUrl);
+    showToast('Cropped!');
+    closeModal();
+    openHImageModal(newDataUrl);
+  }, 'Crop H image');
 }
 
 function wireCropStage() {
@@ -3456,40 +3674,6 @@ function wireCropStage() {
   handle.onpointerup = endDrag;
   box.onpointercancel = endDrag;
   handle.onpointercancel = endDrag;
-}
-
-async function saveCroppedReaction(id) {
-  const r = ALL_REACTIONS.find((x) => x.id === id);
-  const img = document.getElementById('crop-img');
-  const box = document.getElementById('crop-box');
-  if (!r || !img || !box || !box._imgOffset) return;
-  const off = box._imgOffset;
-  const scaleX = img.naturalWidth / off.w;
-  const scaleY = img.naturalHeight / off.h;
-  const boxLeft = parseFloat(box.style.left) - off.left;
-  const boxTop = parseFloat(box.style.top) - off.top;
-  const boxW = parseFloat(box.style.width);
-  const boxH = parseFloat(box.style.height);
-  const sx = boxLeft * scaleX, sy = boxTop * scaleY, sw = boxW * scaleX, sh = boxH * scaleY;
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(sw));
-  canvas.height = Math.max(1, Math.round(sh));
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-  const newDataUrl = canvas.toDataURL('image/jpeg', 0.9);
-  r.dataUrl = newDataUrl;
-  r.hash = await hashDataUrl(newDataUrl);
-  await saveReaction(r);
-  showToast('Cropped!');
-  closeModal();
-  openMemeEditModal(id);
-  tryUploadImageToDrive(newDataUrl, `reaction-${r.id}.jpg`, 'reaction').then((fileId) => {
-    if (!fileId) return;
-    const fresh = ALL_REACTIONS.find((x) => x.id === r.id);
-    if (!fresh) return;
-    fresh.driveId = fileId;
-    saveReaction(fresh);
-  });
 }
 
 // Uploads into the standalone meme/reaction library (bottom-nav "Reactions").
@@ -4101,6 +4285,7 @@ async function openHImageModal(dataUrl) {
   const currentTags = getHTags(dataUrl);
   const entries = upload ? [] : ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(dataUrl));
   const inReactions = await isDataUrlInReactions(dataUrl);
+  const croppable = dataUrl && !isVideoUrl(dataUrl) && !/^data:image\/(gif|webp)/.test(dataUrl);
   openModal(`
     <div class="modal-close-corner-wrap">
       <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
@@ -4111,7 +4296,6 @@ async function openHImageModal(dataUrl) {
             : `<img src="${dataUrl}" alt="" style="width:100%;max-height:60vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`)
         : `<div class="cover-placeholder" style="height:180px;margin-bottom:10px;">⏳ Still downloading from Drive…</div>`}
       ${entries.length ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Pulled from: ${entries.map((e) => escapeHtml(e.title)).join(', ')}</div>` : ''}
-      <div class="field-row"><label>Caption/keywords (for search)</label><input type="text" id="h-note-input" value="${escapeHtml(getHNote(dataUrl))}" placeholder="e.g. favorite, wallpaper-worthy"></div>
       <div class="field-row">
         <label>Groups</label>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
@@ -4128,12 +4312,11 @@ async function openHImageModal(dataUrl) {
       </div>
       <div class="modal-actions">
         <button class="btn-ghost" data-delete-h-image="${escapeHtml(dataUrl)}">🗑️ Delete</button>
+        ${croppable ? `<button class="btn-ghost" data-crop-h="${escapeHtml(dataUrl)}">✂️ Crop</button>` : ''}
         <button class="btn-primary" data-close-modal="1">Done</button>
       </div>
     </div>
-  `);
-  const noteInput = document.getElementById('h-note-input');
-  if (noteInput) noteInput.onblur = () => setHNote(dataUrl, noteInput.value);
+  `, { centered: true });
 }
 
 function attachHGridHandlers() {
@@ -6454,7 +6637,8 @@ document.addEventListener('click', (ev) => {
     render();
   }
   if (t.matches('[data-crop-meme]')) openCropReactionModal(t.getAttribute('data-crop-meme'));
-  if (t.matches('[data-save-crop]')) saveCroppedReaction(t.getAttribute('data-save-crop'));
+  if (t.matches('[data-crop-image]')) openCropImageModal(t.getAttribute('data-crop-image'));
+  if (t.matches('[data-crop-h]')) openCropHModal(t.getAttribute('data-crop-h'));
   if (t.matches('[data-carousel-use]')) {
     const entryId = MATCH_REVIEW_QUEUE[MATCH_REVIEW_INDEX];
     applySuggestedMatch(entryId).then(() => {
