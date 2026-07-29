@@ -2934,6 +2934,57 @@ async function attachImagesToEntry(dataUrls, entryId) {
   showToast(`Attached ${added} image${added === 1 ? '' : 's'} to "${e.title}"`);
   render();
 }
+// Bulk mood/group tagging for multi-selected Images-gallery items — before
+// this, the only way to sort an image into a mood group was one at a time
+// from its individual view, same gap the multi-select Attach/Reactions/H
+// actions above already closed for those other actions. Adds the picked tag
+// to every selected image (Semi only/Uke only reuse the same manual-tag
+// mechanism as a mood group, so they're offered here too) — it always adds,
+// never toggles off, since with several images selected at once some may
+// already carry the tag and others not.
+function tagImagesWithGroup(dataUrls, tag) {
+  dataUrls.forEach((dataUrl) => {
+    const key = imageKey(dataUrl);
+    const tags = new Set(IMAGE_TAG_MAP[key] || []);
+    tags.add(tag);
+    IMAGE_TAG_MAP[key] = Array.from(tags);
+  });
+  persistImageTagMap();
+}
+function openTagSelectedImagesModal(dataUrls) {
+  const groupList = Array.from(IMAGE_GROUPS).sort((a, b) => a.localeCompare(b));
+  openModal(`
+    <h3>Add ${dataUrls.length} image${dataUrls.length === 1 ? '' : 's'} to a mood…</h3>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
+      ${[SEMI_TAG, UKE_TAG].map((name) => `<button class="mood-chip" data-tag-selected-images-with="${escapeHtml(name)}">${escapeHtml(name)} only</button>`).join('')}
+      ${groupList.map((name) => `<button class="mood-chip" data-tag-selected-images-with="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join('')}
+      <button class="mood-chip" data-tag-selected-images-new-group="1">➕ New group</button>
+    </div>
+    <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Cancel</button></div>
+  `);
+  document.querySelectorAll('[data-tag-selected-images-with]').forEach((el) => {
+    el.onclick = () => {
+      const tag = el.getAttribute('data-tag-selected-images-with');
+      tagImagesWithGroup(dataUrls, tag);
+      closeModal();
+      IMAGE_SELECT_MODE = false;
+      IMAGE_SELECTED = new Set();
+      showToast(`Added ${dataUrls.length} image${dataUrls.length === 1 ? '' : 's'} to "${tag}"`);
+      render();
+    };
+  });
+  const newGroupBtn = document.querySelector('[data-tag-selected-images-new-group]');
+  if (newGroupBtn) newGroupBtn.onclick = () => {
+    const key = addImageGroup(prompt('Name this new group:'));
+    if (!key) return;
+    tagImagesWithGroup(dataUrls, key);
+    closeModal();
+    IMAGE_SELECT_MODE = false;
+    IMAGE_SELECTED = new Set();
+    showToast(`Added ${dataUrls.length} image${dataUrls.length === 1 ? '' : 's'} to "${key}"`);
+    render();
+  };
+}
 // Cross-link into the standalone Reactions library — an image already on a
 // read can also be dropped straight into the mood-tagged meme collection
 // instead of having to re-download/re-upload it separately.
@@ -3138,6 +3189,7 @@ function renderReactionsLibrary() {
         <div class="export-row" style="margin-bottom:10px;background:var(--card);border:1px solid var(--purple);border-radius:var(--radius-sm);padding:8px;">
           <div style="flex:1;font-size:12.5px;color:var(--text-dim);align-self:center;">${IMAGE_SELECTED.size} selected</div>
           <button class="ref-btn" data-images-attach-selected="1" ${IMAGE_SELECTED.size ? '' : 'disabled'}>📎 Attach to a read…</button>
+          <button class="ref-btn" data-images-tag-selected="1" ${IMAGE_SELECTED.size ? '' : 'disabled'}>🏷️ Add to mood…</button>
           <button class="ref-btn" data-images-add-selected-reactions="1" ${IMAGE_SELECTED.size ? '' : 'disabled'}>🎭 Add as reactions</button>
           <button class="ref-btn" data-images-pull-selected-into-h="1" style="${IMAGE_SELECTED.size ? 'color:#f43f5e;' : ''}" ${IMAGE_SELECTED.size ? '' : 'disabled'}>🔴 Pull into H</button>
         </div>
@@ -6402,6 +6454,10 @@ function attachRootHandlers() {
   const attachSelectedBtn = root.querySelector('[data-images-attach-selected]');
   if (attachSelectedBtn) attachSelectedBtn.onclick = () => {
     if (IMAGE_SELECTED.size) openAttachImagesToEntryModal(Array.from(IMAGE_SELECTED));
+  };
+  const tagSelectedBtn = root.querySelector('[data-images-tag-selected]');
+  if (tagSelectedBtn) tagSelectedBtn.onclick = () => {
+    if (IMAGE_SELECTED.size) openTagSelectedImagesModal(Array.from(IMAGE_SELECTED));
   };
   const addSelectedReactionsBtn = root.querySelector('[data-images-add-selected-reactions]');
   if (addSelectedReactionsBtn) addSelectedReactionsBtn.onclick = async () => {
