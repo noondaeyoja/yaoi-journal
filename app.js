@@ -293,8 +293,15 @@ async function hashDataUrl(dataUrl) {
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function findReactionByHash(hash) {
-  return ALL_REACTIONS.find((r) => r.hash === hash);
+// Scoped per-gallery so uploading to Images never gets flagged as "you
+// already have this" just because the same file happens to already exist
+// as a Reactions-only upload (or vice versa) — Images and Reactions are
+// separate pools now, so their duplicate checks shouldn't cross over.
+// Legacy records saved before the source field existed (source == null)
+// are still visible in both galleries (see allAppImages()/memeFilteredItems),
+// so they still count as a dupe match either way.
+function findReactionByHash(hash, source) {
+  return ALL_REACTIONS.find((r) => r.hash === hash && (source == null || r.source == null || r.source === source));
 }
 
 async function saveReaction(reaction) {
@@ -1366,7 +1373,25 @@ async function applyCharPhotoFile(who, file) {
   const dataUrl = await fileToCompressedDataUrl(file, 500);
   const e = getEntry(STATE.entryId);
   if (!e) return;
+  const prevPhoto = e[who].photo;
+  const prevPhotoDriveId = e[who].photoDriveId;
+  if (prevPhoto && prevPhoto !== dataUrl) {
+    // Replacing a semi/uke photo used to just discard the old one outright.
+    // Per her spec: (1) it should keep counting under Semi-only/Uke-only —
+    // photoHistory tracks every photo ever uploaded to this box, checked
+    // alongside the current one in allAppImages() — and (2) it should land
+    // in this entry's own Images container instead of vanishing.
+    e[who].photoHistory = e[who].photoHistory || [];
+    if (!e[who].photoHistory.includes(prevPhoto)) e[who].photoHistory.push(prevPhoto);
+    e.screencaps = e.screencaps || [];
+    e.screencapDriveIds = e.screencapDriveIds || [];
+    if (!e.screencaps.includes(prevPhoto)) {
+      e.screencaps.push(prevPhoto);
+      e.screencapDriveIds.push(prevPhotoDriveId || null);
+    }
+  }
   e[who].photo = dataUrl;
+  e[who].photoDriveId = null;
   await saveEntry(e);
   render();
   tryUploadImageToDrive(dataUrl, `${e.id}-${who}-photo.jpg`).then((fileId) => {
@@ -2623,6 +2648,19 @@ function allAppImages() {
     } else if (e.uke && e.uke.photoDriveId) {
       pending.push({ pending: true, entryId: e.id, entryTitle: e.title, kinds: ['uke'], createdAt: e.updatedAt || e.createdAt });
     }
+    // Semi/Uke-only should keep showing every photo ever uploaded to that
+    // box, not just the current one — a replaced photo moves into this
+    // entry's own Images container (screencaps, see applyCharPhotoFile) but
+    // stays tagged 'semi'/'uke' here via photoHistory so it still counts
+    // under those filters instead of quietly becoming a plain screencap.
+    (e.semi && e.semi.photoHistory || []).forEach((src) => {
+      const rec = map.get(src) || { dataUrl: src, reactionId: null, createdAt: e.updatedAt || e.createdAt, kinds: new Set() };
+      rec.kinds.add('semi'); map.set(src, rec);
+    });
+    (e.uke && e.uke.photoHistory || []).forEach((src) => {
+      const rec = map.get(src) || { dataUrl: src, reactionId: null, createdAt: e.updatedAt || e.createdAt, kinds: new Set() };
+      rec.kinds.add('uke'); map.set(src, rec);
+    });
     (e.screencaps || []).forEach((src) => {
       const rec = map.get(src) || { dataUrl: src, reactionId: null, createdAt: e.updatedAt || e.createdAt, kinds: new Set() };
       rec.kinds.add('screencap'); map.set(src, rec);
@@ -3258,11 +3296,22 @@ function openManageMoodsModal() {
 }
 let MEME_STATE = { moodFilter: null, search: '', untaggedOnly: false };
 
+// Mirror of the Images gallery's own source filter — the Reactions pool
+// should only ever hold direct Reactions-tab uploads (source: 'reactions')
+// or items explicitly pulled in via Images' "Add as reactions" button
+// (which also stamps source: 'reactions'). Direct Images-tab uploads
+// (source: 'images') never show up here automatically. Legacy records
+// saved before this distinction existed (source == null) still show in
+// both galleries rather than disappearing from either one.
+function reactionsPoolItems() {
+  return ALL_REACTIONS.filter((r) => r.source !== 'images');
+}
+
 function memeFilteredItems() {
   const q = MEME_STATE.search.trim().toLowerCase();
   // Untagged reactions surface first (they're the ones that still need
   // sorting into a mood), then newest-first within each bucket.
-  let items = ALL_REACTIONS.slice()
+  let items = reactionsPoolItems()
     // Same "hidden anywhere else while in H" rule as the Images tab —
     // a reaction pulled into H stops showing up here too.
     .filter((r) => !H_IMAGE_KEYS.has(imageKey(r.dataUrl)))
@@ -3324,7 +3373,7 @@ async function scanForMemeDuplicates() {
   // Anything still waiting on a Drive download (see hydrateMissingReactions())
   // has no dataUrl yet to hash — skip those for now rather than block the
   // whole scan on them; re-running the scan later will pick them up.
-  const items = ALL_REACTIONS.filter((r) => r.dataUrl);
+  const items = reactionsPoolItems().filter((r) => r.dataUrl);
   const withHashes = [];
   for (const r of items) {
     const hash = await perceptualHash(r.dataUrl);
@@ -3354,7 +3403,7 @@ async function scanForMemeDuplicates() {
 
 function memeMainBody() {
   if (!MEME_SHOWING_DUPLICATES) return renderMemeGrid();
-  if (MEME_DUP_SCANNING) return `<div class="empty-state">Scanning ${ALL_REACTIONS.length} reactions for duplicates…</div>`;
+  if (MEME_DUP_SCANNING) return `<div class="empty-state">Scanning ${reactionsPoolItems().length} reactions for duplicates…</div>`;
   if (MEME_DUP_GROUPS === null) return `<div style="padding:8px 0;"><button class="btn-primary" style="width:100%;" data-scan-meme-duplicates="1">🔍 Scan for possible duplicates</button></div>`;
   if (!MEME_DUP_GROUPS.length) return `<div class="empty-state">No possible duplicates found. 🎉</div><button class="ref-btn" style="width:100%;" data-scan-meme-duplicates="1">Scan again</button>`;
   return `<button class="ref-btn" style="width:100%;margin-bottom:10px;" data-scan-meme-duplicates="1">Scan again</button>` +
@@ -3379,7 +3428,8 @@ function renderMemeLibraryInPlace() {
 }
 
 function renderMemeLibrary() {
-  const untaggedCount = ALL_REACTIONS.filter((r) => !(r.moodTags || []).length).length;
+  const reactionsPool = reactionsPoolItems();
+  const untaggedCount = reactionsPool.filter((r) => !(r.moodTags || []).length).length;
   // Built-in and custom moods now render identically — same pill style, same
   // row — since they're all just "mood groups" to the user; there's no
   // meaningful reason for the 4 built-ins to look different from ones she
@@ -3390,7 +3440,7 @@ function renderMemeLibrary() {
   return `
     <div class="app-header">
       <div class="brand-row"><h1>🎭 Reactions</h1></div>
-      <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${ALL_REACTIONS.length} meme${ALL_REACTIONS.length === 1 ? '' : 's'} saved${untaggedCount ? ` · ${untaggedCount} untagged` : ''}.</div>
+      <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${reactionsPool.length} meme${reactionsPool.length === 1 ? '' : 's'} saved${untaggedCount ? ` · ${untaggedCount} untagged` : ''}.</div>
       <div class="export-row" style="margin-bottom:10px;">
         <label class="upload-btn" style="flex:1;">📎 Add reaction(s)<input type="file" accept="image/*,video/*" multiple id="meme-upload-input"></label>
         <button class="ref-btn" data-meme-toggle-select="1">${MEME_SELECT_MODE ? '✕ Cancel select' : '☑️ Select'}</button>
@@ -3592,6 +3642,11 @@ function openCropReactionModal(id) {
     await saveReaction(fresh);
     migrateImageKeyMetadata(oldDataUrl, newDataUrl);
     showToast('Cropped!');
+    // The masonry grid behind this modal was rendered with the OLD dataUrl
+    // baked into its <img src>— closing/reopening the modal alone doesn't
+    // touch it, so the gallery kept showing the pre-crop image until
+    // something else forced a full re-render. Re-render before reopening.
+    render();
     closeModal();
     openMemeEditModal(id);
     tryUploadImageToDrive(newDataUrl, `reaction-${fresh.id}.jpg`, 'reaction').then((fileId) => {
@@ -3655,6 +3710,7 @@ async function openCropImageModal(dataUrl) {
     }
     migrateImageKeyMetadata(dataUrl, newDataUrl);
     showToast('Cropped!');
+    render();
     closeModal();
     openImageAttachmentsModal(newDataUrl);
   }, 'Crop image');
@@ -3726,6 +3782,7 @@ async function openCropHModal(dataUrl) {
     }
     migrateImageKeyMetadata(dataUrl, newDataUrl);
     showToast('Cropped!');
+    render();
     closeModal();
     openHImageModal(newDataUrl);
   }, 'Crop H image');
@@ -3856,7 +3913,7 @@ async function addReactionFiles(fileList, source = 'images') {
     const isVideo = file.type.startsWith('video/');
     const dataUrl = (isAnimated || isVideo) ? await fileToDataUrl(file) : await fileToCompressedDataUrl(file, 800);
     const hash = await hashDataUrl(dataUrl);
-    const dupe = findReactionByHash(hash);
+    const dupe = findReactionByHash(hash, source);
     if (dupe) {
       if (!confirm('This looks like a duplicate of a reaction/meme you already saved. Add it again anyway?')) continue;
     }
@@ -4465,16 +4522,6 @@ function attachHGridHandlers() {
   document.querySelectorAll('[data-dismiss-h-dup-group]').forEach((el) => {
     el.onclick = (ev) => { ev.stopPropagation(); dismissHDupGroup(Number(el.getAttribute('data-dismiss-h-dup-group'))); };
   });
-  document.querySelectorAll('[data-delete-h-image]').forEach((el) => {
-    el.onclick = () => {
-      const url = el.getAttribute('data-delete-h-image');
-      if (!confirm('Delete this H image?')) return;
-      removeFromH(url);
-      closeModal();
-      showToast('Deleted');
-      render();
-    };
-  });
   document.querySelectorAll('[data-h-group-filter]').forEach((el) => {
     el.onclick = () => { const g = el.getAttribute('data-h-group-filter'); H_GROUP_FILTER = H_GROUP_FILTER === g ? null : g; render(); };
   });
@@ -4487,6 +4534,14 @@ function attachHGridHandlers() {
   if (manageGroupsBtn) manageGroupsBtn.onclick = openManageHGroupsModal;
   const untaggedOnlyBtn = document.querySelector('[data-h-untagged-only]');
   if (untaggedOnlyBtn) untaggedOnlyBtn.onclick = () => { H_STATE.untaggedOnly = !H_STATE.untaggedOnly; render(); };
+  // Note: [data-delete-h-image] is deliberately NOT wired here — it only
+  // ever exists inside the individual-item modal (openHImageModal), which
+  // is injected into #modal-sheet well after this function last ran (it's
+  // only called on a full grid render/attach, not every time a modal opens).
+  // Binding it here meant the button rendered with no click handler at all,
+  // so Delete silently did nothing. It's wired via the global document click
+  // delegation instead (see [data-delete-h-image] below), same as every
+  // other modal-only button (crop, tag toggles, etc).
   const hSearchInput = document.querySelector('#h-search-input');
   if (hSearchInput) {
     hSearchInput.oninput = (ev) => { H_STATE.search = ev.target.value; renderHLibraryInPlace(); };
@@ -6768,6 +6823,11 @@ document.addEventListener('click', (ev) => {
       if (r.moodTags.includes(mood)) r.moodTags = r.moodTags.filter((m) => m !== mood);
       else r.moodTags.push(mood);
       saveReaction(r);
+      // Re-render the grid behind the modal too, not just the modal itself —
+      // otherwise an item that just got tagged (or un-tagged) stays parked
+      // in its old untagged-first/tagged position until something else
+      // happens to trigger a full re-render.
+      render();
       openMemeEditModal(id);
     }
   }
@@ -6779,6 +6839,7 @@ document.addEventListener('click', (ev) => {
       r.moodTags = r.moodTags || [];
       if (!r.moodTags.includes(key)) r.moodTags.push(key);
       saveReaction(r);
+      render();
       openMemeEditModal(id);
     }
   }
@@ -6821,6 +6882,7 @@ document.addEventListener('click', (ev) => {
     const tag = t.getAttribute('data-toggle-image-tag');
     const url = t.getAttribute('data-image-url');
     toggleImageTag(url, tag);
+    render();
     openImageAttachmentsModal(url);
   }
   if (t.matches('[data-rename-h-group]')) {
@@ -6844,12 +6906,13 @@ document.addEventListener('click', (ev) => {
     const tag = t.getAttribute('data-toggle-h-tag');
     const url = t.getAttribute('data-h-url');
     toggleHTag(url, tag);
+    render();
     openHImageModal(url);
   }
   if (t.matches('[data-h-add-group-for]')) {
     const url = t.getAttribute('data-h-add-group-for');
     const key = addHGroup(prompt('Name this new H group:'));
-    if (key) { toggleHTag(url, key); openHImageModal(url); }
+    if (key) { toggleHTag(url, key); render(); openHImageModal(url); }
   }
   if (t.matches('[data-toggle-reaction-membership]')) {
     const url = t.getAttribute('data-toggle-reaction-membership');
@@ -6869,6 +6932,15 @@ document.addEventListener('click', (ev) => {
   if (t.matches('[data-crop-meme]')) openCropReactionModal(t.getAttribute('data-crop-meme'));
   if (t.matches('[data-crop-image]')) openCropImageModal(t.getAttribute('data-crop-image'));
   if (t.matches('[data-crop-h]')) openCropHModal(t.getAttribute('data-crop-h'));
+  if (t.matches('[data-delete-h-image]')) {
+    const url = t.getAttribute('data-delete-h-image');
+    if (confirm('Delete this H image?')) {
+      removeFromH(url);
+      closeModal();
+      showToast('Deleted');
+      render();
+    }
+  }
   if (t.matches('[data-carousel-use]')) {
     const entryId = MATCH_REVIEW_QUEUE[MATCH_REVIEW_INDEX];
     applySuggestedMatch(entryId).then(() => {
