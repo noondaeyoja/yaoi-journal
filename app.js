@@ -8,10 +8,11 @@
    ========================================================================== */
 
 const DB_NAME = 'yaoiJournalDB';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_ENTRIES = 'entries';
 const STORE_META = 'meta';
 const STORE_REACTIONS = 'reactions';
+const STORE_H_IMAGES = 'hImages';
 
 const SHELVES_READING = ['Currently Reading', 'Completed', 'Plan to Read', 'Discontinued'];
 const FLAG_COLORS = ['green', 'red', 'black'];
@@ -41,6 +42,7 @@ try { fbStore.enablePersistence({ synchronizeTabs: true }).catch(() => {}); } ca
 let CURRENT_USER = null;         // signed-in Firebase user, or null = show the sign-in screen
 let FIRESTORE_UNSUB = null;      // unsubscribe fn for the live cross-device entries listener
 let REACTIONS_FIRESTORE_UNSUB = null; // same, for the Reactions library — see startReactionsFirestoreListener()
+let H_FIRESTORE_UNSUB = null;    // same, for the standalone H library — see startHImagesFirestoreListener()
 let AUTH_ERROR = '';
 let AUTH_BUSY = false;
 let SYNC_BUSY = false;           // true while the initial pull/push migration is running
@@ -62,6 +64,7 @@ const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const DRIVE_ROOT_FOLDER_NAME = 'Yaoi Journal';
 const DRIVE_IMAGES_SUBFOLDER_NAME = 'Images';
 const DRIVE_REACTIONS_SUBFOLDER_NAME = 'Reactions';
+const DRIVE_H_SUBFOLDER_NAME = 'H'; // standalone H-tab uploads, see ensureDriveHFolder()
 const DRIVE_FOLDER_NAME = 'Yaoi Journal Images'; // legacy flat-folder name, used only by the one-time consolidation tool
 let DRIVE_FOLDER_ID = null; // cached once found/created, see ensureDriveFolder()
 
@@ -79,6 +82,13 @@ let IGNORED_DUP_GROUPS = new Set();
 // which is why the same ~40 groups kept coming back for review forever.
 let IGNORED_IMAGE_DUP_GROUPS = new Set();
 let IGNORED_MEME_DUP_GROUPS = new Set();
+// Which existing (entry-sourced) images the user has "pulled" into the H
+// tab — a Set of imageKey(dataUrl), same lightweight technique as
+// IMAGE_TAG_MAP below, so a photo already attached to a journal entry can be
+// flagged into H without duplicating the underlying image data anywhere.
+// Flagged images are excluded from the normal Images tab aggregation (see
+// allAppImages()) so they stop "floating around the rest of the app".
+let H_IMAGE_KEYS = new Set();
 // User-created custom mood groups for the Reactions library (e.g. "creepy",
 // "cute") on top of the 4 built-in moods — synced across devices the same
 // way as the sets above (Firestore meta doc + local IDB mirror).
@@ -87,6 +97,7 @@ let CUSTOM_MOODS = new Set();
 let db = null;
 let ALL_ENTRIES = [];              // in-memory cache, synced with IndexedDB
 let ALL_REACTIONS = [];            // meme/reaction image library, in-memory cache
+let ALL_H_IMAGES = [];             // standalone H-tab uploads (not pulled from an entry), in-memory cache
 let DETAIL_EDIT_MODE = false;      // whether the detail page's top fields are in edit mode
 let TAG_EDIT_MODE = false;         // whether the Tags panel is showing its editable (toggle/add/save) UI
 let TAG_ENTRIES_FILTER = null;     // which tag name the "view entries with this tag" screen is showing
@@ -126,6 +137,9 @@ function openDB() {
       }
       if (!_db.objectStoreNames.contains(STORE_REACTIONS)) {
         _db.createObjectStore(STORE_REACTIONS, { keyPath: 'id' });
+      }
+      if (!_db.objectStoreNames.contains(STORE_H_IMAGES)) {
+        _db.createObjectStore(STORE_H_IMAGES, { keyPath: 'id' });
       }
     };
     // If another tab/window has this same site open on an older version, the
@@ -461,6 +475,18 @@ async function pullMetaState() {
       IGNORED_MEME_DUP_GROUPS = new Set([...IGNORED_MEME_DUP_GROUPS, ...data.ignoredMemeDupGroups]);
       await idbPut(STORE_META, { key: 'ignoredMemeDupGroups', value: Array.from(IGNORED_MEME_DUP_GROUPS) });
     }
+    if (Array.isArray(data.hImageKeys) && data.hImageKeys.length) {
+      H_IMAGE_KEYS = new Set([...H_IMAGE_KEYS, ...data.hImageKeys]);
+      await idbPut(STORE_META, { key: 'hImageKeys', value: Array.from(H_IMAGE_KEYS) });
+    }
+    if (Array.isArray(data.hGroups) && data.hGroups.length) {
+      H_GROUPS = new Set([...H_GROUPS, ...data.hGroups]);
+      await idbPut(STORE_META, { key: 'hGroups', value: Array.from(H_GROUPS) });
+    }
+    if (data.hTagMap && typeof data.hTagMap === 'object') {
+      H_TAG_MAP = { ...data.hTagMap, ...H_TAG_MAP };
+      await idbPut(STORE_META, { key: 'hTagMap', value: H_TAG_MAP });
+    }
   } catch (err) {
     console.error('Meta pull failed:', err);
   }
@@ -688,6 +714,10 @@ async function ensureDriveReactionsFolder() {
   const root = await ensureDriveRootFolder();
   return findOrCreateDriveFolder(DRIVE_REACTIONS_SUBFOLDER_NAME, root);
 }
+async function ensureDriveHFolder() {
+  const root = await ensureDriveRootFolder();
+  return findOrCreateDriveFolder(DRIVE_H_SUBFOLDER_NAME, root);
+}
 // Legacy name, kept because a few call sites still reference it — resolves
 // to the new "Yaoi Journal/Images" subfolder.
 async function ensureDriveFolder() {
@@ -696,10 +726,12 @@ async function ensureDriveFolder() {
 
 // Uploads a base64 data: URL image into the app's Drive folder (simple
 // multipart upload) and returns the new file's id. `kind` picks which
-// subfolder it lands in: 'reaction' -> Yaoi Journal/Reactions, anything
-// else -> Yaoi Journal/Images.
+// subfolder it lands in: 'reaction' -> Yaoi Journal/Reactions, 'h' -> Yaoi
+// Journal/H, anything else -> Yaoi Journal/Images.
 async function uploadToDrive(dataUrl, filename, kind) {
-  const folderId = kind === 'reaction' ? await ensureDriveReactionsFolder() : await ensureDriveImagesFolder();
+  const folderId = kind === 'reaction' ? await ensureDriveReactionsFolder()
+    : kind === 'h' ? await ensureDriveHFolder()
+    : await ensureDriveImagesFolder();
   const blob = dataUrlToBlob(dataUrl);
   const metadata = { name: filename, parents: [folderId] };
   const boundary = 'yaoi_journal_' + Math.random().toString(36).slice(2);
@@ -1386,6 +1418,7 @@ function navigate(view, entryId, opts) {
   // relevant screen is a natural, low-cost moment to try again.
   if (view === 'detail' && entryId) hydrateDriveImages(getEntry(entryId)).catch(() => {});
   if (view === 'meme') hydrateMissingReactions().catch(() => {});
+  if (view === 'h') hydrateMissingHImages().catch(() => {});
 }
 // What every "← Back" button now calls, instead of a hardcoded data-nav
 // target — pops the real previous screen off the stack. Falls back to Home
@@ -1625,6 +1658,7 @@ async function reconnectGoogleDrive() {
     // previously failed to hydrate (reactions with no retry path of their
     // own, or the entry currently open) should get another shot.
     hydrateMissingReactions().catch(() => {});
+    hydrateMissingHImages().catch(() => {});
     if (STATE.view === 'detail' && STATE.entryId) hydrateDriveImages(getEntry(STATE.entryId)).catch(() => {});
     return true;
   } catch (err) {
@@ -1646,6 +1680,7 @@ function authErrorMessage(err) {
 async function signOutOfAccount() {
   if (FIRESTORE_UNSUB) { FIRESTORE_UNSUB(); FIRESTORE_UNSUB = null; }
   if (REACTIONS_FIRESTORE_UNSUB) { REACTIONS_FIRESTORE_UNSUB(); REACTIONS_FIRESTORE_UNSUB = null; }
+  if (H_FIRESTORE_UNSUB) { H_FIRESTORE_UNSUB(); H_FIRESTORE_UNSUB = null; }
   DRIVE_ACCESS_TOKEN = null;
   DRIVE_TOKEN_EXPIRES_AT = 0;
   DRIVE_FOLDER_ID = null;
@@ -1692,6 +1727,7 @@ function render() {
   else if (STATE.view === 'hdMatch') body = renderHdMatch();
   else if (STATE.view === 'reactions') body = renderReactionsLibrary();
   else if (STATE.view === 'meme') body = renderMemeLibrary();
+  else if (STATE.view === 'h') body = renderHLibrary();
   else if (STATE.view === 'database') body = renderDatabase();
   else if (STATE.view === 'review') body = renderReviewQueue();
   else if (STATE.view === 'duplicates') body = renderDuplicates();
@@ -1980,6 +2016,7 @@ function renderBottomNav(active) {
       <button data-nav="tags" class="${active === 'tags' ? 'active' : ''}"><span class="icon">🏷️</span>Tags</button>
       <button data-nav="reactions" class="${active === 'reactions' ? 'active' : ''}"><span class="icon">🖼️</span>Images</button>
       <button data-nav="meme" class="${active === 'meme' ? 'active' : ''}"><span class="icon">🎭</span>Reactions</button>
+      <button data-nav="h" class="${active === 'h' ? 'active' : ''}"><span class="icon icon-h">H</span>H</button>
       <button data-nav="database" class="${active === 'database' ? 'active' : ''}"><span class="icon">🗂️</span>Database</button>
     </div>`;
 }
@@ -2400,6 +2437,11 @@ function allAppImages() {
     });
   });
   return Array.from(map.values())
+    // Images pulled into the H tab (see H_IMAGE_KEYS / pullImageIntoH) stay
+    // attached to whatever entry they came from, but stop showing up here —
+    // "without them floating around the rest of the yaoi journal", per her
+    // spec for the H section.
+    .filter((img) => !H_IMAGE_KEYS.has(imageKey(img.dataUrl)))
     .map((img) => ({
       ...img,
       kinds: Array.from(img.kinds),
@@ -2729,6 +2771,7 @@ function renderReactionsLibrary() {
           <div style="flex:1;font-size:12.5px;color:var(--text-dim);align-self:center;">${IMAGE_SELECTED.size} selected</div>
           <button class="ref-btn" data-images-attach-selected="1" ${IMAGE_SELECTED.size ? '' : 'disabled'}>📎 Attach to a read…</button>
           <button class="ref-btn" data-images-add-selected-reactions="1" ${IMAGE_SELECTED.size ? '' : 'disabled'}>🎭 Add as reactions</button>
+          <button class="ref-btn" data-images-pull-selected-into-h="1" style="${IMAGE_SELECTED.size ? 'color:#f43f5e;' : ''}" ${IMAGE_SELECTED.size ? '' : 'disabled'}>🔴 Pull into H</button>
         </div>
       ` : ''}
       <div class="tagmgr-tabs" style="margin-bottom:8px;">
@@ -2774,6 +2817,7 @@ function openImageAttachmentsModal(dataUrl) {
     ` : ''}
     <div class="modal-actions">
       <button class="btn-ghost" data-close-modal="1">Close</button>
+      <button class="btn-ghost" data-pull-into-h="${escapeHtml(dataUrl)}" style="color:#f43f5e;">🔴 Pull into H</button>
       <button class="btn-primary" data-use-as-reaction="${escapeHtml(dataUrl)}">🎭 Use as reaction</button>
     </div>
   `);
@@ -3301,6 +3345,451 @@ function openReactionPickerModal(entryId) {
     await saveEntry(e);
     closeModal();
     showToast(`Added ${selected.size} image${selected.size === 1 ? '' : 's'}`);
+    render();
+  };
+}
+
+/* ---------------------------------------------------------------------- */
+/* H / HENTAI LIBRARY (bottom-nav "H")                                    */
+/* A separate, standalone gallery for NSFW/hentai images, kept out of the  */
+/* normal Images tab entirely. Populated two ways, per her spec: (1)       */
+/* "pulling" an existing entry-sourced image in (flags it via H_IMAGE_KEYS */
+/* — same imageKey() lookup technique as the Images tab's own group tags — */
+/* without duplicating the underlying image data), or (2) uploading        */
+/* straight into this tab (a genuinely standalone image, stored in its own */
+/* ALL_H_IMAGES collection, mirroring ALL_REACTIONS/STORE_REACTIONS end to */
+/* end: its own IndexedDB store, Drive subfolder, and Firestore            */
+/* subcollection + live listener). Set up like the Images tab throughout — */
+/* masonry gallery, groups, select mode, an edit/attachments modal.        */
+/* ---------------------------------------------------------------------- */
+
+async function loadAllHImages() {
+  ALL_H_IMAGES = await idbGetAll(STORE_H_IMAGES);
+}
+function findHImageByHash(hash) {
+  return ALL_H_IMAGES.find((h) => h.hash === hash);
+}
+async function saveHImage(hImage) {
+  hImage.updatedAt = new Date().toISOString();
+  await idbPut(STORE_H_IMAGES, hImage);
+  const idx = ALL_H_IMAGES.findIndex((h) => h.id === hImage.id);
+  if (idx > -1) ALL_H_IMAGES[idx] = hImage; else ALL_H_IMAGES.push(hImage);
+  pushHImageToFirestore(hImage);
+}
+async function deleteHImage(id) {
+  const h = ALL_H_IMAGES.find((x) => x.id === id);
+  await idbDelete(STORE_H_IMAGES, id);
+  ALL_H_IMAGES = ALL_H_IMAGES.filter((x) => x.id !== id);
+  deleteHImageFromFirestore(id);
+  if (h && h.driveId) deleteFromDrive(h.driveId);
+}
+function userHImagesCol() {
+  if (!CURRENT_USER) return null;
+  return fbStore.collection('users').doc(CURRENT_USER.uid).collection('hImages');
+}
+function hImageSafeForFirestore(h) {
+  return (h.driveId && h.dataUrl) ? { ...h, dataUrl: null } : h;
+}
+function pushHImageToFirestore(hImage) {
+  const col = userHImagesCol();
+  if (!col) return;
+  const safe = hImageSafeForFirestore(hImage);
+  const json = JSON.stringify(safe);
+  if (json.length > 900 * 1024) {
+    console.error('H image too large to sync to Firestore (kept locally on this device only).');
+    showToast('That H image is too big to back up to the cloud — kept on this device only.');
+    return;
+  }
+  col.doc(hImage.id).set(safe).catch((err) => {
+    console.error('H image sync failed:', err);
+    showToast("Couldn't back up that H image to the cloud — saved locally, will retry later.");
+  });
+}
+function deleteHImageFromFirestore(id) {
+  const col = userHImagesCol();
+  if (!col) return;
+  col.doc(id).delete().catch((err) => console.error('H image delete sync failed:', err));
+}
+// Same last-write-wins merge philosophy as syncReactionsWithFirestore.
+async function syncHImagesWithFirestore(user) {
+  const col = fbStore.collection('users').doc(user.uid).collection('hImages');
+  const snap = await col.get({ source: 'server' }).catch(() => col.get());
+  if (snap.empty) {
+    if (ALL_H_IMAGES.length) {
+      const batch = fbStore.batch();
+      ALL_H_IMAGES.forEach((h) => {
+        const safe = hImageSafeForFirestore(h);
+        if (JSON.stringify(safe).length <= 900 * 1024) batch.set(col.doc(h.id), safe);
+      });
+      await batch.commit();
+    }
+    return;
+  }
+  const remote = snap.docs.map((d) => d.data());
+  const localById = new Map(ALL_H_IMAGES.map((h) => [h.id, h]));
+  const merged = [];
+  const toLocal = [];
+  const toRemote = [];
+  remote.forEach((rh) => {
+    const lh = localById.get(rh.id);
+    if (!lh) { merged.push(rh); toLocal.push(rh); }
+    else {
+      const rt = new Date(rh.updatedAt || 0).getTime();
+      const lt = new Date(lh.updatedAt || 0).getTime();
+      merged.push(rt > lt ? rh : lh);
+      if (rt > lt) toLocal.push(rh);
+      else if (lt > rt) toRemote.push(lh);
+    }
+    localById.delete(rh.id);
+  });
+  localById.forEach((lh) => { merged.push(lh); toRemote.push(lh); });
+  if (toLocal.length) await idbBulkPut(STORE_H_IMAGES, toLocal);
+  if (toRemote.length) {
+    const batch = fbStore.batch();
+    let anySkipped = false;
+    toRemote.forEach((h) => {
+      const safe = hImageSafeForFirestore(h);
+      if (JSON.stringify(safe).length <= 900 * 1024) batch.set(col.doc(h.id), safe);
+      else anySkipped = true;
+    });
+    await batch.commit().catch((err) => console.error('H image bulk sync failed:', err));
+    if (anySkipped) showToast('Some H images are too large to back up to the cloud — kept on this device only.');
+  }
+  ALL_H_IMAGES = merged;
+  toLocal.forEach((h) => { hydrateDriveHImage(h).catch(() => {}); });
+}
+function startHImagesFirestoreListener(user) {
+  if (H_FIRESTORE_UNSUB) { H_FIRESTORE_UNSUB(); H_FIRESTORE_UNSUB = null; }
+  const col = fbStore.collection('users').doc(user.uid).collection('hImages');
+  let skippedFirst = false;
+  H_FIRESTORE_UNSUB = col.onSnapshot((snap) => {
+    if (!skippedFirst) { skippedFirst = true; return; }
+    let changed = false;
+    snap.docChanges().forEach((change) => {
+      const data = change.doc.data();
+      if (change.type === 'removed') {
+        if (ALL_H_IMAGES.some((h) => h.id === data.id)) {
+          ALL_H_IMAGES = ALL_H_IMAGES.filter((h) => h.id !== data.id);
+          idbDelete(STORE_H_IMAGES, data.id).catch(() => {});
+          changed = true;
+        }
+        return;
+      }
+      const idx = ALL_H_IMAGES.findIndex((h) => h.id === data.id);
+      const local = idx > -1 ? ALL_H_IMAGES[idx] : null;
+      const rt = new Date(data.updatedAt || data.createdAt || 0).getTime();
+      const lt = local ? new Date(local.updatedAt || local.createdAt || 0).getTime() : -1;
+      if (rt >= lt) {
+        const patched = { ...data };
+        if (!patched.dataUrl && local && local.dataUrl) patched.dataUrl = local.dataUrl;
+        if (idx > -1) ALL_H_IMAGES[idx] = patched; else ALL_H_IMAGES.push(patched);
+        idbPut(STORE_H_IMAGES, patched).catch(() => {});
+        hydrateDriveHImage(patched).catch(() => {});
+        changed = true;
+      }
+    });
+    if (changed && STATE.view === 'h') render();
+  }, (err) => console.error('H images listener error:', err));
+}
+async function hydrateDriveHImage(hImage) {
+  if (!hImage || !hImage.driveId || hImage.dataUrl) return;
+  try {
+    hImage.dataUrl = await downloadFromDrive(hImage.driveId);
+    await idbPut(STORE_H_IMAGES, hImage);
+    const idx = ALL_H_IMAGES.findIndex((h) => h.id === hImage.id);
+    if (idx > -1) ALL_H_IMAGES[idx] = hImage;
+    if (STATE.view === 'h') render();
+  } catch (err) {
+    console.error('H image hydrate failed:', err);
+  }
+}
+// Same retry-path reasoning as hydrateMissingReactions() — catches anything
+// still stuck as a "?" placeholder because Drive wasn't reachable the one
+// time it would otherwise have hydrated.
+let H_IMAGE_HYDRATE_BUSY = false;
+async function hydrateMissingHImages() {
+  if (H_IMAGE_HYDRATE_BUSY || !driveTokenValid()) return;
+  const missing = ALL_H_IMAGES.filter((h) => h.driveId && !h.dataUrl);
+  if (!missing.length) return;
+  H_IMAGE_HYDRATE_BUSY = true;
+  let lastRender = 0;
+  for (const h of missing) {
+    if (!driveTokenValid()) break;
+    try {
+      h.dataUrl = await downloadFromDrive(h.driveId);
+      await idbPut(STORE_H_IMAGES, h);
+      const idx = ALL_H_IMAGES.findIndex((x) => x.id === h.id);
+      if (idx > -1) ALL_H_IMAGES[idx] = h;
+    } catch (err) {
+      console.error('H image hydrate failed:', err);
+    }
+    if (STATE.view === 'h' && Date.now() - lastRender > 400) {
+      render();
+      lastRender = Date.now();
+    }
+  }
+  H_IMAGE_HYDRATE_BUSY = false;
+  if (STATE.view === 'h') render();
+}
+
+// Uploads straight into the standalone H library — never attached to any
+// journal entry, same "add image(s)" pattern as Reactions/Images.
+async function addHImageFiles(fileList) {
+  const added = [];
+  const oversized = [];
+  for (const file of fileList) {
+    if (file.size > MAX_REACTION_FILE_BYTES) { oversized.push(file); continue; }
+    const isAnimated = file.type === 'image/gif' || file.type === 'image/webp';
+    const dataUrl = isAnimated ? await fileToDataUrl(file) : await fileToCompressedDataUrl(file, 900);
+    const hash = await hashDataUrl(dataUrl);
+    const dupe = findHImageByHash(hash);
+    if (dupe) {
+      if (!confirm('This looks like a duplicate of an H image you already have. Add it again anyway?')) continue;
+    }
+    const hImage = { id: uid('h'), dataUrl, hash, createdAt: new Date().toISOString() };
+    await saveHImage(hImage);
+    added.push(hImage);
+    const ext = isAnimated ? (file.type === 'image/gif' ? 'gif' : 'webp') : 'jpg';
+    tryUploadImageToDrive(dataUrl, `h-${hImage.id}.${ext}`, 'h').then((fileId) => {
+      if (!fileId) return;
+      const fresh = ALL_H_IMAGES.find((x) => x.id === hImage.id);
+      if (!fresh) return;
+      fresh.driveId = fileId;
+      saveHImage(fresh);
+    });
+  }
+  if (oversized.length) showOversizedFilesModal(oversized);
+  return added;
+}
+
+// Groups, same idea/shape as IMAGE_GROUPS/IMAGE_TAG_MAP but a separate
+// namespace — H groups (e.g. "favorites") stay independent of regular
+// Images-tab groups.
+let H_GROUPS = new Set();
+let H_TAG_MAP = {}; // { [imageKey]: string[] group names }
+function persistHGroups() {
+  idbPut(STORE_META, { key: 'hGroups', value: Array.from(H_GROUPS) });
+  pushMetaField('hGroups', Array.from(H_GROUPS));
+}
+function persistHTagMap() {
+  idbPut(STORE_META, { key: 'hTagMap', value: H_TAG_MAP });
+  pushMetaField('hTagMap', H_TAG_MAP);
+}
+function addHGroup(rawName) {
+  const name = String(rawName || '').trim();
+  if (!name) return null;
+  const existing = Array.from(H_GROUPS).find((k) => k.toLowerCase() === name.toLowerCase());
+  const key = existing || name;
+  if (!existing) { H_GROUPS.add(key); persistHGroups(); }
+  return key;
+}
+function renameHGroup(oldKey, rawNewName) {
+  const newName = String(rawNewName || '').trim();
+  if (!newName || newName === oldKey) return;
+  H_GROUPS.delete(oldKey);
+  const mergedInto = Array.from(H_GROUPS).find((k) => k.toLowerCase() === newName.toLowerCase());
+  const finalKey = mergedInto || newName;
+  if (!mergedInto) H_GROUPS.add(finalKey);
+  persistHGroups();
+  Object.keys(H_TAG_MAP).forEach((k) => {
+    if (H_TAG_MAP[k].includes(oldKey)) {
+      const tags = new Set(H_TAG_MAP[k].filter((t) => t !== oldKey));
+      tags.add(finalKey);
+      H_TAG_MAP[k] = Array.from(tags);
+    }
+  });
+  persistHTagMap();
+  if (H_GROUP_FILTER === oldKey) H_GROUP_FILTER = finalKey;
+}
+function deleteHGroup(key) {
+  H_GROUPS.delete(key);
+  persistHGroups();
+  Object.keys(H_TAG_MAP).forEach((k) => {
+    if (H_TAG_MAP[k].includes(key)) H_TAG_MAP[k] = H_TAG_MAP[k].filter((t) => t !== key);
+  });
+  persistHTagMap();
+  if (H_GROUP_FILTER === key) H_GROUP_FILTER = null;
+}
+function getHTags(dataUrl) {
+  return H_TAG_MAP[imageKey(dataUrl)] || [];
+}
+function toggleHTag(dataUrl, tag) {
+  const key = imageKey(dataUrl);
+  const tags = new Set(H_TAG_MAP[key] || []);
+  if (tags.has(tag)) tags.delete(tag); else tags.add(tag);
+  H_TAG_MAP[key] = Array.from(tags);
+  persistHTagMap();
+}
+function openManageHGroupsModal() {
+  const list = Array.from(H_GROUPS).sort((a, b) => a.localeCompare(b));
+  openModal(`
+    <h3>Manage H groups</h3>
+    ${list.length ? `<div style="display:flex;flex-direction:column;gap:8px;">${list.map((name) => `
+      <div style="display:flex;align-items:center;gap:8px;justify-content:space-between;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;">
+        <span>🏷️ ${escapeHtml(name)}</span>
+        <div style="display:flex;gap:6px;">
+          <button class="ref-btn" data-rename-h-group="${escapeHtml(name)}">Rename</button>
+          <button class="btn-ghost" data-delete-h-group="${escapeHtml(name)}">Delete</button>
+        </div>
+      </div>`).join('')}</div>` : `<div class="empty-state">No H groups yet.</div>`}
+    <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Done</button></div>
+  `);
+}
+
+// Flags/unflags an existing entry-sourced image into H without duplicating
+// its data anywhere — see H_IMAGE_KEYS and the allAppImages() filter above.
+function persistHImageKeys() {
+  idbPut(STORE_META, { key: 'hImageKeys', value: Array.from(H_IMAGE_KEYS) });
+  pushMetaField('hImageKeys', Array.from(H_IMAGE_KEYS));
+}
+function pullImageIntoH(dataUrl) {
+  H_IMAGE_KEYS.add(imageKey(dataUrl));
+  persistHImageKeys();
+}
+// Removing an image from H means different things depending on where it
+// came from: a standalone upload has no other home, so it's deleted outright;
+// an entry-sourced image just gets un-flagged (the entry keeps its photo,
+// it's just no longer hidden from the Images tab).
+function removeFromH(dataUrl) {
+  const upload = ALL_H_IMAGES.find((h) => h.dataUrl === dataUrl);
+  if (upload) {
+    deleteHImage(upload.id);
+  } else {
+    H_IMAGE_KEYS.delete(imageKey(dataUrl));
+    persistHImageKeys();
+  }
+}
+
+// H-flagged entry-sourced images UNION standalone H uploads, in a shape
+// compatible with the same masonry-item rendering used by the Images tab.
+function allHImages() {
+  const map = new Map();
+  ALL_ENTRIES.forEach((e) => {
+    if (e.semi && e.semi.photo && H_IMAGE_KEYS.has(imageKey(e.semi.photo))) {
+      map.set(e.semi.photo, { dataUrl: e.semi.photo, source: 'entry', createdAt: e.updatedAt || e.createdAt });
+    }
+    if (e.uke && e.uke.photo && H_IMAGE_KEYS.has(imageKey(e.uke.photo))) {
+      map.set(e.uke.photo, { dataUrl: e.uke.photo, source: 'entry', createdAt: e.updatedAt || e.createdAt });
+    }
+    (e.screencaps || []).forEach((src) => {
+      if (H_IMAGE_KEYS.has(imageKey(src))) {
+        map.set(src, { dataUrl: src, source: 'entry', createdAt: e.updatedAt || e.createdAt });
+      }
+    });
+  });
+  const entryItems = Array.from(map.values());
+  const uploadItems = ALL_H_IMAGES.map((h) => ({ dataUrl: h.dataUrl, source: 'upload', id: h.id, createdAt: h.createdAt }));
+  return [...entryItems, ...uploadItems].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+}
+
+let H_SELECT_MODE = false;
+let H_SELECTED = new Set();
+let H_GROUP_FILTER = null;
+
+function renderHLibrary() {
+  let items = allHImages();
+  if (H_GROUP_FILTER) items = items.filter((i) => getHTags(i.dataUrl).includes(H_GROUP_FILTER));
+  const groupList = Array.from(H_GROUPS).sort((a, b) => a.localeCompare(b));
+  const groupChips = groupList.map((name) => `<button class="mood-chip ${H_GROUP_FILTER === name ? 'active' : ''}" data-h-group-filter="${escapeHtml(name)}">🏷️ ${escapeHtml(name)}</button>`).join('');
+  const masonryItem = (img) => `
+    <div class="masonry-item ${H_SELECT_MODE ? 'selectable' : ''} ${H_SELECTED.has(img.dataUrl) ? 'selected' : ''}" data-h-item="${escapeHtml(img.dataUrl)}">
+      <img src="${img.dataUrl}" alt="" loading="lazy">
+      ${H_SELECT_MODE ? `<span class="select-check">${H_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : ''}
+    </div>`;
+  const body = items.length
+    ? `<div class="image-masonry">${items.map(masonryItem).join('')}</div>`
+    : `<div class="empty-state">No H images yet. Pull some in from Images (open an image → 🔴 Pull into H), or upload directly below.</div>`;
+  return `
+    <div class="app-header">
+      <div class="brand-row"><h1><span class="icon-h" style="font-size:20px;">H</span> Hentai</h1></div>
+      <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${items.length} image${items.length === 1 ? '' : 's'}, kept separate from the rest of the app.</div>
+      <div class="export-row" style="margin-bottom:10px;">
+        <label class="upload-btn" style="flex:1;">📎 Add image(s)<input type="file" accept="image/*" multiple id="h-upload-input"></label>
+        <button class="ref-btn" data-h-toggle-select="1">${H_SELECT_MODE ? '✕ Cancel select' : '☑️ Select'}</button>
+      </div>
+      ${H_SELECT_MODE ? `
+        <div class="export-row" style="margin-bottom:10px;background:var(--card);border:1px solid var(--purple);border-radius:var(--radius-sm);padding:8px;">
+          <div style="flex:1;font-size:12.5px;color:var(--text-dim);align-self:center;">${H_SELECTED.size} selected</div>
+          <button class="ref-btn" data-h-remove-selected="1" ${H_SELECTED.size ? '' : 'disabled'}>🗑️ Remove selected</button>
+        </div>
+      ` : ''}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+        ${groupChips}
+        <button class="mood-chip" data-h-add-group="1">➕ New group</button>
+        <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-h-manage-groups="1" title="Manage H groups (rename/delete)">✏️ Manage</button>
+      </div>
+    </div>
+    <main>${body}</main>
+    ${renderBottomNav('h')}
+  `;
+}
+
+function openHImageModal(dataUrl) {
+  const upload = ALL_H_IMAGES.find((h) => h.dataUrl === dataUrl);
+  const groupList = Array.from(H_GROUPS).sort((a, b) => a.localeCompare(b));
+  const currentTags = getHTags(dataUrl);
+  const entries = upload ? [] : ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(dataUrl));
+  openModal(`
+    <div class="modal-close-corner-wrap">
+      <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
+      <h3><span class="icon-h">H</span> image</h3>
+      ${dataUrl
+        ? `<img src="${dataUrl}" alt="" style="width:100%;max-height:60vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`
+        : `<div class="cover-placeholder" style="height:180px;margin-bottom:10px;">⏳ Still downloading from Drive…</div>`}
+      ${entries.length ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Pulled from: ${entries.map((e) => escapeHtml(e.title)).join(', ')}</div>` : ''}
+      <div class="field-row">
+        <label>Groups</label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
+          ${groupList.map((name) => `<button class="mood-chip ${currentTags.includes(name) ? 'active' : ''}" data-toggle-h-tag="${escapeHtml(name)}" data-h-url="${escapeHtml(dataUrl)}">🏷️ ${escapeHtml(name)}</button>`).join('')}
+          <button class="mood-chip" data-h-add-group-for="${escapeHtml(dataUrl)}">➕ New group</button>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-ghost" data-remove-from-h="${escapeHtml(dataUrl)}">🗑️ ${upload ? 'Delete' : 'Remove from H'}</button>
+        <button class="btn-primary" data-close-modal="1">Done</button>
+      </div>
+    </div>
+  `);
+}
+
+function attachHGridHandlers() {
+  document.querySelectorAll('[data-h-item]').forEach((el) => {
+    el.onclick = () => {
+      const url = el.getAttribute('data-h-item');
+      if (H_SELECT_MODE) {
+        if (H_SELECTED.has(url)) H_SELECTED.delete(url); else H_SELECTED.add(url);
+        render();
+      } else {
+        openHImageModal(url);
+      }
+    };
+  });
+  const toggleSelectBtn = document.querySelector('[data-h-toggle-select]');
+  if (toggleSelectBtn) toggleSelectBtn.onclick = () => { H_SELECT_MODE = !H_SELECT_MODE; H_SELECTED = new Set(); render(); };
+  const removeSelectedBtn = document.querySelector('[data-h-remove-selected]');
+  if (removeSelectedBtn) removeSelectedBtn.onclick = () => {
+    if (!H_SELECTED.size) return;
+    if (!confirm(`Remove ${H_SELECTED.size} image(s) from H?`)) return;
+    Array.from(H_SELECTED).forEach((url) => removeFromH(url));
+    H_SELECT_MODE = false;
+    H_SELECTED = new Set();
+    showToast('Removed');
+    render();
+  };
+  document.querySelectorAll('[data-h-group-filter]').forEach((el) => {
+    el.onclick = () => { const g = el.getAttribute('data-h-group-filter'); H_GROUP_FILTER = H_GROUP_FILTER === g ? null : g; render(); };
+  });
+  const addGroupBtn = document.querySelector('[data-h-add-group]');
+  if (addGroupBtn) addGroupBtn.onclick = () => {
+    const key = addHGroup(prompt('Name this new H group:'));
+    if (key) { H_GROUP_FILTER = key; render(); }
+  };
+  const manageGroupsBtn = document.querySelector('[data-h-manage-groups]');
+  if (manageGroupsBtn) manageGroupsBtn.onclick = openManageHGroupsModal;
+  const uploadInput = document.querySelector('#h-upload-input');
+  if (uploadInput) uploadInput.onchange = async () => {
+    if (!uploadInput.files.length) return;
+    await addHImageFiles(uploadInput.files);
     render();
   };
 }
@@ -4942,6 +5431,15 @@ function attachRootHandlers() {
     showToast(`Added ${added} of ${urls.length} to Reactions${added < urls.length ? ' (rest were already in there)' : ''}`);
     render();
   };
+  const pullSelectedIntoHBtn = root.querySelector('[data-images-pull-selected-into-h]');
+  if (pullSelectedIntoHBtn) pullSelectedIntoHBtn.onclick = () => {
+    const urls = Array.from(IMAGE_SELECTED);
+    urls.forEach((url) => pullImageIntoH(url));
+    IMAGE_SELECT_MODE = false;
+    IMAGE_SELECTED = new Set();
+    showToast(`Pulled ${urls.length} image${urls.length === 1 ? '' : 's'} into H`);
+    render();
+  };
   root.querySelectorAll('[data-images-tab]').forEach((el) => {
     el.onclick = () => { IMAGES_TAB = el.getAttribute('data-images-tab'); render(); };
   });
@@ -4980,6 +5478,9 @@ function attachRootHandlers() {
     await addReactionFiles(memeUploadInput.files);
     render();
   };
+
+  // H library
+  attachHGridHandlers();
   const memeSearchInput = root.querySelector('#meme-search-input');
   if (memeSearchInput) {
     memeSearchInput.oninput = (ev) => { MEME_STATE.search = ev.target.value; renderMemeLibraryInPlace(); };
@@ -5483,12 +5984,54 @@ document.addEventListener('click', (ev) => {
     toggleImageTag(url, tag);
     openImageAttachmentsModal(url);
   }
+  if (t.matches('[data-rename-h-group]')) {
+    const oldKey = t.getAttribute('data-rename-h-group');
+    const newName = prompt(`Rename "${oldKey}" to:`, oldKey);
+    if (newName && newName.trim() && newName.trim() !== oldKey) {
+      renameHGroup(oldKey, newName);
+      render();
+      openManageHGroupsModal();
+    }
+  }
+  if (t.matches('[data-delete-h-group]')) {
+    const key = t.getAttribute('data-delete-h-group');
+    if (confirm(`Delete the "${key}" H group? This removes the tag from every image — the images themselves are kept.`)) {
+      deleteHGroup(key);
+      render();
+      openManageHGroupsModal();
+    }
+  }
+  if (t.matches('[data-toggle-h-tag]')) {
+    const tag = t.getAttribute('data-toggle-h-tag');
+    const url = t.getAttribute('data-h-url');
+    toggleHTag(url, tag);
+    openHImageModal(url);
+  }
+  if (t.matches('[data-h-add-group-for]')) {
+    const url = t.getAttribute('data-h-add-group-for');
+    const key = addHGroup(prompt('Name this new H group:'));
+    if (key) { toggleHTag(url, key); openHImageModal(url); }
+  }
+  if (t.matches('[data-remove-from-h]')) {
+    const url = t.getAttribute('data-remove-from-h');
+    removeFromH(url);
+    showToast('Removed from H');
+    closeModal();
+    render();
+  }
   if (t.matches('[data-use-as-reaction]')) {
     const url = t.getAttribute('data-use-as-reaction');
     addImageAsReaction(url).then((r) => {
       showToast(r ? 'Added to Reactions — tag it with a mood from the Reactions tab' : 'Already in your Reactions library');
       closeModal();
     });
+  }
+  if (t.matches('[data-pull-into-h]')) {
+    const url = t.getAttribute('data-pull-into-h');
+    pullImageIntoH(url);
+    showToast('Pulled into H — hidden from the Images tab from now on.');
+    closeModal();
+    render();
   }
   if (t.matches('[data-crop-meme]')) openCropReactionModal(t.getAttribute('data-crop-meme'));
   if (t.matches('[data-save-crop]')) saveCroppedReaction(t.getAttribute('data-save-crop'));
@@ -5781,6 +6324,7 @@ async function boot() {
     await ensureSeeded();
     await loadAllEntries();
     await loadAllReactions();
+    await loadAllHImages();
     const savedDeleted = await idbGet(STORE_META, 'deletedTagKeys');
     if (savedDeleted && Array.isArray(savedDeleted.value)) DELETED_TAG_KEYS = new Set(savedDeleted.value);
     const savedResolved = await idbGet(STORE_META, 'hdResolvedRaw');
@@ -5803,6 +6347,12 @@ async function boot() {
     if (savedIgnoredImageDup && Array.isArray(savedIgnoredImageDup.value)) IGNORED_IMAGE_DUP_GROUPS = new Set(savedIgnoredImageDup.value);
     const savedIgnoredMemeDup = await idbGet(STORE_META, 'ignoredMemeDupGroups');
     if (savedIgnoredMemeDup && Array.isArray(savedIgnoredMemeDup.value)) IGNORED_MEME_DUP_GROUPS = new Set(savedIgnoredMemeDup.value);
+    const savedHImageKeys = await idbGet(STORE_META, 'hImageKeys');
+    if (savedHImageKeys && Array.isArray(savedHImageKeys.value)) H_IMAGE_KEYS = new Set(savedHImageKeys.value);
+    const savedHGroups = await idbGet(STORE_META, 'hGroups');
+    if (savedHGroups && Array.isArray(savedHGroups.value)) H_GROUPS = new Set(savedHGroups.value);
+    const savedHTagMap = await idbGet(STORE_META, 'hTagMap');
+    if (savedHTagMap && savedHTagMap.value && typeof savedHTagMap.value === 'object') H_TAG_MAP = savedHTagMap.value;
     if ('serviceWorker' in navigator) {
       setupAutoUpdatingServiceWorker();
     }
@@ -5832,9 +6382,11 @@ async function boot() {
         try {
           await syncWithFirestore(user);
           await syncReactionsWithFirestore(user);
+          await syncHImagesWithFirestore(user);
           await pullMetaState();
           startFirestoreListener(user);
           startReactionsFirestoreListener(user);
+          startHImagesFirestoreListener(user);
         } catch (err) {
           console.error('Firestore sync failed:', err);
           showToast("Couldn't sync — check your connection");
