@@ -155,6 +155,21 @@ a { color: var(--pink); }
 .rating-pick-icon.flag-filter-icon.active { opacity: 1; filter: none; text-shadow: 0 0 8px currentColor; }
 .rating-pick-divider { width: 1px; align-self: stretch; background: var(--border); margin: 2px 6px; }
 
+/* Add-entry modal's format picker — two big emoji she taps to choose
+   Reading vs Watching before anything else, with a soft glow on whichever
+   one is currently picked (distinct from the plain opacity/inset-ring
+   "active" styles used elsewhere, per her "have the selection glow" spec). */
+.add-format-pick-row { display: flex; align-items: center; justify-content: center; gap: 22px; margin: 4px 0 18px; }
+.add-format-pick-icon {
+  font-size: 36px; line-height: 1; cursor: pointer; padding: 10px 18px;
+  border-radius: var(--radius-sm); opacity: .45; filter: grayscale(.5);
+  transition: opacity .15s ease, filter .15s ease, transform .15s ease;
+}
+.add-format-pick-icon.glow {
+  opacity: 1; filter: none; transform: scale(1.08);
+  text-shadow: 0 0 10px var(--purple), 0 0 22px var(--purple);
+}
+
 .review-banner {
   margin: 10px auto 0; padding: 10px 14px; background: var(--yellow-soft); border: 1px solid var(--yellow);
   border-radius: var(--radius-sm); color: var(--yellow); font-size: 13px; font-weight: 600; cursor: pointer;

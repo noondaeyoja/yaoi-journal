@@ -1885,7 +1885,10 @@ function filteredEntries() {
       if (!isHentai(e)) return false;
     } else if (STATE.showArtworkOnly) {
       if (!isArtwork(e)) return false;
-    } else if (e.format !== STATE.format) {
+    } else if (STATE.format && e.format !== STATE.format) {
+      // STATE.format is null when both the book and TV icons are off — that
+      // means no format filter at all, so Reading and Watching entries show
+      // mixed together instead of the usual either/or split.
       return false;
     }
     if (STATE.shelf !== 'ALL' && e.shelf !== STATE.shelf) return false;
@@ -2091,7 +2094,7 @@ function homeSectionHtml(rowId, title, count, innerHtml) {
 
 function renderHome() {
   const entries = filteredEntries();
-  const tags = topTags(ALL_ENTRIES.filter((e) => e.format === STATE.format));
+  const tags = topTags(ALL_ENTRIES.filter((e) => !STATE.format || e.format === STATE.format));
 
   let body = '';
   if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.storyStatusFilter) {
@@ -2104,21 +2107,25 @@ function renderHome() {
     }
     // grouped by shelf, each group scrolls horizontally so hundreds of entries
     // don't turn into an endless vertical scroll.
-    const shelvesToShow = STATE.format === 'reading' ? SHELVES_READING : ['Completed'];
+    // With no format filter (both book/TV icons off), fall back to the
+    // broader Reading shelf list rather than just 'Completed' — any Watching
+    // entries still only ever use 'Completed', so they simply mix in there
+    // alongside Reading entries instead of getting their own row.
+    const shelvesToShow = STATE.format === 'watching' ? ['Completed'] : SHELVES_READING;
     shelvesToShow.forEach((shelf) => {
       const group = entries.filter((e) => e.shelf === shelf);
       if (group.length === 0) return;
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
       body += homeSectionHtml(rowId, shelf, group.length, group.map((e) => renderCoverCard(e)).join(''));
     });
-    if (!body) body = `<div class="empty-state">Nothing here yet. Tap + to add a ${STATE.format === 'reading' ? 'manhwa/manga' : 'anime'}.</div>`;
+    if (!body) body = `<div class="empty-state">Nothing here yet. Tap + to add a ${STATE.format === 'reading' ? 'manhwa/manga' : STATE.format === 'watching' ? 'anime' : 'title'}.</div>`;
   } else {
     body = entries.length
       ? `<div class="cover-grid">${entries.map((e) => renderCoverCard(e)).join('')}</div>`
       : `<div class="empty-state">No matches. Try clearing filters.</div>`;
   }
 
-  const shelfChips = STATE.format === 'reading'
+  const shelfChips = STATE.format !== 'watching'
     ? ['ALL', ...SHELVES_READING].map((s) => `<div class="chip ${STATE.shelf === s ? 'active' : ''}" data-shelf="${escapeHtml(s)}">${s === 'ALL' ? 'All' : escapeHtml(s)}</div>`).join('')
     : '';
   // Story Status (WIP/Finished) — the story's own completion state, distinct
@@ -2670,6 +2677,44 @@ function allAppImages() {
     .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 }
 
+// Deletes a single image wherever it lives in the app — used by the Possible
+// Duplicates X button, which needs to remove "this specific copy" regardless
+// of whether it's a standalone reaction, a semi/uke photo, or a screencap
+// (possibly on more than one entry at once, if the same file was uploaded
+// twice). Reaction-backed images should go through deleteReaction directly;
+// this covers the rest.
+async function deleteImageFromGalleryEverywhere(img) {
+  if (img.reactionId) {
+    await deleteReaction(img.reactionId);
+    return;
+  }
+  const dataUrl = img.dataUrl;
+  if (!dataUrl) return;
+  for (const e of ALL_ENTRIES.slice()) {
+    let changed = false;
+    if (e.semi && e.semi.photo === dataUrl) {
+      if (e.semi.photoDriveId) deleteFromDrive(e.semi.photoDriveId);
+      e.semi.photo = null; e.semi.photoDriveId = null;
+      changed = true;
+    }
+    if (e.uke && e.uke.photo === dataUrl) {
+      if (e.uke.photoDriveId) deleteFromDrive(e.uke.photoDriveId);
+      e.uke.photo = null; e.uke.photoDriveId = null;
+      changed = true;
+    }
+    if ((e.screencaps || []).includes(dataUrl)) {
+      const idx = e.screencaps.indexOf(dataUrl);
+      e.screencaps.splice(idx, 1);
+      if (e.screencapDriveIds && e.screencapDriveIds[idx]) {
+        deleteFromDrive(e.screencapDriveIds[idx]);
+        e.screencapDriveIds.splice(idx, 1);
+      }
+      changed = true;
+    }
+    if (changed) await saveEntry(e);
+  }
+}
+
 /* ---------------------------------------------------------------------- */
 /* Image groupings + per-image tags — same idea as Reactions' custom moods */
 /* (create a group, filter by it), but for the Images tab. Images here     */
@@ -2956,7 +3001,15 @@ function renderReactionsLibrary() {
   const attached = items.filter((i) => i.attachedEntries.length > 0);
   const unattached = items.filter((i) => i.attachedEntries.length === 0);
 
-  const masonryItem = (img) => img.pending
+  // `forceDel` is only passed true from the Possible Duplicates tab — it
+  // makes every image in a duplicate comparison deletable (not just
+  // reaction-backed ones), so she can pick which copy to keep without
+  // leaving Images. Reaction-backed images keep using their own delete
+  // button either way (goes straight to deleteReaction); non-reaction
+  // images (screencaps, semi/uke photos) only get one when forceDel is set,
+  // since Attached/Unattached don't offer a generic "remove from gallery"
+  // action outside of this comparison view.
+  const masonryItem = (img, forceDel) => img.pending
     ? `<div class="masonry-item" data-images-pending-entry="${escapeHtml(img.entryId)}" title="Still downloading from Drive — tap to open ${escapeHtml(img.entryTitle || '')}">
         <div class="cover-placeholder" style="height:100%;">⏳</div>
       </div>`
@@ -2964,7 +3017,7 @@ function renderReactionsLibrary() {
       ${isVideoUrl(img.dataUrl) ? `<video src="${img.dataUrl}" autoplay loop muted playsinline></video>` : `<img src="${img.dataUrl}" alt="" loading="lazy">`}
       ${IMAGE_SELECT_MODE ? `<span class="select-check">${IMAGE_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : ''}
       ${!IMAGE_SELECT_MODE && !getImageTags(img.dataUrl).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : (!IMAGE_SELECT_MODE && img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : '')}
-      ${!IMAGE_SELECT_MODE && img.reactionId ? `<button class="del" data-del-reaction="${img.reactionId}">✕</button>` : ''}
+      ${!IMAGE_SELECT_MODE && img.reactionId ? `<button class="del" data-del-reaction="${img.reactionId}">✕</button>` : (!IMAGE_SELECT_MODE && forceDel ? `<button class="del" data-del-dup-image="${escapeHtml(img.dataUrl)}" title="Delete this image">✕</button>` : '')}
     </div>`;
 
   let tabBody;
@@ -2985,7 +3038,7 @@ function renderReactionsLibrary() {
               <span>Possible duplicate (${group.length} images)</span>
               <button class="ref-btn" style="flex:0 0 auto;padding:4px 10px;font-size:12px;" data-dismiss-image-dup-group="${idx}">Not duplicates</button>
             </div>
-            <div class="image-masonry">${group.map(masonryItem).join('')}</div>
+            <div class="image-masonry">${group.map((img) => masonryItem(img, true)).join('')}</div>
           </div>`).join('');
     }
   } else {
@@ -5623,28 +5676,40 @@ async function confirmReference(entryId) {
 /* Add entry modal                                                        */
 /* ---------------------------------------------------------------------- */
 
+// Which format the user explicitly picked in the Add modal's new glowing
+// emoji picker — deliberately separate from STATE.format (the homepage's
+// own filter) so adding an entry never silently inherits whatever the
+// homepage filter happens to be set to; she has to choose it every time.
+let ADD_FORMAT_PICK = null;
+
 function openAddModal() {
+  ADD_FORMAT_PICK = null;
   openModal(`
-    <h3>Add new ${STATE.format === 'reading' ? 'manhwa/manga' : 'anime'}</h3>
+    <h3>Add new title</h3>
+    <div class="add-format-pick-row">
+      <span class="add-format-pick-icon" data-add-format-pick="reading" title="Reading (Manhwa/Manga)">📖</span>
+      <span class="add-format-pick-icon" data-add-format-pick="watching" title="Watching (Anime)">📺</span>
+    </div>
     <div class="field-row"><label>Title *</label><input type="text" id="add-title"></div>
     <div class="field-row"><label>Author</label><input type="text" id="add-author"></div>
     <div class="modal-actions">
       <button class="btn-ghost" data-close-modal="1">Cancel</button>
       <button class="btn-primary" data-submit-add="1">Add</button>
     </div>
-  `);
+  `, { centered: true });
 }
 
 async function submitAdd() {
   const title = document.getElementById('add-title').value.trim();
   if (!title) { showToast('Title is required'); return; }
+  if (!ADD_FORMAT_PICK) { showToast('Pick 📖 Reading or 📺 Watching first'); return; }
   const author = document.getElementById('add-author').value.trim();
   const entry = {
-    id: uid(STATE.format === 'reading' ? 'manhwa' : 'anime'),
-    format: STATE.format, title, altTitle: '', novelAuthor: '', author, artist: '', isNovel: false,
+    id: uid(ADD_FORMAT_PICK === 'reading' ? 'manhwa' : 'anime'),
+    format: ADD_FORMAT_PICK, title, altTitle: '', novelAuthor: '', author, artist: '', isNovel: false,
     totalSeasons: null, totalChapters: null, epilogue: '', officialLink: '', released: null,
     status: '', currentlyReadingRaw: '', downloaded: '', currentChapter: '',
-    shelf: STATE.format === 'reading' ? 'Plan to Read' : 'Completed',
+    shelf: ADD_FORMAT_PICK === 'reading' ? 'Plan to Read' : 'Completed',
     tags: [], customTags: [], notes: '', favorite: false,
     coverUrl: null, referenceUrl: null, referenceSite: null, referenceStatus: 'none', suggestedMatch: null,
     summaryCache: null, summaryCachedAt: null, smutRating: 0, qualityRating: 0, lolRating: 0,
@@ -5753,7 +5818,10 @@ function attachRootHandlers() {
     searchInput.onkeydown = (ev) => { if (ev.key === 'Enter') searchInput.blur(); };
   }
   root.querySelectorAll('[data-format]').forEach((el) => {
-    el.onclick = () => { STATE.format = el.getAttribute('data-format'); STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.lolFilter = null; STATE.flagFilter = null; STATE.linkFilter = false; STATE.storyStatusFilter = null; render(); };
+    // Clicking the already-active icon turns it off (STATE.format = null,
+    // meaning no format filter — Reading + Watching both show, mixed
+    // together). Clicking the other icon switches to it as before.
+    el.onclick = () => { const val = el.getAttribute('data-format'); STATE.format = STATE.format === val ? null : val; STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.lolFilter = null; STATE.flagFilter = null; STATE.linkFilter = false; STATE.storyStatusFilter = null; render(); };
   });
   root.querySelectorAll('[data-shelf]').forEach((el) => {
     el.onclick = () => { STATE.shelf = el.getAttribute('data-shelf'); render(); };
@@ -6234,6 +6302,24 @@ function attachRootHandlers() {
   root.querySelectorAll('[data-dismiss-image-dup-group]').forEach((el) => {
     el.onclick = (ev) => { ev.stopPropagation(); dismissImageDupGroup(Number(el.getAttribute('data-dismiss-image-dup-group'))); };
   });
+  root.querySelectorAll('[data-del-dup-image]').forEach((el) => {
+    el.onclick = async (ev) => {
+      ev.stopPropagation();
+      const dataUrl = el.getAttribute('data-del-dup-image');
+      if (!confirm('Delete this image? It will be removed from any read it\'s attached to.')) return;
+      await deleteImageFromGalleryEverywhere({ dataUrl, reactionId: null });
+      // Same idea as the reaction delete above — once she's picked which
+      // copy to keep, drop the deleted one from this group immediately so
+      // the comparison updates without a full rescan.
+      if (IMAGE_DUP_GROUPS) {
+        IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS
+          .map((g) => g.filter((x) => x.dataUrl !== dataUrl))
+          .filter((g) => g.length > 1);
+      }
+      showToast('Deleted');
+      render();
+    };
+  });
 
   // Meme/reaction library
   attachMemeGridHandlers();
@@ -6608,7 +6694,7 @@ function renderHomeInPlace() {
     if (suggestedGroup.length > 0) {
       body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)).join(''));
     }
-    const shelvesToShow = STATE.format === 'reading' ? SHELVES_READING : ['Completed'];
+    const shelvesToShow = STATE.format === 'watching' ? ['Completed'] : SHELVES_READING;
     shelvesToShow.forEach((shelf) => {
       const group = entries.filter((e) => e.shelf === shelf);
       if (group.length === 0) return;
@@ -6818,6 +6904,14 @@ document.addEventListener('click', (ev) => {
       closeModal();
       render();
     }
+  }
+  if (t.matches('[data-add-format-pick]')) {
+    ADD_FORMAT_PICK = t.getAttribute('data-add-format-pick');
+    // Direct DOM toggle instead of a full modal re-render, so anything
+    // already typed into Title/Author isn't wiped out by the click.
+    document.querySelectorAll('[data-add-format-pick]').forEach((el) => {
+      el.classList.toggle('glow', el.getAttribute('data-add-format-pick') === ADD_FORMAT_PICK);
+    });
   }
   if (t.matches('[data-submit-add]')) submitAdd();
   if (t.matches('[data-fetch-ref]')) fetchReferencePreview(t.getAttribute('data-fetch-ref'));
