@@ -123,6 +123,25 @@ let STATE = {
   search: '',
 };
 
+// Shared by both paths back to a completely clean homepage — the footer
+// Journal button and the "Yaoi Journal" logo/name in the global header.
+// Clears every filter and the search box, not just the favorites/on-HD/
+// hentai toggles, so either one always lands on the same blank-slate view.
+function resetHomeFiltersClean() {
+  STATE.shelf = 'ALL';
+  STATE.tagFilters = [];
+  STATE.search = '';
+  STATE.showFavoritesOnly = false;
+  STATE.showOnDriveOnly = false;
+  STATE.showHentaiOnly = false;
+  STATE.smutFilter = null;
+  STATE.qualityFilter = null;
+  STATE.lolFilter = null;
+  STATE.flagFilter = null;
+  STATE.linkFilter = false;
+  FILTERS_COLLAPSED = false;
+}
+
 /* ---------------------------------------------------------------------- */
 /* IndexedDB layer                                                        */
 /* ---------------------------------------------------------------------- */
@@ -1322,6 +1341,11 @@ async function applyCoverFile(file) {
   const e = getEntry(STATE.entryId);
   if (!e) return;
   e.coverUrl = dataUrl;
+  // Once she's uploaded her own cover, it's hers to keep — a reference-site
+  // match/re-match should never silently overwrite it again. This flag is
+  // the only thing that gates the cover-overwrite in applySuggestedMatch(),
+  // confirmReference(), and the bulk review queue below.
+  e.coverIsUserUploaded = true;
   await saveEntry(e);
   showToast('Cover updated!');
   render();
@@ -4457,7 +4481,7 @@ async function applySuggestedMatch(entryId) {
   const e = getEntry(entryId);
   const sm = e && e.suggestedMatch;
   if (!sm) return false;
-  if (sm.coverUrl) e.coverUrl = sm.coverUrl;
+  if (sm.coverUrl && !e.coverIsUserUploaded) e.coverUrl = sm.coverUrl;
   if (sm.url) { e.referenceUrl = sm.url; e.referenceSite = sm.site || 'Anime-Planet'; e.referenceStatus = 'confirmed'; }
   if (sm.summary) e.summaryCache = sm.summary;
   if (sm.tags && sm.tags.length) {
@@ -5557,7 +5581,7 @@ async function confirmReference(entryId) {
   const data = previewEl._pendingData;
   const url = previewEl._pendingUrl;
   const e = getEntry(entryId);
-  if (data.coverUrl) e.coverUrl = data.coverUrl;
+  if (data.coverUrl && !e.coverIsUserUploaded) e.coverUrl = data.coverUrl;
   e.referenceUrl = url;
   e.referenceSite = url.includes('mangago') ? 'MangaGo' : 'Anime-Planet';
   e.referenceStatus = 'confirmed';
@@ -5637,12 +5661,12 @@ function attachRootHandlers() {
     });
   }
 
+  // The "Yaoi Journal" logo/name in the global header is a second path to
+  // the same destination as the footer Journal button — same full reset,
+  // same navigate('home') call, from any screen in the app.
   root.querySelectorAll('[data-header-home]').forEach((el) => {
     el.onclick = () => {
-      STATE.showFavoritesOnly = false;
-      STATE.showOnDriveOnly = false;
-      STATE.showHentaiOnly = false;
-      FILTERS_COLLAPSED = false;
+      resetHomeFiltersClean();
       navigate('home');
     };
   });
@@ -5664,23 +5688,7 @@ function attachRootHandlers() {
   root.querySelectorAll('[data-nav]').forEach((el) => {
     el.onclick = () => {
       const view = el.getAttribute('data-nav');
-      if (view === 'home') {
-        // The Journal footer icon should always land on a completely clean
-        // homepage — clear every filter and the search box, not just the
-        // favorites/on-HD/hentai toggles.
-        STATE.shelf = 'ALL';
-        STATE.tagFilters = [];
-        STATE.search = '';
-        STATE.showFavoritesOnly = false;
-        STATE.showOnDriveOnly = false;
-        STATE.showHentaiOnly = false;
-        STATE.smutFilter = null;
-        STATE.qualityFilter = null;
-        STATE.lolFilter = null;
-        STATE.flagFilter = null;
-        STATE.linkFilter = false;
-        FILTERS_COLLAPSED = false;
-      }
+      if (view === 'home') resetHomeFiltersClean();
       navigate(view);
     };
   });
@@ -6514,7 +6522,7 @@ function attachRootHandlers() {
       const e = getEntry(id);
       const sm = e && e.suggestedMatch;
       if (!sm) return;
-      if (sm.coverUrl) e.coverUrl = sm.coverUrl;
+      if (sm.coverUrl && !e.coverIsUserUploaded) e.coverUrl = sm.coverUrl;
       if (sm.url) { e.referenceUrl = sm.url; e.referenceSite = sm.site || 'Anime-Planet'; e.referenceStatus = 'confirmed'; }
       if (sm.summary) e.summaryCache = sm.summary;
       if (sm.tags && sm.tags.length) {
