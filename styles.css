@@ -533,15 +533,15 @@ textarea {
   border-radius: 10px; padding: 6px 10px; font-size: 12.5px; font-weight: 400; text-align: center; font-family: inherit;
 }
 .chapter-pill-input::placeholder { color: rgba(255,255,255,.75); }
-/* "Reading Status" pill (the Currently Reading/Completed/etc shelf picker
-   under Story Status) — same title-label treatment as the Current Chapter
-   pill, and its dropdown restyled to match: white, not-bold text, instead of
-   the default .shelf-select dark/bold pill look. */
-.reading-status-label {
+/* Story Status + Reading Status pills — same title-label treatment as the
+   Current Chapter pill (centered, uppercase, dim), and both dropdowns
+   restyled to match: white, not-bold text, instead of the default
+   .shelf-select dark/bold pill look. */
+.status-pill-label {
   display: block; font-size: 10.5px; color: var(--text-dim); text-transform: uppercase;
   letter-spacing: .04em; margin-bottom: 2px; text-align: center;
 }
-.reading-status-select { color: #fff; font-weight: 400; }
+.status-pill-select { color: #fff; font-weight: 400; }
 .reading-link-row .reading-link-clear { align-self: center; margin-top: 16px; }
 
 .pdf-row { display: flex; gap: 8px; align-items: center; }

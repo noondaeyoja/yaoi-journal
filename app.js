@@ -120,6 +120,8 @@ let STATE = {
   lolFilter: null,          // null or 1-5, meaning "at least N laughing faces"
   flagFilter: null,         // null or 'green'|'red'|'black'
   linkFilter: false,        // true = only show entries with a reading link attached
+  storyStatusFilter: null,  // null or 'WIP'|'Finished' — the story's own completion state
+  showArtworkOnly: false,   // "Artwork" filter — entries tagged as artwork
   search: '',
 };
 
@@ -134,11 +136,13 @@ function resetHomeFiltersClean() {
   STATE.showFavoritesOnly = false;
   STATE.showOnDriveOnly = false;
   STATE.showHentaiOnly = false;
+  STATE.showArtworkOnly = false;
   STATE.smutFilter = null;
   STATE.qualityFilter = null;
   STATE.lolFilter = null;
   STATE.flagFilter = null;
   STATE.linkFilter = false;
+  STATE.storyStatusFilter = null;
   FILTERS_COLLAPSED = false;
 }
 
@@ -1879,10 +1883,13 @@ function filteredEntries() {
       if (!isOnDrive(e)) return false;
     } else if (STATE.showHentaiOnly) {
       if (!isHentai(e)) return false;
+    } else if (STATE.showArtworkOnly) {
+      if (!isArtwork(e)) return false;
     } else if (e.format !== STATE.format) {
       return false;
     }
     if (STATE.shelf !== 'ALL' && e.shelf !== STATE.shelf) return false;
+    if (STATE.storyStatusFilter && e.status !== STATE.storyStatusFilter) return false;
     if (STATE.tagFilters.length) {
       const allTags = [...(e.tags || []), ...(e.customTags || [])];
       if (!STATE.tagFilters.some((t) => allTags.includes(t))) return false;
@@ -2022,6 +2029,10 @@ const HENTAI_TAG_KEY = 'hentai';
 function isHentai(e) {
   return [...(e.tags || []), ...(e.customTags || [])].some((t) => normalizeTagKey(t) === HENTAI_TAG_KEY);
 }
+const ARTWORK_TAG_KEY = 'artwork';
+function isArtwork(e) {
+  return [...(e.tags || []), ...(e.customTags || [])].some((t) => normalizeTagKey(t) === ARTWORK_TAG_KEY);
+}
 
 function topTags(entries) {
   const counts = {};
@@ -2083,7 +2094,7 @@ function renderHome() {
   const tags = topTags(ALL_ENTRIES.filter((e) => e.format === STATE.format));
 
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.flagFilter && !STATE.linkFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.storyStatusFilter) {
     // Suggested-matches row sits above the shelf rows, same section-title +
     // horizontal-scroll treatment, so unconfirmed matches are easy to spot
     // and jump into without leaving the homepage.
@@ -2110,6 +2121,10 @@ function renderHome() {
   const shelfChips = STATE.format === 'reading'
     ? ['ALL', ...SHELVES_READING].map((s) => `<div class="chip ${STATE.shelf === s ? 'active' : ''}" data-shelf="${escapeHtml(s)}">${s === 'ALL' ? 'All' : escapeHtml(s)}</div>`).join('')
     : '';
+  // Story Status (WIP/Finished) — the story's own completion state, distinct
+  // from Reading Status (her shelf: Currently Reading/Completed/etc, which is
+  // about her progress through it, not whether the author's finished it).
+  const storyStatusChips = ['ALL', 'WIP', 'Finished'].map((s) => `<div class="chip ${(STATE.storyStatusFilter || 'ALL') === s ? 'active' : ''}" data-story-status-filter="${escapeHtml(s)}">${s === 'ALL' ? 'All' : escapeHtml(s)}</div>`).join('');
   const formatIcons = `
     <span class="rating-pick-icon format-icon-pick ${STATE.format === 'reading' ? 'active' : ''}" data-format="reading" title="Reading (Manhwa/Manga)">📖</span>
     <span class="rating-pick-icon format-icon-pick ${STATE.format === 'watching' ? 'active' : ''}" data-format="watching" title="Watching (Anime)">📺</span>
@@ -2135,6 +2150,7 @@ function renderHome() {
   // toggle chips here instead (same nav-filter mechanism the hentai chip
   // already used), so removing them from the bottom nav doesn't lose access.
   const hentaiChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showHentaiOnly ? 'active' : ''}" data-nav-filter="${STATE.showHentaiOnly ? 'home' : 'hentai'}" title="Hentai only">💦</span>`;
+  const artworkChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showArtworkOnly ? 'active' : ''}" data-nav-filter="${STATE.showArtworkOnly ? 'home' : 'artwork'}" title="Artwork only">🖌️</span>`;
   const favoritesChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showFavoritesOnly ? 'active' : ''}" data-nav-filter="${STATE.showFavoritesOnly ? 'home' : 'favorites'}" title="Favorites only">💜</span>`;
   const onDriveChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showOnDriveOnly ? 'active' : ''}" data-nav-filter="${STATE.showOnDriveOnly ? 'home' : 'onDrive'}" title="On HD only">💾</span>`;
   // Reading-link chip — unlike favorites/on-HD/hentai this doesn't replace
@@ -2146,12 +2162,14 @@ function renderHome() {
     <div class="app-header">
       <button class="filters-toggle-btn" data-toggle-filters="1">${FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
       <div class="filters-collapsible ${FILTERS_COLLAPSED ? 'collapsed' : ''}" id="filters-collapsible">
-        <div class="filter-section-label">Status</div>
+        <div class="filter-section-label">Reading Status</div>
         <div class="shelf-row">${shelfChips}</div>
+        <div class="filter-section-label">Story Status</div>
+        <div class="shelf-row">${storyStatusChips}</div>
         <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
         <div class="filter-section-label">Ratings &amp; Flags</div>
-        <div class="rating-pick-row">${formatIcons}${hentaiChip}${favoritesChip}${onDriveChip}${linkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}${lolChips}<span class="rating-pick-divider"></span>${flagChips}</div>
+        <div class="rating-pick-row">${formatIcons}${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}${lolChips}<span class="rating-pick-divider"></span>${flagChips}</div>
       </div>
     </div>
     <main>${body}</main>
@@ -2344,13 +2362,6 @@ function renderTagManager() {
       <div class="search-bar"><span>🔍</span><input type="search" id="tagmgr-search" placeholder="Filter tags..."></div>
     </div>
     <main>
-      <div class="account-panel">
-        <div class="account-info">
-          <div class="account-label">Synced account</div>
-          <div class="account-email">${escapeHtml(CURRENT_USER ? CURRENT_USER.email : '')}</div>
-        </div>
-        <button class="icon-btn-inline" data-sign-out="1" title="Sign out">Sign Out</button>
-      </div>
       <button class="ref-btn" style="width:100%;margin-bottom:12px;" data-nav="hdMatch">💾 Match Owned Titles from a List</button>
       <div style="color:var(--text-dim);font-size:12px;margin-bottom:10px;">
         ${allNames.length} unique tag${allNames.length === 1 ? '' : 's'} across ${ALL_ENTRIES.length} entries. Tap a tag to see its entries. Renaming applies everywhere the tag is used — rename to an existing tag name to merge two tags together. Deleting removes it from every entry (can't be undone); hiding just keeps it out of filters.
@@ -3004,15 +3015,13 @@ function renderReactionsLibrary() {
         <button class="tagmgr-tab ${IMAGES_TAB === 'attached' ? 'active' : ''}" data-images-tab="attached">Attached (${attached.length})</button>
         <button class="tagmgr-tab ${IMAGES_TAB === 'unattached' ? 'active' : ''}" data-images-tab="unattached">Unattached (${unattached.length})</button>
         <button class="tagmgr-tab ${IMAGES_TAB === 'duplicates' ? 'active' : ''}" data-images-tab="duplicates">Possible Duplicates</button>
-        ${IMAGES_TAB !== 'duplicates' ? `<button class="ref-btn ${IMAGES_UNTAGGED_ONLY ? 'active' : ''}" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;${IMAGES_UNTAGGED_ONLY ? 'background:var(--purple);color:#fff;' : ''}" data-images-untagged-only="1" title="Show images not yet grouped into a mood — separate from the Unattached tab, which is about whether an image is attached to a read">${untaggedCount} unattached mood</button>` : ''}
+        ${IMAGES_TAB !== 'duplicates' ? `<button class="ref-btn ${IMAGES_UNTAGGED_ONLY ? 'active' : ''}" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;${IMAGES_UNTAGGED_ONLY ? 'background:var(--purple);color:#fff;' : ''}" data-images-untagged-only="1" title="Show images not yet grouped into a mood">${untaggedCount} untagged</button>` : ''}
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-images-manage-groups="1" title="Manage image groups (rename/delete)">✏️ Manage</button>
       </div>
       ${IMAGES_TAB !== 'duplicates' ? `
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center;">
           <button class="mood-chip ${IMAGE_KIND_FILTER === 'semi' ? 'active' : ''}" data-images-kind-filter="semi">Semi only</button>
           <button class="mood-chip ${IMAGE_KIND_FILTER === 'uke' ? 'active' : ''}" data-images-kind-filter="uke">Uke only</button>
-        </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center;">
           ${groupChips}
           <button class="mood-chip" data-images-add-group="1">➕ New group</button>
         </div>
@@ -3340,7 +3349,6 @@ function renderMemeLibrary() {
           <button class="btn-ghost" data-meme-delete-selected="1" ${MEME_SELECTED.size ? '' : 'disabled'}>🗑️ Delete selected</button>
         </div>
       ` : ''}
-      <div class="search-bar" style="margin-bottom:8px;"><span>🔍</span><input type="search" id="meme-search-input" placeholder="Search captions/keywords..." value="${escapeHtml(MEME_STATE.search)}"></div>
       <div class="tagmgr-tabs" style="margin-bottom:8px;">
         <button class="tagmgr-tab ${!MEME_SHOWING_DUPLICATES ? 'active' : ''}" data-meme-tab="grid">Gallery</button>
         <button class="tagmgr-tab ${MEME_SHOWING_DUPLICATES ? 'active' : ''}" data-meme-tab="duplicates">Possible Duplicates</button>
@@ -4652,7 +4660,7 @@ function renderDetail(e) {
   // Status pill instead of under the cover thumbnail — per her mockup, the
   // "Currently Read" shelf picker belongs next to Status, not the cover.
   const shelfSelect = isReading ? `
-    <select class="shelf-select reading-status-select" data-shelf-select="1">
+    <select class="shelf-select status-pill-select" data-shelf-select="1">
       ${SHELVES_READING.map((s) => `<option value="${escapeHtml(s)}" ${e.shelf === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
     </select>` : '';
 
@@ -4706,13 +4714,13 @@ function renderDetail(e) {
           <div class="field-row" style="margin-bottom:0;"><label>Total Chapters</label><div class="value plain">${e.totalChapters || '—'}</div></div>
         </div>
         <div class="field-row" style="margin-bottom:0;">
-          <label>Story Status</label>
-          <select class="shelf-select" data-status-select="1">
+          <label class="status-pill-label">Story Status</label>
+          <select class="shelf-select status-pill-select" data-status-select="1">
             <option value="" ${!e.status ? 'selected' : ''}>—</option>
             <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
             <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
           </select>
-          ${shelfSelect ? `<div style="margin-top:8px;"><label class="reading-status-label">Reading Status</label>${shelfSelect}</div>` : ''}
+          ${shelfSelect ? `<div style="margin-top:8px;"><label class="status-pill-label">Reading Status</label>${shelfSelect}</div>` : ''}
         </div>
       </div>
     ` : `
@@ -4923,6 +4931,13 @@ function renderDatabase() {
       </div>
     </div>
     <main>
+      <div class="account-panel">
+        <div class="account-info">
+          <div class="account-label">Synced account</div>
+          <div class="account-email">${escapeHtml(CURRENT_USER ? CURRENT_USER.email : '')}</div>
+        </div>
+        <button class="icon-btn-inline" data-sign-out="1" title="Sign out">Sign Out</button>
+      </div>
       <div class="panel" style="margin-bottom:14px;">
         <div class="panel-title">Data Cleanup Tools</div>
         <div class="export-row">
@@ -5701,6 +5716,7 @@ function attachRootHandlers() {
       STATE.showFavoritesOnly = which === 'favorites';
       STATE.showOnDriveOnly = which === 'onDrive';
       STATE.showHentaiOnly = which === 'hentai';
+      STATE.showArtworkOnly = which === 'artwork';
       // Every filter chip in this row should behave the same way — results
       // appear below the filter container, which stays put. Favorites/On HD
       // used to force the whole filter section closed, which was jarring and
@@ -5722,7 +5738,7 @@ function attachRootHandlers() {
         // Search lives in the global header now, reachable from any screen —
         // typing while elsewhere jumps to Journal to show results, then
         // restores focus/cursor so the jump doesn't interrupt typing.
-        STATE.showFavoritesOnly = false; STATE.showOnDriveOnly = false; STATE.showHentaiOnly = false; FILTERS_COLLAPSED = false;
+        STATE.showFavoritesOnly = false; STATE.showOnDriveOnly = false; STATE.showHentaiOnly = false; STATE.showArtworkOnly = false; FILTERS_COLLAPSED = false;
         SEARCH_INPUT_SHOULD_FOCUS = true;
         navigate('home');
       }
@@ -5737,10 +5753,17 @@ function attachRootHandlers() {
     searchInput.onkeydown = (ev) => { if (ev.key === 'Enter') searchInput.blur(); };
   }
   root.querySelectorAll('[data-format]').forEach((el) => {
-    el.onclick = () => { STATE.format = el.getAttribute('data-format'); STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.lolFilter = null; STATE.flagFilter = null; STATE.linkFilter = false; render(); };
+    el.onclick = () => { STATE.format = el.getAttribute('data-format'); STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.lolFilter = null; STATE.flagFilter = null; STATE.linkFilter = false; STATE.storyStatusFilter = null; render(); };
   });
   root.querySelectorAll('[data-shelf]').forEach((el) => {
     el.onclick = () => { STATE.shelf = el.getAttribute('data-shelf'); render(); };
+  });
+  root.querySelectorAll('[data-story-status-filter]').forEach((el) => {
+    el.onclick = () => {
+      const val = el.getAttribute('data-story-status-filter');
+      STATE.storyStatusFilter = val === 'ALL' ? null : val;
+      render();
+    };
   });
   const tagMsToggle = root.querySelector('[data-tag-ms-toggle]');
   if (tagMsToggle) tagMsToggle.onclick = () => { TAG_FILTER_OPEN = !TAG_FILTER_OPEN; render(); };
@@ -6223,20 +6246,6 @@ function attachRootHandlers() {
 
   // H library
   attachHGridHandlers();
-  const memeSearchInput = root.querySelector('#meme-search-input');
-  if (memeSearchInput) {
-    memeSearchInput.oninput = (ev) => { MEME_STATE.search = ev.target.value; renderMemeLibraryInPlace(); };
-    // Only restore focus/cursor if the user was already mid-typing (flagged by
-    // renderMemeLibraryInPlace before its in-place re-render). Don't autofocus
-    // on a fresh nav into the Reactions tab — that was popping the mobile
-    // keyboard every single time the tab was opened, even with no intent to search.
-    if (MEME_SEARCH_INPUT_SHOULD_FOCUS) {
-      MEME_SEARCH_INPUT_SHOULD_FOCUS = false;
-      memeSearchInput.focus();
-      memeSearchInput.setSelectionRange(memeSearchInput.value.length, memeSearchInput.value.length);
-    }
-    memeSearchInput.onkeydown = (ev) => { if (ev.key === 'Enter') memeSearchInput.blur(); };
-  }
   root.querySelectorAll('[data-meme-mood-filter]').forEach((el) => {
     el.onclick = () => {
       const mood = el.getAttribute('data-meme-mood-filter');
@@ -6594,7 +6603,7 @@ function renderHomeInPlace() {
   const main = root.querySelector('main');
   const entries = filteredEntries();
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.flagFilter && !STATE.linkFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.storyStatusFilter) {
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
       body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)).join(''));
