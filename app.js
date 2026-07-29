@@ -4264,11 +4264,26 @@ function renderDetail(e) {
         <h2>${escapeHtml(e.title)}</h2>
       </div>
       <div class="detail-header-icons">
-        <button class="icon-btn" data-force-save="1" title="Save now">✅</button>
-        <button class="icon-btn" data-toggle-fav="1" title="Favorite">${e.favorite ? '💜' : '🤍'}</button>
-        <button class="icon-btn" data-merge-entry="${e.id}" title="Mark as duplicate / merge into another entry">🔀</button>
-        <button class="icon-btn danger" data-delete-entry="${e.id}" title="Delete this entry">✕</button>
-        <button class="icon-btn ${isOnDrive(e) ? 'hd-active' : ''}" data-toggle-hd="1" title="${isOnDrive(e) ? 'On HD — tap to unmark' : 'Mark as On HD'}">💾</button>
+        <div class="icon-action">
+          <button class="icon-btn save" data-force-save="1" title="Save now">✅</button>
+          <span class="icon-label">Save</span>
+        </div>
+        <div class="icon-action">
+          <button class="icon-btn" data-merge-entry="${e.id}" title="Mark as duplicate / merge into another entry">🔀</button>
+          <span class="icon-label">Merge</span>
+        </div>
+        <div class="icon-action">
+          <button class="icon-btn danger" data-delete-entry="${e.id}" title="Delete this entry">✕</button>
+          <span class="icon-label">Delete</span>
+        </div>
+        <div class="icon-action">
+          <button class="icon-btn ${e.favorite ? 'fav-active' : ''}" data-toggle-fav="1" title="Favorite">${e.favorite ? '💜' : '🤍'}</button>
+          <span class="icon-label">Favorite</span>
+        </div>
+        <div class="icon-action">
+          <button class="icon-btn ${isOnDrive(e) ? 'hd-active' : ''}" data-toggle-hd="1" title="${isOnDrive(e) ? 'On HD — tap to unmark' : 'Mark as On HD'}">💾</button>
+          <span class="icon-label">On HD</span>
+        </div>
       </div>
     </div>
     <div class="journal">
