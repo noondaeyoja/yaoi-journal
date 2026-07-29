@@ -4028,11 +4028,11 @@ async function addReactionFiles(fileList, source = 'images') {
     // image, and would silently mangle a video into a single frame.
     const isVideo = file.type.startsWith('video/');
     const dataUrl = (isAnimated || isVideo) ? await fileToDataUrl(file) : await fileToCompressedDataUrl(file, 800);
+    // Used to block here with a confirm() popup on a possible-duplicate
+    // hash match — per her request, uploads always go through now instead;
+    // the Possible Duplicates scan (scanForMemeDuplicates/etc.) is the
+    // dedicated place to find and clean up real dupes after the fact.
     const hash = await hashDataUrl(dataUrl);
-    const dupe = findReactionByHash(hash, source);
-    if (dupe) {
-      if (!confirm('This looks like a duplicate of a reaction/meme you already saved. Add it again anyway?')) continue;
-    }
     const reaction = { id: uid('reaction'), dataUrl, hash, moodTags: [], note: '', source, createdAt: new Date().toISOString() };
     await saveReaction(reaction);
     added.push(reaction);
@@ -4293,11 +4293,11 @@ async function addHImageFiles(fileList) {
     const isAnimated = file.type === 'image/gif' || file.type === 'image/webp';
     const isVideo = file.type.startsWith('video/');
     const dataUrl = (isAnimated || isVideo) ? await fileToDataUrl(file) : await fileToCompressedDataUrl(file, 900);
+    // Used to block here with a confirm() popup on a possible-duplicate
+    // hash match — per her request, uploads always go through now instead;
+    // the Possible Duplicates (H) scan is the dedicated place to find and
+    // clean up real dupes after the fact.
     const hash = await hashDataUrl(dataUrl);
-    const dupe = findHImageByHash(hash);
-    if (dupe) {
-      if (!confirm('This looks like a duplicate of an H image you already have. Add it again anyway?')) continue;
-    }
     const hImage = { id: uid('h'), dataUrl, hash, createdAt: new Date().toISOString() };
     await saveHImage(hImage);
     added.push(hImage);
