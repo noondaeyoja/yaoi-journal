@@ -120,6 +120,7 @@ let STATE = {
   lolFilter: null,          // null or 1-5, meaning "at least N laughing faces"
   flagFilter: null,         // null or 'green'|'red'|'black'
   linkFilter: false,        // true = only show entries with a reading link attached
+  noLinkFilter: false,      // true = only show entries WITHOUT a reading link attached
   storyStatusFilter: null,  // null or 'WIP'|'Finished' — the story's own completion state
   showArtworkOnly: false,   // "Artwork" filter — entries tagged as artwork
   search: '',
@@ -142,6 +143,7 @@ function resetHomeFiltersClean() {
   STATE.lolFilter = null;
   STATE.flagFilter = null;
   STATE.linkFilter = false;
+  STATE.noLinkFilter = false;
   STATE.storyStatusFilter = null;
   FILTERS_COLLAPSED = false;
 }
@@ -1930,6 +1932,7 @@ function filteredEntries() {
       if (!hasFlag) return false;
     }
     if (STATE.linkFilter && !e.readingLink) return false;
+    if (STATE.noLinkFilter && e.readingLink) return false;
     if (q) {
       const hay = [e.title, e.altTitle, e.author, e.artist, e.notes, ...(e.tags || []), ...(e.customTags || [])]
         .filter(Boolean).join(' ').toLowerCase();
@@ -2122,7 +2125,7 @@ function renderHome() {
   const tags = topTags(ALL_ENTRIES.filter((e) => !STATE.format || e.format === STATE.format));
 
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.storyStatusFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter) {
     // Suggested-matches row sits above the shelf rows, same section-title +
     // horizontal-scroll treatment, so unconfirmed matches are easy to spot
     // and jump into without leaving the homepage.
@@ -2189,6 +2192,9 @@ function renderHome() {
   // the whole shelf, it's an additive AND-filter like smut/quality/flag, so
   // it stacks with whatever else is already filtered.
   const linkChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.linkFilter ? 'active' : ''}" data-link-filter="1" title="Has a reading link attached">🔗</span>`;
+  // Inverse of linkChip — same additive AND-filter mechanism, just for
+  // entries with NO reading link attached instead of ones that have one.
+  const noLinkChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.noLinkFilter ? 'active' : ''}" data-no-link-filter="1" title="No reading link attached">⛓️‍💥</span>`;
 
   return `
     <div class="app-header">
@@ -2201,7 +2207,7 @@ function renderHome() {
         <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
         <div class="filter-section-label">Ratings &amp; Flags</div>
-        <div class="rating-pick-row">${formatIcons}${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}${lolChips}<span class="rating-pick-divider"></span>${flagChips}</div>
+        <div class="rating-pick-row">${formatIcons}${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}${lolChips}<span class="rating-pick-divider"></span>${flagChips}</div>
       </div>
     </div>
     <main>${body}</main>
@@ -2826,6 +2832,13 @@ function deleteImageGroup(key) {
 function getImageTags(dataUrl) {
   return IMAGE_TAG_MAP[imageKey(dataUrl)] || [];
 }
+// "Untagged" in the Images gallery means not sorted into ANY of: a mood
+// group, Semi only, or Uke only — being a semi/uke photo already counts as
+// "tagged" in her mental model, even before it's also given a mood group.
+function isImageUntagged(img) {
+  const kinds = img.kinds || [];
+  return !getImageTags(img.dataUrl).length && !kinds.includes('semi') && !kinds.includes('uke');
+}
 function toggleImageTag(dataUrl, tag) {
   const key = imageKey(dataUrl);
   const tags = new Set(IMAGE_TAG_MAP[key] || []);
@@ -3027,15 +3040,16 @@ function renderReactionsLibrary() {
   if (IMAGE_KIND_FILTER) items = items.filter((i) => i.kinds.includes(IMAGE_KIND_FILTER));
   if (IMAGE_GROUP_FILTER) items = items.filter((i) => getImageTags(i.dataUrl).includes(IMAGE_GROUP_FILTER));
   // Untagged-first, same rule as the Reactions gallery — images with no
-  // group assigned yet surface first so they're quick to spot and sort.
+  // group assigned yet (and not already a semi/uke photo — see
+  // isImageUntagged) surface first so they're quick to spot and sort.
   items = items.slice().sort((a, b) => {
-    const aUntagged = !getImageTags(a.dataUrl).length;
-    const bUntagged = !getImageTags(b.dataUrl).length;
+    const aUntagged = isImageUntagged(a);
+    const bUntagged = isImageUntagged(b);
     if (aUntagged !== bUntagged) return aUntagged ? -1 : 1;
     return 0;
   });
-  const untaggedCount = items.filter((i) => !i.pending && !getImageTags(i.dataUrl).length).length;
-  if (IMAGES_UNTAGGED_ONLY) items = items.filter((i) => !getImageTags(i.dataUrl).length);
+  const untaggedCount = items.filter((i) => !i.pending && isImageUntagged(i)).length;
+  if (IMAGES_UNTAGGED_ONLY) items = items.filter((i) => isImageUntagged(i));
   const attached = items.filter((i) => i.attachedEntries.length > 0);
   const unattached = items.filter((i) => i.attachedEntries.length === 0);
 
@@ -3054,7 +3068,7 @@ function renderReactionsLibrary() {
     : `<div class="masonry-item ${IMAGE_SELECT_MODE ? 'selectable' : ''} ${IMAGE_SELECTED.has(img.dataUrl) ? 'selected' : ''}" data-images-item="${escapeHtml(img.dataUrl)}">
       ${isVideoUrl(img.dataUrl) ? `<video src="${img.dataUrl}" autoplay loop muted playsinline></video>` : `<img src="${img.dataUrl}" alt="" loading="lazy">`}
       ${IMAGE_SELECT_MODE ? `<span class="select-check">${IMAGE_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : ''}
-      ${!IMAGE_SELECT_MODE && !getImageTags(img.dataUrl).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : (!IMAGE_SELECT_MODE && img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : '')}
+      ${!IMAGE_SELECT_MODE && isImageUntagged(img) ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : (!IMAGE_SELECT_MODE && img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : '')}
       ${!IMAGE_SELECT_MODE && img.reactionId ? `<button class="del" data-del-reaction="${img.reactionId}">✕</button>` : (!IMAGE_SELECT_MODE && forceDel ? `<button class="del" data-del-dup-image="${escapeHtml(img.dataUrl)}" title="Delete this image">✕</button>` : '')}
     </div>`;
 
@@ -5876,7 +5890,7 @@ function attachRootHandlers() {
     // Clicking the already-active icon turns it off (STATE.format = null,
     // meaning no format filter — Reading + Watching both show, mixed
     // together). Clicking the other icon switches to it as before.
-    el.onclick = () => { const val = el.getAttribute('data-format'); STATE.format = STATE.format === val ? null : val; STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.lolFilter = null; STATE.flagFilter = null; STATE.linkFilter = false; STATE.storyStatusFilter = null; render(); };
+    el.onclick = () => { const val = el.getAttribute('data-format'); STATE.format = STATE.format === val ? null : val; STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.lolFilter = null; STATE.flagFilter = null; STATE.linkFilter = false; STATE.noLinkFilter = false; STATE.storyStatusFilter = null; render(); };
   });
   root.querySelectorAll('[data-shelf]').forEach((el) => {
     el.onclick = () => { STATE.shelf = el.getAttribute('data-shelf'); render(); };
@@ -5952,6 +5966,12 @@ function attachRootHandlers() {
   root.querySelectorAll('[data-link-filter]').forEach((el) => {
     el.onclick = () => {
       STATE.linkFilter = !STATE.linkFilter;
+      render();
+    };
+  });
+  root.querySelectorAll('[data-no-link-filter]').forEach((el) => {
+    el.onclick = () => {
+      STATE.noLinkFilter = !STATE.noLinkFilter;
       render();
     };
   });
@@ -6744,7 +6764,7 @@ function renderHomeInPlace() {
   const main = root.querySelector('main');
   const entries = filteredEntries();
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.storyStatusFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter) {
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
       body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)).join(''));
