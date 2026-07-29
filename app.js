@@ -2135,11 +2135,14 @@ function renderHome() {
     }
     // grouped by shelf, each group scrolls horizontally so hundreds of entries
     // don't turn into an endless vertical scroll.
-    // With no format filter (both book/TV icons off), fall back to the
-    // broader Reading shelf list rather than just 'Completed' — any Watching
-    // entries still only ever use 'Completed', so they simply mix in there
-    // alongside Reading entries instead of getting their own row.
-    const shelvesToShow = STATE.format === 'watching' ? ['Completed'] : SHELVES_READING;
+    // Watching entries used to be locked to always showing under 'Completed'
+    // here, back when the detail page had no way to set a Watching entry's
+    // shelf to anything else. Now that the Details container has a real
+    // "Viewing Status" picker (same shelf options as Reading Status), that
+    // restriction would just hide a Watching entry from the homepage the
+    // moment she picks anything other than Completed — so it's grouped the
+    // same way regardless of format now.
+    const shelvesToShow = SHELVES_READING;
     shelvesToShow.forEach((shelf) => {
       const group = entries.filter((e) => e.shelf === shelf);
       if (group.length === 0) return;
@@ -2153,9 +2156,12 @@ function renderHome() {
       : `<div class="empty-state">No matches. Try clearing filters.</div>`;
   }
 
-  const shelfChips = STATE.format !== 'watching'
-    ? ['ALL', ...SHELVES_READING].map((s) => `<div class="chip ${STATE.shelf === s ? 'active' : ''}" data-shelf="${escapeHtml(s)}">${s === 'ALL' ? 'All' : escapeHtml(s)}</div>`).join('')
-    : '';
+  // Always rendered regardless of format — this used to hide itself while
+  // viewing Anime/TV (on the theory that watching entries only ever use the
+  // 'Completed' shelf), but per her direct correction that silently dropped
+  // the whole Reading Status row out of the filter box, which she hadn't
+  // asked for. Restored unconditionally.
+  const shelfChips = ['ALL', ...SHELVES_READING].map((s) => `<div class="chip ${STATE.shelf === s ? 'active' : ''}" data-shelf="${escapeHtml(s)}">${s === 'ALL' ? 'All' : escapeHtml(s)}</div>`).join('');
   // Story Status (WIP/Finished) — the story's own completion state, distinct
   // from Reading Status (her shelf: Currently Reading/Completed/etc, which is
   // about her progress through it, not whether the author's finished it).
@@ -2207,7 +2213,7 @@ function renderHome() {
         <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
         <div class="filter-section-label">Ratings &amp; Flags</div>
-        <div class="rating-pick-row">${formatIcons}${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}${lolChips}<span class="rating-pick-divider"></span>${flagChips}</div>
+        <div class="rating-pick-row">${formatIcons}${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${lolChips}<span class="rating-pick-divider"></span>${flagChips}</div>
       </div>
     </div>
     <main>${body}</main>
@@ -2694,15 +2700,21 @@ function allAppImages() {
   // they'd never show up in the `map` built above — that's what made direct
   // uploads to Images invisible (no count bump, nothing in "Unattached").
   // Fold in any ALL_REACTIONS record whose dataUrl isn't already accounted
-  // for by an entry, skipping anything already pulled into H — but only ones
-  // sourced from the Images tab itself (source: 'images', or no source at
-  // all, meaning it predates this distinction and stays visible so nothing
-  // already-shown here disappears). True Reactions-tab uploads (source:
-  // 'reactions') are excluded — they belong exclusively to the standalone
-  // mood-tagged Reactions library now, not this "individual reads images"
-  // gallery, per her clarification on what "Unattached" should mean here.
+  // for by an entry, skipping anything already pulled into H — but ONLY ones
+  // explicitly sourced from the Images tab itself (source: 'images'). This
+  // used to also let legacy (source == null, predates the split) records
+  // through, on the theory that most historical content predates the split
+  // so hiding it from neither gallery was safest — but in practice nearly
+  // all 250+ legacy records already live in the Reactions pool (see
+  // reactionsPoolItems()), so that let almost the entire Reactions library
+  // leak into Images' "Unattached" bucket too. Per her direct correction,
+  // the relationship is one-directional: a pure Reactions-side item (which
+  // legacy records are, since that's where they already show) should only
+  // ever show in Reactions, never in Images, unless it was actually uploaded
+  // through the Images tab (source: 'images') or is genuinely attached to an
+  // entry (covered separately by `hydrated` above, independent of source).
   const standaloneReactions = ALL_REACTIONS
-    .filter((r) => r.dataUrl && !map.has(r.dataUrl) && !H_IMAGE_KEYS.has(imageKey(r.dataUrl)) && r.source !== 'reactions')
+    .filter((r) => r.dataUrl && !map.has(r.dataUrl) && !H_IMAGE_KEYS.has(imageKey(r.dataUrl)) && r.source === 'images')
     .map((r) => ({
       dataUrl: r.dataUrl,
       reactionId: r.id,
@@ -3218,6 +3230,12 @@ async function openImageAttachmentsModal(dataUrl) {
   const inReactions = await isDataUrlInReactions(dataUrl);
   const inH = isDataUrlInH(dataUrl);
   const croppable = !isVideoUrl(dataUrl) && !/^data:image\/(gif|webp)/.test(dataUrl || '');
+  // A standalone Images-tab upload has no entry to fall back to — it only
+  // exists as its own ALL_REACTIONS record (source: 'images'), so deleting it
+  // has to go through deleteReaction directly rather than the entry-cleanup
+  // loop in deleteImageFromGalleryEverywhere (which has nothing to find for
+  // it if it's not attached anywhere).
+  const standaloneReaction = entries.length === 0 ? ALL_REACTIONS.find((r) => r.dataUrl === dataUrl && r.source === 'images') : null;
   openModal(`
     <div class="modal-close-corner-wrap">
       <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
@@ -3243,6 +3261,7 @@ async function openImageAttachmentsModal(dataUrl) {
       </div>
     </div>
     <div class="modal-actions">
+      <button class="btn-ghost" data-delete-image-attachment="${escapeHtml(dataUrl)}" data-delete-image-reaction-id="${standaloneReaction ? escapeHtml(standaloneReaction.id) : ''}">🗑️ Delete</button>
       ${croppable ? `<button class="btn-ghost" data-crop-image="${escapeHtml(dataUrl)}">✂️ Crop</button>` : ''}
       <button class="btn-primary" data-close-modal="1">Close</button>
     </div>
@@ -4347,10 +4366,10 @@ function pullImageIntoH(dataUrl) {
 // came from: a standalone upload has no other home, so it's deleted outright;
 // an entry-sourced image just gets un-flagged (the entry keeps its photo,
 // it's just no longer hidden from the Images tab).
-function removeFromH(dataUrl) {
+async function removeFromH(dataUrl) {
   const upload = ALL_H_IMAGES.find((h) => h.dataUrl === dataUrl);
   if (upload) {
-    deleteHImage(upload.id);
+    await deleteHImage(upload.id);
   } else {
     H_IMAGE_KEYS.delete(imageKey(dataUrl));
     persistHImageKeys();
@@ -4811,10 +4830,13 @@ function renderDetail(e) {
   // live) so the display-mode branch below can drop it directly under the
   // Status pill instead of under the cover thumbnail — per her mockup, the
   // "Currently Read" shelf picker belongs next to Status, not the cover.
-  const shelfSelect = isReading ? `
+  // Used to only render for reading (manhwa/manga) entries — now shared with
+  // watching (anime/tv) entries too, just relabeled "Viewing Status" there
+  // (see topFieldsHtml below); the underlying shelf options are the same.
+  const shelfSelect = `
     <select class="shelf-select status-pill-select" data-shelf-select="1">
       ${SHELVES_READING.map((s) => `<option value="${escapeHtml(s)}" ${e.shelf === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
-    </select>` : '';
+    </select>`;
 
   // Display vs. edit mode for the top fields (Title, Alt Title, Novel, Author,
   // Artist, Chapters/Seasons, Status) — toggled by the pencil icon.
@@ -4842,7 +4864,14 @@ function renderDetail(e) {
     ` : `
       <div class="field-row"><label>Title</label><input type="text" id="edit-title" value="${escapeHtml(e.title)}"></div>
       <div class="field-row"><label>Alt title</label><input type="text" id="edit-altTitle" placeholder="Other names this goes by..." value="${escapeHtml(e.altTitle || '')}"></div>
-      <div class="field-row"><label>Notes (legacy)</label><input type="text" id="edit-legacyNote" value="${escapeHtml(e.legacyNote || '')}"></div>
+      <div class="field-row"><label>Total Episodes</label><input type="number" id="edit-chapters" value="${e.totalChapters || ''}"></div>
+      <div class="field-row"><label>Story Status</label>
+        <select id="edit-status">
+          <option value="" ${!e.status ? 'selected' : ''}>—</option>
+          <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
+          <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
+        </select>
+      </div>
       <div class="modal-actions" style="margin-top:6px;">
         <button class="btn-ghost" data-cancel-edit="1">Cancel</button>
         <button class="btn-primary" data-save-edit="1">Save</button>
@@ -4872,13 +4901,29 @@ function renderDetail(e) {
             <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
             <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
           </select>
-          ${shelfSelect ? `<div style="margin-top:8px;"><label class="status-pill-label">Reading Status</label>${shelfSelect}</div>` : ''}
+          <div style="margin-top:8px;"><label class="status-pill-label">Reading Status</label>${shelfSelect}</div>
         </div>
       </div>
     ` : `
-      <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)}</div></div>
-      ${e.altTitle ? `<div class="field-row"><label>Alt title</label><div class="value plain">${escapeHtml(e.altTitle)}</div></div>` : ''}
-      <div class="field-row"><label>Notes (legacy)</label><div class="value plain">${escapeHtml(e.legacyNote) || '—'}</div></div>
+      <div class="field-row-2col">
+        <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)}</div></div>
+        <div class="field-row"><label>Alt title</label><div class="value plain">${escapeHtml(e.altTitle) || '—'}</div></div>
+      </div>
+      <div class="details-divider"></div>
+      <div class="field-row-2col wide-gap">
+        <div>
+          <div class="field-row" style="margin-bottom:0;"><label>Total Episodes</label><div class="value plain">${e.totalChapters || '—'}</div></div>
+        </div>
+        <div class="field-row" style="margin-bottom:0;">
+          <label class="status-pill-label">Story Status</label>
+          <select class="shelf-select status-pill-select" data-status-select="1">
+            <option value="" ${!e.status ? 'selected' : ''}>—</option>
+            <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
+            <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
+          </select>
+          <div style="margin-top:8px;"><label class="status-pill-label">Viewing Status</label>${shelfSelect}</div>
+        </div>
+      </div>
     `;
   }
 
@@ -4932,7 +4977,7 @@ function renderDetail(e) {
             ${topFieldsHtml}
           </div>
         </div>
-        ${isReading && !DETAIL_EDIT_MODE ? `<div class="details-divider details-divider-full"></div>` : ''}
+        ${!DETAIL_EDIT_MODE ? `<div class="details-divider details-divider-full"></div>` : ''}
         ${confirmedSummaryHtml}
         ${matchColumnHtml}
       </div>
@@ -4941,10 +4986,10 @@ function renderDetail(e) {
       <div class="panel">
         <div class="reading-link-row">
           <div class="field-row" style="flex:1;min-width:0;margin-bottom:0;">
-            <label>Reading Link</label>
+            <label>${isReading ? 'Reading Link' : 'Viewing Link'}</label>
             ${e.readingLink
               ? `<a href="${escapeHtml(e.readingLink)}" target="_blank" rel="noopener noreferrer" class="reading-link-value">${escapeHtml(e.readingLink)}</a>`
-              : `<input type="text" id="reading-link-input" placeholder="Paste the link where you're reading this...">`}
+              : `<input type="text" id="reading-link-input" placeholder="Paste the link where you're ${isReading ? 'reading' : 'viewing'} this...">`}
           </div>
           <div class="reading-chapter-col">
             <label>Current Chapter</label>
@@ -5026,6 +5071,7 @@ function renderDetail(e) {
       <!-- 6. User notes -->
       <div class="panel">
         <div class="panel-title">Your Notes / Review</div>
+        ${!isReading ? `<div class="field-row"><label>Notes (legacy)</label><input type="text" id="legacy-note-input" value="${escapeHtml(e.legacyNote || '')}"></div>` : ''}
         <textarea id="user-notes" placeholder="Your thoughts...">${escapeHtml(e.notes)}</textarea>
       </div>
 
@@ -6196,7 +6242,6 @@ function attachRootHandlers() {
     if (grab('edit-chapters')) e.totalChapters = grab('edit-chapters').value ? Number(grab('edit-chapters').value) : null;
     if (grab('edit-seasons')) e.totalSeasons = grab('edit-seasons').value ? Number(grab('edit-seasons').value) : null;
     if (grab('edit-status')) e.status = grab('edit-status').value.trim();
-    if (grab('edit-legacyNote')) e.legacyNote = grab('edit-legacyNote').value.trim();
     await saveEntry(e);
     DETAIL_EDIT_MODE = false;
     showToast('Saved!');
@@ -6279,6 +6324,10 @@ function attachRootHandlers() {
     TAG_EDIT_MODE = false;
     showToast('Tags saved!');
     render();
+  };
+  const legacyNoteInput = root.querySelector('#legacy-note-input');
+  if (legacyNoteInput) legacyNoteInput.onblur = async () => {
+    const e = getEntry(STATE.entryId); e.legacyNote = legacyNoteInput.value.trim(); await saveEntry(e);
   };
   const notesArea = root.querySelector('#user-notes');
   if (notesArea) {
@@ -6839,7 +6888,7 @@ function renderHomeInPlace() {
 /* delegation on the overlay itself since they're re-rendered often)       */
 /* ---------------------------------------------------------------------- */
 
-document.addEventListener('click', (ev) => {
+document.addEventListener('click', async (ev) => {
   const t = ev.target;
   if (TAG_FILTER_OPEN && !t.closest('.tag-multiselect') && STATE.view === 'home') {
     TAG_FILTER_OPEN = false;
@@ -6985,7 +7034,12 @@ document.addEventListener('click', (ev) => {
   if (t.matches('[data-delete-h-image]')) {
     const url = t.getAttribute('data-delete-h-image');
     if (confirm('Delete this H image?')) {
-      removeFromH(url);
+      // Awaited — removeFromH's upload branch is itself async (awaits an
+      // IndexedDB delete before mutating ALL_H_IMAGES), so firing render()
+      // without waiting on it used to re-render against the still-stale
+      // array, leaving the deleted item visible until some unrelated later
+      // render happened to run.
+      await removeFromH(url);
       closeModal();
       showToast('Deleted');
       render();
@@ -7022,8 +7076,23 @@ document.addEventListener('click', (ev) => {
   if (t.matches('[data-delete-meme]')) {
     const id = t.getAttribute('data-delete-meme');
     if (confirm('Delete this reaction from your library for good?')) {
-      deleteReaction(id);
+      // Awaited for the same reason as data-delete-h-image above — deleteReaction
+      // awaits an IndexedDB delete before splicing ALL_REACTIONS, so the
+      // immediately-following render() used to run against the pre-delete array.
+      await deleteReaction(id);
       closeModal();
+      showToast('Deleted');
+      render();
+    }
+  }
+  if (t.matches('[data-delete-image-attachment]')) {
+    const dataUrl = t.getAttribute('data-delete-image-attachment');
+    const reactionId = t.getAttribute('data-delete-image-reaction-id') || null;
+    if (confirm('Delete this image? Any reads it\'s attached to lose their copy.')) {
+      await deleteImageFromGalleryEverywhere({ dataUrl, reactionId });
+      if (IMAGE_DUP_GROUPS) IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS.filter((g) => !g.some((img) => img.dataUrl === dataUrl));
+      closeModal();
+      showToast('Deleted');
       render();
     }
   }
