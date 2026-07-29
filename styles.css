@@ -353,10 +353,12 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 /* Same 💾 glyph either way (synced with the same icon used for "On Drive"
    elsewhere in the app) — active/inactive is a color difference, not a
    different emoji, so it doesn't look like two unrelated icons. */
-.icon-btn.hd-active { color: var(--purple); border-color: var(--purple); box-shadow: 0 0 0 3px rgba(168,85,247,.22); }
+/* Same pink as the active bottom-nav tab (--pink), filled solid rather than
+   just outlined, so Favorite/On HD read as clearly "on" at a glance — not
+   just a subtle color shift. */
+.icon-btn.hd-active, .icon-btn.fav-active { background: var(--pink); color: #170b26; border-color: var(--pink); }
 .icon-btn.save { color: #22c55e; border-color: rgba(34,197,94,.45); }
 .icon-btn.save.active { background: #22c55e; color: #08130c; }
-.icon-btn.fav-active { color: #f472b6; border-color: rgba(244,114,182,.45); }
 
 /* Icon + always-visible uppercase label, stacked pairs, per the redesigned
    detail-header action row — replaces the old icon-only-with-hover-tooltip
@@ -399,6 +401,13 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 }
 .screencap-dropzone { min-height: 40px; border-radius: 10px; transition: box-shadow .1s, background .1s; }
 .screencap-dropzone.drag-over {
+  background: var(--purple-soft); box-shadow: 0 0 0 2px var(--purple) inset;
+  border: 1px dashed var(--purple);
+}
+/* Images/Reactions/H gallery main areas — drop a batch of files anywhere in
+   here to upload them, same visual feedback as the other dropzones above. */
+.gallery-dropzone { min-height: 120px; border-radius: 10px; transition: box-shadow .1s, background .1s; }
+.gallery-dropzone.drag-over {
   background: var(--purple-soft); box-shadow: 0 0 0 2px var(--purple) inset;
   border: 1px dashed var(--purple);
 }

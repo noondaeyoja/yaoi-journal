@@ -1399,6 +1399,36 @@ function wireImageDropZone(el, onFile) {
   });
 }
 
+// Same drag-over/drop plumbing as wireImageDropZone above, but accepts
+// multiple files at once and both images and video (that dropzone is
+// single-file/image-only, used for cover/char-photo slots where only one
+// picture makes sense) — this is what the Images/Reactions/H gallery main
+// areas use so a whole batch of dragged files uploads in one drop.
+function wireMultiFileDropZone(el, onFiles) {
+  let depth = 0;
+  el.addEventListener('dragenter', (ev) => {
+    ev.preventDefault();
+    depth++;
+    el.classList.add('drag-over');
+  });
+  el.addEventListener('dragover', (ev) => {
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy';
+  });
+  el.addEventListener('dragleave', () => {
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) el.classList.remove('drag-over');
+  });
+  el.addEventListener('drop', (ev) => {
+    ev.preventDefault();
+    depth = 0;
+    el.classList.remove('drag-over');
+    const files = Array.from((ev.dataTransfer && ev.dataTransfer.files) || [])
+      .filter((f) => f.type.startsWith('image/') || f.type.startsWith('video/'));
+    if (files.length) onFiles(files);
+  });
+}
+
 function getProxyUrl() {
   return localStorage.getItem('yj_proxy_url') || '';
 }
@@ -2648,6 +2678,7 @@ let IMAGE_SELECT_MODE = false;
 let IMAGE_SELECTED = new Set();
 let IMAGE_KIND_FILTER = null; // null | 'semi' | 'uke'
 let IMAGE_GROUP_FILTER = null;
+let IMAGES_UNTAGGED_ONLY = false;
 
 function openAttachImagesToEntryModal(dataUrls) {
   const candidates = ALL_ENTRIES.slice().sort((a, b) => a.title.localeCompare(b.title));
@@ -2814,6 +2845,16 @@ function renderReactionsLibrary() {
   let items = allAppImages();
   if (IMAGE_KIND_FILTER) items = items.filter((i) => i.kinds.includes(IMAGE_KIND_FILTER));
   if (IMAGE_GROUP_FILTER) items = items.filter((i) => getImageTags(i.dataUrl).includes(IMAGE_GROUP_FILTER));
+  // Untagged-first, same rule as the Reactions gallery — images with no
+  // group assigned yet surface first so they're quick to spot and sort.
+  items = items.slice().sort((a, b) => {
+    const aUntagged = !getImageTags(a.dataUrl).length;
+    const bUntagged = !getImageTags(b.dataUrl).length;
+    if (aUntagged !== bUntagged) return aUntagged ? -1 : 1;
+    return 0;
+  });
+  const untaggedCount = items.filter((i) => !i.pending && !getImageTags(i.dataUrl).length).length;
+  if (IMAGES_UNTAGGED_ONLY) items = items.filter((i) => !getImageTags(i.dataUrl).length);
   const attached = items.filter((i) => i.attachedEntries.length > 0);
   const unattached = items.filter((i) => i.attachedEntries.length === 0);
 
@@ -2822,7 +2863,7 @@ function renderReactionsLibrary() {
         <div class="cover-placeholder" style="height:100%;">⏳</div>
       </div>`
     : `<div class="masonry-item ${IMAGE_SELECT_MODE ? 'selectable' : ''} ${IMAGE_SELECTED.has(img.dataUrl) ? 'selected' : ''}" data-images-item="${escapeHtml(img.dataUrl)}">
-      ${isVideoUrl(img.dataUrl) ? `<video src="${img.dataUrl}" muted></video>` : `<img src="${img.dataUrl}" alt="" loading="lazy">`}
+      ${isVideoUrl(img.dataUrl) ? `<video src="${img.dataUrl}" autoplay loop muted playsinline></video>` : `<img src="${img.dataUrl}" alt="" loading="lazy">`}
       ${IMAGE_SELECT_MODE ? `<span class="select-check">${IMAGE_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : ''}
       ${!IMAGE_SELECT_MODE && img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : ''}
       ${!IMAGE_SELECT_MODE && img.reactionId ? `<button class="del" data-del-reaction="${img.reactionId}">✕</button>` : ''}
@@ -2854,7 +2895,7 @@ function renderReactionsLibrary() {
   }
 
   const groupList = Array.from(IMAGE_GROUPS).sort((a, b) => a.localeCompare(b));
-  const groupChips = groupList.map((name) => `<button class="mood-chip ${IMAGE_GROUP_FILTER === name ? 'active' : ''}" data-images-group-filter="${escapeHtml(name)}">🏷️ ${escapeHtml(name)}</button>`).join('');
+  const groupChips = groupList.map((name) => `<button class="mood-chip ${IMAGE_GROUP_FILTER === name ? 'active' : ''}" data-images-group-filter="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join('');
 
   return `
     <div class="app-header">
@@ -2876,6 +2917,7 @@ function renderReactionsLibrary() {
         <button class="tagmgr-tab ${IMAGES_TAB === 'attached' ? 'active' : ''}" data-images-tab="attached">Attached (${attached.length})</button>
         <button class="tagmgr-tab ${IMAGES_TAB === 'unattached' ? 'active' : ''}" data-images-tab="unattached">Unattached (${unattached.length})</button>
         <button class="tagmgr-tab ${IMAGES_TAB === 'duplicates' ? 'active' : ''}" data-images-tab="duplicates">Possible Duplicates</button>
+        ${IMAGES_TAB !== 'duplicates' ? `<button class="ref-btn ${IMAGES_UNTAGGED_ONLY ? 'active' : ''}" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;${IMAGES_UNTAGGED_ONLY ? 'background:var(--purple);color:#fff;' : ''}" data-images-untagged-only="1" title="Show only untagged images">${untaggedCount} untagged</button>` : ''}
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-images-manage-groups="1" title="Manage image groups (rename/delete)">✏️ Manage</button>
       </div>
       ${IMAGES_TAB !== 'duplicates' ? `
@@ -2889,7 +2931,7 @@ function renderReactionsLibrary() {
         </div>
       ` : ''}
     </div>
-    <main>${tabBody}</main>
+    <main class="gallery-dropzone">${tabBody}</main>
     ${renderBottomNav('reactions')}
   `;
 }
@@ -2946,7 +2988,7 @@ async function openImageAttachmentsModal(dataUrl) {
   openModal(`
     <h3>Attached to</h3>
     ${isVideoUrl(dataUrl)
-      ? `<video src="${dataUrl}" controls playsinline style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
+      ? `<video src="${dataUrl}" autoplay loop muted controls playsinline style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
       : `<img src="${dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">`}
     ${entries.length
       ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;">${entries.map((e) => `
@@ -2956,7 +2998,7 @@ async function openImageAttachmentsModal(dataUrl) {
       <div class="field-row">
         <label>Groups</label>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
-          ${groupList.map((name) => `<button class="mood-chip ${currentTags.includes(name) ? 'active' : ''}" data-toggle-image-tag="${escapeHtml(name)}" data-image-url="${escapeHtml(dataUrl)}">🏷️ ${escapeHtml(name)}</button>`).join('')}
+          ${groupList.map((name) => `<button class="mood-chip ${currentTags.includes(name) ? 'active' : ''}" data-toggle-image-tag="${escapeHtml(name)}" data-image-url="${escapeHtml(dataUrl)}">${escapeHtml(name)}</button>`).join('')}
         </div>
       </div>
     ` : ''}
@@ -3082,15 +3124,19 @@ function memeFilteredItems() {
   return items;
 }
 
+let MEME_SELECT_MODE = false;
+let MEME_SELECTED = new Set();
+
 function renderMemeGrid() {
   const items = memeFilteredItems();
   return items.length
     ? `<div class="image-masonry">${items.map((r) => `
-        <div class="masonry-item" data-open-meme="${r.id}">
+        <div class="masonry-item ${MEME_SELECT_MODE ? 'selectable' : ''} ${MEME_SELECTED.has(r.id) ? 'selected' : ''}" data-open-meme="${r.id}">
           ${r.dataUrl
-            ? (isVideoUrl(r.dataUrl) ? `<video src="${r.dataUrl}" muted></video>` : `<img src="${r.dataUrl}" alt="" loading="lazy">`)
+            ? (isVideoUrl(r.dataUrl) ? `<video src="${r.dataUrl}" autoplay loop muted playsinline></video>` : `<img src="${r.dataUrl}" alt="" loading="lazy">`)
             : `<div class="cover-placeholder" title="Still downloading from Drive…">⏳</div>`}
-          ${!(r.moodTags || []).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
+          ${MEME_SELECT_MODE ? `<span class="select-check">${MEME_SELECTED.has(r.id) ? '✅' : '⬜'}</span>` : ''}
+          ${!MEME_SELECT_MODE && !(r.moodTags || []).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
         </div>`).join('')}</div>`
     : `<div class="empty-state">No reactions match. ${MEME_STATE.moodFilter || MEME_STATE.search ? 'Try clearing the filter/search.' : 'Tap "Add" to upload your first meme.'}</div>`;
 }
@@ -3166,7 +3212,7 @@ function memeMainBody() {
         </div>
         <div class="image-masonry">${group.map((r) => `
           <div class="masonry-item" data-open-meme="${r.id}">
-            ${isVideoUrl(r.dataUrl) ? `<video src="${r.dataUrl}" muted></video>` : `<img src="${r.dataUrl}" alt="" loading="lazy">`}
+            ${isVideoUrl(r.dataUrl) ? `<video src="${r.dataUrl}" autoplay loop muted playsinline></video>` : `<img src="${r.dataUrl}" alt="" loading="lazy">`}
             <button class="del" data-del-reaction="${r.id}">✕</button>
           </div>`).join('')}</div>
       </div>`).join('');
@@ -3191,7 +3237,17 @@ function renderMemeLibrary() {
     <div class="app-header">
       <div class="brand-row"><h1>🎭 Reactions</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${ALL_REACTIONS.length} meme${ALL_REACTIONS.length === 1 ? '' : 's'} saved${untaggedCount ? ` · ${untaggedCount} untagged` : ''}.</div>
-      <label class="upload-btn" style="margin-bottom:10px;">📎 Add reaction(s)<input type="file" accept="image/*,video/*" multiple id="meme-upload-input"></label>
+      <div class="export-row" style="margin-bottom:10px;">
+        <label class="upload-btn" style="flex:1;">📎 Add reaction(s)<input type="file" accept="image/*,video/*" multiple id="meme-upload-input"></label>
+        <button class="ref-btn" data-meme-toggle-select="1">${MEME_SELECT_MODE ? '✕ Cancel select' : '☑️ Select'}</button>
+      </div>
+      ${MEME_SELECT_MODE ? `
+        <div class="export-row" style="margin-bottom:10px;background:var(--card);border:1px solid var(--purple);border-radius:var(--radius-sm);padding:8px;">
+          <div style="flex:1;font-size:12.5px;color:var(--text-dim);align-self:center;">${MEME_SELECTED.size} selected</div>
+          <button class="ref-btn" data-meme-pull-selected-into-h="1" style="${MEME_SELECTED.size ? 'color:#f43f5e;' : ''}" ${MEME_SELECTED.size ? '' : 'disabled'}>🔴 Pull into H</button>
+          <button class="btn-ghost" data-meme-delete-selected="1" ${MEME_SELECTED.size ? '' : 'disabled'}>🗑️ Delete selected</button>
+        </div>
+      ` : ''}
       <div class="search-bar" style="margin-bottom:8px;"><span>🔍</span><input type="search" id="meme-search-input" placeholder="Search captions/keywords..." value="${escapeHtml(MEME_STATE.search)}"></div>
       <div class="tagmgr-tabs" style="margin-bottom:8px;">
         <button class="tagmgr-tab ${!MEME_SHOWING_DUPLICATES ? 'active' : ''}" data-meme-tab="grid">Gallery</button>
@@ -3206,14 +3262,22 @@ function renderMemeLibrary() {
         </div>
       ` : ''}
     </div>
-    <main>${memeMainBody()}</main>
+    <main class="gallery-dropzone">${memeMainBody()}</main>
     ${renderBottomNav('meme')}
   `;
 }
 
 function attachMemeGridHandlers() {
   document.querySelectorAll('[data-open-meme]').forEach((el) => {
-    el.onclick = () => openMemeEditModal(el.getAttribute('data-open-meme'));
+    el.onclick = () => {
+      const id = el.getAttribute('data-open-meme');
+      if (MEME_SELECT_MODE) {
+        if (MEME_SELECTED.has(id)) MEME_SELECTED.delete(id); else MEME_SELECTED.add(id);
+        render();
+      } else {
+        openMemeEditModal(id);
+      }
+    };
   });
   document.querySelectorAll('[data-meme-tab]').forEach((el) => {
     el.onclick = () => { MEME_SHOWING_DUPLICATES = el.getAttribute('data-meme-tab') === 'duplicates'; render(); };
@@ -3225,6 +3289,32 @@ function attachMemeGridHandlers() {
   document.querySelectorAll('[data-dismiss-meme-dup-group]').forEach((el) => {
     el.onclick = (ev) => { ev.stopPropagation(); dismissMemeDupGroup(Number(el.getAttribute('data-dismiss-meme-dup-group'))); };
   });
+  const toggleMemeSelectBtn = document.querySelector('[data-meme-toggle-select]');
+  if (toggleMemeSelectBtn) toggleMemeSelectBtn.onclick = () => { MEME_SELECT_MODE = !MEME_SELECT_MODE; MEME_SELECTED = new Set(); render(); };
+  const pullSelectedIntoHBtn = document.querySelector('[data-meme-pull-selected-into-h]');
+  if (pullSelectedIntoHBtn) pullSelectedIntoHBtn.onclick = () => {
+    if (!MEME_SELECTED.size) return;
+    const ids = Array.from(MEME_SELECTED);
+    ids.forEach((id) => {
+      const r = ALL_REACTIONS.find((x) => x.id === id);
+      if (r && r.dataUrl) pullImageIntoH(r.dataUrl);
+    });
+    MEME_SELECT_MODE = false;
+    MEME_SELECTED = new Set();
+    showToast(`Pulled ${ids.length} reaction${ids.length === 1 ? '' : 's'} into H`);
+    render();
+  };
+  const deleteSelectedMemeBtn = document.querySelector('[data-meme-delete-selected]');
+  if (deleteSelectedMemeBtn) deleteSelectedMemeBtn.onclick = async () => {
+    if (!MEME_SELECTED.size) return;
+    if (!confirm(`Delete ${MEME_SELECTED.size} reaction(s)? This can't be undone.`)) return;
+    const ids = Array.from(MEME_SELECTED);
+    for (const id of ids) await deleteReaction(id);
+    MEME_SELECT_MODE = false;
+    MEME_SELECTED = new Set();
+    showToast('Deleted');
+    render();
+  };
 }
 
 function openMemeEditModal(id) {
@@ -3236,7 +3326,7 @@ function openMemeEditModal(id) {
       <h3>Edit reaction</h3>
       ${r.dataUrl
         ? (isVideoUrl(r.dataUrl)
-            ? `<video src="${r.dataUrl}" controls playsinline style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
+            ? `<video src="${r.dataUrl}" autoplay loop muted controls playsinline style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
             : `<img src="${r.dataUrl}" alt="" style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`)
         : `<div class="cover-placeholder" style="height:180px;margin-bottom:10px;">⏳ Still downloading from Drive…</div>`}
     <div class="field-row"><label>Caption/keywords (for search)</label><input type="text" id="meme-note-input" value="${escapeHtml(r.note || '')}" placeholder="e.g. blushing, screaming, oh no"></div>
@@ -3415,7 +3505,7 @@ function showOversizedFilesModal(oversizedFiles) {
     const url = URL.createObjectURL(file);
     const mb = (file.size / (1024 * 1024)).toFixed(1);
     const preview = file.type.startsWith('video/')
-      ? `<video src="${url}" muted controls style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;background:#000;margin-bottom:6px;"></video>`
+      ? `<video src="${url}" autoplay loop muted controls style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;background:#000;margin-bottom:6px;"></video>`
       : `<img src="${url}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;background:#000;margin-bottom:6px;">`;
     return `<div style="margin-bottom:12px;">${preview}<div style="font-size:13px;">${escapeHtml(file.name)} — ${mb}MB</div></div>`;
   }).join('');
@@ -3475,7 +3565,7 @@ function openReactionPickerModal(entryId) {
     <p style="font-size:12px;color:var(--text-dim);">Tap to select, then Add. Or upload a brand-new one straight into this entry.</p>
     <label class="upload-btn" style="margin-bottom:10px;">📎 Upload new<input type="file" accept="image/*,video/*" multiple id="reaction-picker-upload"></label>
     <div class="reaction-picker-grid" id="reaction-picker-grid">
-      ${items.length ? items.map((r) => `<div class="reaction-thumb pickable" data-pick-reaction="${r.id}">${isVideoUrl(r.dataUrl) ? `<video src="${r.dataUrl}" muted></video>` : `<img src="${r.dataUrl}" alt="">`}</div>`).join('') : '<div class="empty-state">No images saved yet — upload one above.</div>'}
+      ${items.length ? items.map((r) => `<div class="reaction-thumb pickable" data-pick-reaction="${r.id}">${isVideoUrl(r.dataUrl) ? `<video src="${r.dataUrl}" autoplay loop muted playsinline></video>` : `<img src="${r.dataUrl}" alt="">`}</div>`).join('') : '<div class="empty-state">No images saved yet — upload one above.</div>'}
     </div>
     <div class="modal-actions">
       <button class="btn-ghost" data-close-modal="1">Cancel</button>
@@ -3895,7 +3985,7 @@ function hFilteredItems() {
 function hMasonryItem(img) {
   return `
     <div class="masonry-item" data-h-item="${escapeHtml(img.dataUrl)}">
-      ${isVideoUrl(img.dataUrl) ? `<video src="${img.dataUrl}" muted></video>` : `<img src="${img.dataUrl}" alt="" loading="lazy">`}
+      ${isVideoUrl(img.dataUrl) ? `<video src="${img.dataUrl}" autoplay loop muted playsinline></video>` : `<img src="${img.dataUrl}" alt="" loading="lazy">`}
       ${!getHTags(img.dataUrl).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
     </div>`;
 }
@@ -4000,7 +4090,7 @@ function renderHLibrary() {
         </div>
       ` : ''}
     </div>
-    <main>${hMainBody()}</main>
+    <main class="gallery-dropzone">${hMainBody()}</main>
     ${renderBottomNav('h')}
   `;
 }
@@ -4017,7 +4107,7 @@ async function openHImageModal(dataUrl) {
       <h3><span class="icon-h">H</span> image</h3>
       ${dataUrl
         ? (isVideoUrl(dataUrl)
-            ? `<video src="${dataUrl}" controls playsinline style="width:100%;max-height:60vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
+            ? `<video src="${dataUrl}" autoplay loop muted controls playsinline style="width:100%;max-height:60vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
             : `<img src="${dataUrl}" alt="" style="width:100%;max-height:60vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`)
         : `<div class="cover-placeholder" style="height:180px;margin-bottom:10px;">⏳ Still downloading from Drive…</div>`}
       ${entries.length ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Pulled from: ${entries.map((e) => escapeHtml(e.title)).join(', ')}</div>` : ''}
@@ -5269,6 +5359,18 @@ async function submitAdd() {
 function attachRootHandlers() {
   const root = document.getElementById('view-root');
 
+  // Whole-gallery drag-and-drop for Images/Reactions/H — drop anywhere in
+  // the masonry area (not just onto the small upload label) to upload a
+  // batch of files at once.
+  const galleryDropzone = root.querySelector('main.gallery-dropzone');
+  if (galleryDropzone && (STATE.view === 'reactions' || STATE.view === 'meme' || STATE.view === 'h')) {
+    wireMultiFileDropZone(galleryDropzone, async (files) => {
+      if (STATE.view === 'h') await addHImageFiles(files);
+      else await addReactionFiles(files);
+      render();
+    });
+  }
+
   root.querySelectorAll('[data-header-home]').forEach((el) => {
     el.onclick = () => {
       STATE.showFavoritesOnly = false;
@@ -5779,6 +5881,8 @@ function attachRootHandlers() {
       render();
     };
   });
+  const imagesUntaggedOnlyBtn = root.querySelector('[data-images-untagged-only]');
+  if (imagesUntaggedOnlyBtn) imagesUntaggedOnlyBtn.onclick = () => { IMAGES_UNTAGGED_ONLY = !IMAGES_UNTAGGED_ONLY; render(); };
   const addImageGroupBtn = root.querySelector('[data-images-add-group]');
   if (addImageGroupBtn) addImageGroupBtn.onclick = () => {
     const key = addImageGroup(prompt('Name this new image group (e.g. "favorites", "wallpaper-worthy"):'));
