@@ -55,7 +55,14 @@ let DRIVE_ACCESS_TOKEN = null;
 let DRIVE_TOKEN_EXPIRES_AT = 0;
 let DRIVE_NEEDS_RECONNECT = false;
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
-const DRIVE_FOLDER_NAME = 'Yaoi Journal Images';
+// Folder layout: one "Yaoi Journal" root with "Images" and "Reactions"
+// subfolders underneath it (previously a single flat "Yaoi Journal Images"
+// folder — DRIVE_FOLDER_NAME/DRIVE_FOLDER_ID kept below only so any old
+// cached references still resolve; new uploads go through the hierarchy).
+const DRIVE_ROOT_FOLDER_NAME = 'Yaoi Journal';
+const DRIVE_IMAGES_SUBFOLDER_NAME = 'Images';
+const DRIVE_REACTIONS_SUBFOLDER_NAME = 'Reactions';
+const DRIVE_FOLDER_NAME = 'Yaoi Journal Images'; // legacy flat-folder name, used only by the one-time consolidation tool
 let DRIVE_FOLDER_ID = null; // cached once found/created, see ensureDriveFolder()
 
 // Raw HD-scan lines already fully handled (auto-tagged, manually confirmed,
@@ -66,6 +73,12 @@ let HD_RESOLVED_RAW = new Set();
 // keep both" for — see Review Duplicates. Prevents that same pair from
 // re-surfacing every visit.
 let IGNORED_DUP_GROUPS = new Set();
+// Same idea as IGNORED_DUP_GROUPS above but for the perceptual-hash-based
+// "Possible Duplicates" scanners in the Images and Reactions tabs — those
+// scanners used to have zero memory (every scan recomputed from nothing),
+// which is why the same ~40 groups kept coming back for review forever.
+let IGNORED_IMAGE_DUP_GROUPS = new Set();
+let IGNORED_MEME_DUP_GROUPS = new Set();
 // User-created custom mood groups for the Reactions library (e.g. "creepy",
 // "cute") on top of the 4 built-in moods — synced across devices the same
 // way as the sets above (Firestore meta doc + local IDB mirror).
@@ -418,6 +431,16 @@ async function pullMetaState() {
       TAG_SUGGESTIONS_COLLAPSED = data.tagSuggestionsCollapsed;
       await idbPut(STORE_META, { key: 'tagSuggestionsCollapsed', value: TAG_SUGGESTIONS_COLLAPSED });
     }
+    // Adopt whatever Drive folder id(s) another device already established
+    // (see findOrCreateDriveFolder()) so this device never independently
+    // searches/creates its own copy of "Yaoi Journal"/"Images"/"Reactions" —
+    // that race is what caused the duplicate-folder bug in the first place.
+    for (const key of Object.keys(data)) {
+      if (key.indexOf('driveFolder:') === 0 && typeof data[key] === 'string' && data[key]) {
+        const cached = await idbGet(STORE_META, key);
+        if (!cached || !cached.value) await idbPut(STORE_META, { key, value: data[key] });
+      }
+    }
     if (Array.isArray(data.customMoods) && data.customMoods.length) {
       CUSTOM_MOODS = new Set([...CUSTOM_MOODS, ...data.customMoods]);
       await idbPut(STORE_META, { key: 'customMoods', value: Array.from(CUSTOM_MOODS) });
@@ -429,6 +452,14 @@ async function pullMetaState() {
     if (data.imageTagMap && typeof data.imageTagMap === 'object') {
       IMAGE_TAG_MAP = { ...data.imageTagMap, ...IMAGE_TAG_MAP };
       await idbPut(STORE_META, { key: 'imageTagMap', value: IMAGE_TAG_MAP });
+    }
+    if (Array.isArray(data.ignoredImageDupGroups) && data.ignoredImageDupGroups.length) {
+      IGNORED_IMAGE_DUP_GROUPS = new Set([...IGNORED_IMAGE_DUP_GROUPS, ...data.ignoredImageDupGroups]);
+      await idbPut(STORE_META, { key: 'ignoredImageDupGroups', value: Array.from(IGNORED_IMAGE_DUP_GROUPS) });
+    }
+    if (Array.isArray(data.ignoredMemeDupGroups) && data.ignoredMemeDupGroups.length) {
+      IGNORED_MEME_DUP_GROUPS = new Set([...IGNORED_MEME_DUP_GROUPS, ...data.ignoredMemeDupGroups]);
+      await idbPut(STORE_META, { key: 'ignoredMemeDupGroups', value: Array.from(IGNORED_MEME_DUP_GROUPS) });
     }
   } catch (err) {
     console.error('Meta pull failed:', err);
@@ -593,32 +624,82 @@ function dataUrlToBlob(dataUrl) {
   return new Blob([bytes], { type: mime });
 }
 
-// Finds (or creates, the very first time) the app's dedicated Drive folder.
-// Cached in memory for the session so this is only a network round-trip once.
-async function ensureDriveFolder() {
-  if (DRIVE_FOLDER_ID) return DRIVE_FOLDER_ID;
-  const q = encodeURIComponent(`name='${DRIVE_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
-  const searchResp = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,name)`);
-  const searchData = await searchResp.json();
-  if (searchData.files && searchData.files.length) {
-    DRIVE_FOLDER_ID = searchData.files[0].id;
-    return DRIVE_FOLDER_ID;
+// Finds (or creates, the very first time) a named Drive folder, optionally
+// nested under a parent folder id. Two layers of protection against ever
+// creating duplicates:
+//   1. An in-flight promise cache keyed by (parent, name) — if two uploads
+//      fire close together (e.g. cover + semi + uke edited in quick
+//      succession, or a multi-image attach), the second call reuses the
+//      first call's in-progress search-or-create instead of starting its
+//      own, which is what used to spawn a fresh duplicate folder on every
+//      near-simultaneous upload (root cause of the ~11 duplicate "Yaoi
+//      Journal Images" folders from before this fix).
+//   2. Once resolved, the folder id is cached in IndexedDB (so future
+//      sessions on this device skip the search entirely) AND mirrored to
+//      the Firestore meta doc (so other devices adopt the same canonical
+//      folder instead of each independently searching/creating their own).
+const DRIVE_FOLDER_LOCKS = new Map();
+async function findOrCreateDriveFolder(name, parentId) {
+  const cacheKey = 'driveFolder:' + (parentId || 'root') + ':' + name;
+  if (DRIVE_FOLDER_LOCKS.has(cacheKey)) return DRIVE_FOLDER_LOCKS.get(cacheKey);
+  const p = (async () => {
+    const cached = await idbGet(STORE_META, cacheKey);
+    if (cached && cached.value) return cached.value;
+    const parentClause = parentId ? ` and '${parentId}' in parents` : '';
+    const q = encodeURIComponent(`name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false${parentClause}`);
+    const searchResp = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,name,createdTime)&orderBy=createdTime`);
+    const searchData = await searchResp.json();
+    let id;
+    if (searchData.files && searchData.files.length) {
+      id = searchData.files[0].id;
+    } else {
+      const metadata = { name, mimeType: 'application/vnd.google-apps.folder' };
+      if (parentId) metadata.parents = [parentId];
+      const createResp = await driveFetch('https://www.googleapis.com/drive/v3/files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(metadata)
+      });
+      const createData = await createResp.json();
+      if (!createData.id) throw new Error(`Could not create Drive folder "${name}": ` + JSON.stringify(createData));
+      id = createData.id;
+    }
+    await idbPut(STORE_META, { key: cacheKey, value: id });
+    pushMetaField(cacheKey, id);
+    return id;
+  })();
+  DRIVE_FOLDER_LOCKS.set(cacheKey, p);
+  try {
+    return await p;
+  } finally {
+    DRIVE_FOLDER_LOCKS.delete(cacheKey);
   }
-  const createResp = await driveFetch('https://www.googleapis.com/drive/v3/files', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: DRIVE_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' })
-  });
-  const createData = await createResp.json();
-  if (!createData.id) throw new Error('Could not create Drive folder: ' + JSON.stringify(createData));
-  DRIVE_FOLDER_ID = createData.id;
-  return DRIVE_FOLDER_ID;
+}
+async function ensureDriveRootFolder() {
+  return findOrCreateDriveFolder(DRIVE_ROOT_FOLDER_NAME, null);
+}
+async function ensureDriveImagesFolder() {
+  const root = await ensureDriveRootFolder();
+  const id = await findOrCreateDriveFolder(DRIVE_IMAGES_SUBFOLDER_NAME, root);
+  DRIVE_FOLDER_ID = id; // keep legacy var in sync for any code still reading it directly
+  return id;
+}
+async function ensureDriveReactionsFolder() {
+  const root = await ensureDriveRootFolder();
+  return findOrCreateDriveFolder(DRIVE_REACTIONS_SUBFOLDER_NAME, root);
+}
+// Legacy name, kept because a few call sites still reference it — resolves
+// to the new "Yaoi Journal/Images" subfolder.
+async function ensureDriveFolder() {
+  return ensureDriveImagesFolder();
 }
 
 // Uploads a base64 data: URL image into the app's Drive folder (simple
-// multipart upload) and returns the new file's id.
-async function uploadToDrive(dataUrl, filename) {
-  const folderId = await ensureDriveFolder();
+// multipart upload) and returns the new file's id. `kind` picks which
+// subfolder it lands in: 'reaction' -> Yaoi Journal/Reactions, anything
+// else -> Yaoi Journal/Images.
+async function uploadToDrive(dataUrl, filename, kind) {
+  const folderId = kind === 'reaction' ? await ensureDriveReactionsFolder() : await ensureDriveImagesFolder();
   const blob = dataUrlToBlob(dataUrl);
   const metadata = { name: filename, parents: [folderId] };
   const boundary = 'yaoi_journal_' + Math.random().toString(36).slice(2);
@@ -658,14 +739,119 @@ function deleteFromDrive(fileId) {
   driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, { method: 'DELETE' }).catch((err) => console.error('Drive delete failed:', err));
 }
 
+/* ---------------------------------------------------------------------- */
+/* One-time Drive folder consolidation                                    */
+/* Before the folder-race fix above, ensureDriveFolder() could spawn a new */
+/* "Yaoi Journal Images" folder every time two uploads landed close        */
+/* together, leaving a dozen-plus near-identical folders in her Drive with */
+/* the images scattered across them (which is also why different devices   */
+/* could see slightly different image counts — they weren't all reading    */
+/* from the same folder). This walks every folder with that legacy name,   */
+/* moves its files into the new Yaoi Journal/Images or Yaoi Journal/       */
+/* Reactions subfolder (routed by filename prefix), then deletes the now-  */
+/* empty duplicate. File IDs never change when a file is moved, so nothing */
+/* in Firestore/IndexedDB needs to be touched — existing coverDriveId/     */
+/* driveId references keep working exactly as before.                     */
+/* ---------------------------------------------------------------------- */
+let DRIVE_CONSOLIDATE = { running: false, summary: null };
+
+async function findAllFoldersNamed(name, parentId) {
+  const parentClause = parentId ? ` and '${parentId}' in parents` : '';
+  const q = encodeURIComponent(`name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false${parentClause}`);
+  const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,name,createdTime)&orderBy=createdTime&pageSize=1000`);
+  const data = await resp.json();
+  return data.files || [];
+}
+
+async function listFilesInFolder(folderId) {
+  let files = [];
+  let pageToken = null;
+  do {
+    const q = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
+    const url = `https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000${pageToken ? '&pageToken=' + pageToken : ''}`;
+    const resp = await driveFetch(url);
+    const data = await resp.json();
+    files = files.concat(data.files || []);
+    pageToken = data.nextPageToken || null;
+  } while (pageToken);
+  return files;
+}
+
+async function moveDriveFile(fileId, newParentId, oldParentId) {
+  return driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?addParents=${newParentId}&removeParents=${oldParentId}&fields=id,parents`, { method: 'PATCH' });
+}
+
+async function deleteDriveFolder(folderId) {
+  return driveFetch(`https://www.googleapis.com/drive/v3/files/${folderId}`, { method: 'DELETE' });
+}
+
+async function consolidateDriveFolders() {
+  if (DRIVE_CONSOLIDATE.running) return;
+  if (!driveTokenValid()) { showToast('Reconnect Google Drive first, then try this again.'); return; }
+  DRIVE_CONSOLIDATE.running = true;
+  DRIVE_CONSOLIDATE.summary = null;
+  if (STATE.view === 'database') render();
+  let movedImages = 0, movedReactions = 0, foldersRemoved = 0, failures = 0;
+  try {
+    const imagesFolderId = await ensureDriveImagesFolder();
+    const reactionsFolderId = await ensureDriveReactionsFolder();
+    const root = await ensureDriveRootFolder();
+
+    // Legacy flat "Yaoi Journal Images" folders from before the hierarchy existed.
+    const legacyFolders = await findAllFoldersNamed(DRIVE_FOLDER_NAME, null);
+    // Any duplicate copies of the new subfolders themselves (e.g. created on
+    // another device before this fix reached it).
+    const dupImageFolders = (await findAllFoldersNamed(DRIVE_IMAGES_SUBFOLDER_NAME, root)).filter((f) => f.id !== imagesFolderId);
+    const dupReactionFolders = (await findAllFoldersNamed(DRIVE_REACTIONS_SUBFOLDER_NAME, root)).filter((f) => f.id !== reactionsFolderId);
+
+    const jobs = [
+      ...legacyFolders.map((f) => ({ folder: f, defaultDest: 'auto' })),
+      ...dupImageFolders.map((f) => ({ folder: f, defaultDest: 'images' })),
+      ...dupReactionFolders.map((f) => ({ folder: f, defaultDest: 'reactions' })),
+    ];
+
+    for (const job of jobs) {
+      const files = await listFilesInFolder(job.folder.id);
+      for (const f of files) {
+        if (f.mimeType === 'application/vnd.google-apps.folder') continue;
+        const isReaction = job.defaultDest === 'reactions' || (job.defaultDest === 'auto' && /^reaction-/.test(f.name));
+        const dest = isReaction ? reactionsFolderId : imagesFolderId;
+        try {
+          await moveDriveFile(f.id, dest, job.folder.id);
+          if (isReaction) movedReactions++; else movedImages++;
+        } catch (err) {
+          console.error('Failed to move file during Drive consolidation:', f.name, err);
+          failures++;
+        }
+      }
+      try {
+        await deleteDriveFolder(job.folder.id);
+        foldersRemoved++;
+      } catch (err) {
+        console.error('Failed to delete empty duplicate Drive folder:', job.folder.id, err);
+      }
+    }
+    DRIVE_CONSOLIDATE.summary = { movedImages, movedReactions, foldersRemoved, failures, scanned: jobs.length };
+    showToast(jobs.length
+      ? `Consolidated ${foldersRemoved} duplicate folder(s) — moved ${movedImages} image${movedImages === 1 ? '' : 's'} and ${movedReactions} reaction${movedReactions === 1 ? '' : 's'} into Yaoi Journal/Images and Yaoi Journal/Reactions.${failures ? ` (${failures} file(s) failed to move — safe to run again.)` : ''}`
+      : 'No duplicate folders found — your Drive is already consolidated.');
+  } catch (err) {
+    console.error('Drive folder consolidation failed:', err);
+    showToast('Consolidation failed: ' + (err && err.message || 'unknown error') + ' — safe to try again.');
+  } finally {
+    DRIVE_CONSOLIDATE.running = false;
+    if (STATE.view === 'database') render();
+  }
+}
+
 // Best-effort wrapper for upload call sites: the image is already cached
 // locally and displaying fine regardless of whether this succeeds, so a
 // Drive failure here should never block or fail the save — it just means
 // this particular image stays local-only until the next successful upload
 // or reconnect, same as the existing "too large to sync" case.
-async function tryUploadImageToDrive(dataUrl, filename) {
+async function tryUploadImageToDrive(dataUrl, filename, kind) {
   try {
-    return await uploadToDrive(dataUrl, filename);
+    return await uploadToDrive(dataUrl, filename, kind);
   } catch (err) {
     console.error('Drive image upload failed:', err);
     if (DRIVE_NEEDS_RECONNECT) showToast('Google Drive needs reconnecting — this image is saved on this device only for now.');
@@ -1057,6 +1243,37 @@ async function applyCharPhotoFile(who, file) {
     if (!fresh) return;
     fresh[who].photoDriveId = fileId;
     saveEntry(fresh);
+  });
+}
+// Adds one or more files to the current entry's Images container —
+// shared by both the "Add photo(s)" file input and the whole-container
+// drag-and-drop zone (see wireImageDropZone() below), so dropping files
+// behaves identically to picking them from the file dialog.
+async function applyScreencapFiles(fileList) {
+  const e = getEntry(STATE.entryId);
+  if (!e || !fileList || !fileList.length) return;
+  e.screencaps = e.screencaps || [];
+  e.screencapDriveIds = e.screencapDriveIds || [];
+  const newDataUrls = [];
+  for (const file of fileList) {
+    const dataUrl = await fileToCompressedDataUrl(file, 900);
+    e.screencaps.push(dataUrl);
+    newDataUrls.push(dataUrl);
+  }
+  await saveEntry(e);
+  render();
+  // Upload each new screencap to Drive in the background and append its id
+  // once it resolves — order isn't guaranteed against further edits in the
+  // meantime, so re-fetch the entry fresh before each append.
+  newDataUrls.forEach((dataUrl, i) => {
+    tryUploadImageToDrive(dataUrl, `${e.id}-screencap-${Date.now()}-${i}.jpg`).then((fileId) => {
+      if (!fileId) return;
+      const fresh = getEntry(e.id);
+      if (!fresh) return;
+      fresh.screencapDriveIds = fresh.screencapDriveIds || [];
+      fresh.screencapDriveIds.push(fileId);
+      saveEntry(fresh);
+    });
   });
 }
 // Makes any element a drag-and-drop target for a single image file, with a
@@ -2347,7 +2564,7 @@ async function addImageAsReaction(dataUrl) {
   if (findReactionByHash(hash)) return null;
   const reaction = { id: uid('reaction'), dataUrl, hash, moodTags: [], note: '', createdAt: new Date().toISOString() };
   await saveReaction(reaction);
-  tryUploadImageToDrive(dataUrl, `reaction-${reaction.id}.jpg`).then((fileId) => {
+  tryUploadImageToDrive(dataUrl, `reaction-${reaction.id}.jpg`, 'reaction').then((fileId) => {
     if (!fileId) return;
     const fresh = ALL_REACTIONS.find((r) => r.id === reaction.id);
     if (!fresh) return;
@@ -2402,6 +2619,25 @@ function hammingDistance(a, b) {
   return d;
 }
 
+function imageDupSignature(group) {
+  return group.map((img) => imageKey(img.dataUrl)).sort().join('|');
+}
+function persistIgnoredImageDupGroups() {
+  idbPut(STORE_META, { key: 'ignoredImageDupGroups', value: Array.from(IGNORED_IMAGE_DUP_GROUPS) });
+  pushMetaField('ignoredImageDupGroups', Array.from(IGNORED_IMAGE_DUP_GROUPS));
+}
+// Marks a group as "not actually duplicates" so it's excluded from every
+// future scan, and drops it from the list on screen right now (no rescan
+// needed) — this is what stops the same groups from being asked about
+// forever.
+function dismissImageDupGroup(idx) {
+  if (!IMAGE_DUP_GROUPS || !IMAGE_DUP_GROUPS[idx]) return;
+  IGNORED_IMAGE_DUP_GROUPS.add(imageDupSignature(IMAGE_DUP_GROUPS[idx]));
+  persistIgnoredImageDupGroups();
+  IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS.filter((_, i) => i !== idx);
+  render();
+}
+
 let IMAGES_TAB = 'attached'; // 'attached' | 'unattached' | 'duplicates'
 let IMAGE_DUP_GROUPS = null; // null = not scanned yet this session
 let IMAGE_DUP_SCANNING = false;
@@ -2427,7 +2663,10 @@ async function scanForImageDuplicates() {
         used.add(j);
       }
     }
-    if (group.length > 1) groups.push(group);
+    // Skip groups the user already reviewed and confirmed aren't
+    // duplicates — otherwise every "Scan again" just re-surfaces the same
+    // ~40 groups forever.
+    if (group.length > 1 && !IGNORED_IMAGE_DUP_GROUPS.has(imageDupSignature(group))) groups.push(group);
   }
   IMAGE_DUP_GROUPS = groups;
   IMAGE_DUP_SCANNING = false;
@@ -2461,9 +2700,12 @@ function renderReactionsLibrary() {
       tabBody = `<div class="empty-state">No possible duplicates found. 🎉</div><button class="ref-btn" style="width:100%;" data-scan-duplicates="1">Scan again</button>`;
     } else {
       tabBody = `<button class="ref-btn" style="width:100%;margin-bottom:10px;" data-scan-duplicates="1">Scan again</button>` +
-        IMAGE_DUP_GROUPS.map((group) => `
+        IMAGE_DUP_GROUPS.map((group, idx) => `
           <div class="panel">
-            <div class="panel-title">Possible duplicate (${group.length} images)</div>
+            <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <span>Possible duplicate (${group.length} images)</span>
+              <button class="ref-btn" style="flex:0 0 auto;padding:4px 10px;font-size:12px;" data-dismiss-image-dup-group="${idx}">Not duplicates</button>
+            </div>
             <div class="image-masonry">${group.map(masonryItem).join('')}</div>
           </div>`).join('');
     }
@@ -2557,7 +2799,9 @@ const MOOD_OPTIONS = [
 // via CUSTOM_MOODS, see pullMetaState()/boot()) on top, everywhere the fixed
 // list used to be used directly.
 function allMoodOptions() {
-  return [...MOOD_OPTIONS, ...Array.from(CUSTOM_MOODS).sort((a, b) => a.localeCompare(b)).map((name) => ({ key: name, emoji: '🏷️', label: name }))];
+  // No emoji prefix on custom moods — they read cleaner as plain labels,
+  // and it avoids every custom mood looking visually identical (all 🏷️).
+  return [...MOOD_OPTIONS, ...Array.from(CUSTOM_MOODS).sort((a, b) => a.localeCompare(b)).map((name) => ({ key: name, emoji: '', label: name }))];
 }
 function addCustomMood(rawName) {
   const name = String(rawName || '').trim();
@@ -2623,7 +2867,7 @@ function openManageMoodsModal() {
     <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Done</button></div>
   `);
 }
-let MEME_STATE = { moodFilter: null, search: '' };
+let MEME_STATE = { moodFilter: null, search: '', untaggedOnly: false };
 
 function memeFilteredItems() {
   const q = MEME_STATE.search.trim().toLowerCase();
@@ -2636,6 +2880,7 @@ function memeFilteredItems() {
     return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
   });
   if (MEME_STATE.moodFilter) items = items.filter((r) => (r.moodTags || []).includes(MEME_STATE.moodFilter));
+  if (MEME_STATE.untaggedOnly) items = items.filter((r) => !(r.moodTags || []).length);
   if (q) items = items.filter((r) => (r.note || '').toLowerCase().includes(q));
   return items;
 }
@@ -2662,6 +2907,20 @@ function renderMemeGrid() {
 let MEME_DUP_GROUPS = null; // null = not scanned yet this session
 let MEME_DUP_SCANNING = false;
 let MEME_SHOWING_DUPLICATES = false;
+function reactionDupSignature(group) {
+  return group.map((r) => r.id).sort().join('|');
+}
+function persistIgnoredMemeDupGroups() {
+  idbPut(STORE_META, { key: 'ignoredMemeDupGroups', value: Array.from(IGNORED_MEME_DUP_GROUPS) });
+  pushMetaField('ignoredMemeDupGroups', Array.from(IGNORED_MEME_DUP_GROUPS));
+}
+function dismissMemeDupGroup(idx) {
+  if (!MEME_DUP_GROUPS || !MEME_DUP_GROUPS[idx]) return;
+  IGNORED_MEME_DUP_GROUPS.add(reactionDupSignature(MEME_DUP_GROUPS[idx]));
+  persistIgnoredMemeDupGroups();
+  MEME_DUP_GROUPS = MEME_DUP_GROUPS.filter((_, i) => i !== idx);
+  render();
+}
 async function scanForMemeDuplicates() {
   MEME_DUP_SCANNING = true;
   render();
@@ -2687,7 +2946,9 @@ async function scanForMemeDuplicates() {
         used.add(j);
       }
     }
-    if (group.length > 1) groups.push(group);
+    // Skip anything already reviewed and confirmed as "not duplicates" so
+    // scanning again doesn't just re-show the same groups forever.
+    if (group.length > 1 && !IGNORED_MEME_DUP_GROUPS.has(reactionDupSignature(group))) groups.push(group);
   }
   MEME_DUP_GROUPS = groups;
   MEME_DUP_SCANNING = false;
@@ -2700,9 +2961,12 @@ function memeMainBody() {
   if (MEME_DUP_GROUPS === null) return `<div style="padding:8px 0;"><button class="btn-primary" style="width:100%;" data-scan-meme-duplicates="1">🔍 Scan for possible duplicates</button></div>`;
   if (!MEME_DUP_GROUPS.length) return `<div class="empty-state">No possible duplicates found. 🎉</div><button class="ref-btn" style="width:100%;" data-scan-meme-duplicates="1">Scan again</button>`;
   return `<button class="ref-btn" style="width:100%;margin-bottom:10px;" data-scan-meme-duplicates="1">Scan again</button>` +
-    MEME_DUP_GROUPS.map((group) => `
+    MEME_DUP_GROUPS.map((group, idx) => `
       <div class="panel">
-        <div class="panel-title">Possible duplicate (${group.length} reactions)</div>
+        <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <span>Possible duplicate (${group.length} reactions)</span>
+          <button class="ref-btn" style="flex:0 0 auto;padding:4px 10px;font-size:12px;" data-dismiss-meme-dup-group="${idx}">Not duplicates</button>
+        </div>
         <div class="image-masonry">${group.map((r) => `
           <div class="masonry-item" data-open-meme="${r.id}">
             <img src="${r.dataUrl}" alt="" loading="lazy">
@@ -2725,7 +2989,7 @@ function renderMemeLibrary() {
   // creates herself. The management (rename/delete) controls that used to be
   // a pencil icon sitting in the middle of this row moved out to a plain
   // "Manage moods" button next to the Possible Duplicates tab instead.
-  const moodChips = allMoodOptions().map((m) => `<button class="mood-chip ${MEME_STATE.moodFilter === m.key ? 'active' : ''}" data-meme-mood-filter="${escapeHtml(m.key)}" title="${escapeHtml(m.label)}">${m.emoji} ${escapeHtml(m.label)}</button>`).join('');
+  const moodChips = allMoodOptions().map((m) => `<button class="mood-chip ${MEME_STATE.moodFilter === m.key ? 'active' : ''}" data-meme-mood-filter="${escapeHtml(m.key)}" title="${escapeHtml(m.label)}">${m.emoji ? m.emoji + ' ' : ''}${escapeHtml(m.label)}</button>`).join('');
   return `
     <div class="app-header">
       <div class="brand-row"><h1>🎭 Reactions</h1></div>
@@ -2735,6 +2999,7 @@ function renderMemeLibrary() {
       <div class="tagmgr-tabs" style="margin-bottom:8px;">
         <button class="tagmgr-tab ${!MEME_SHOWING_DUPLICATES ? 'active' : ''}" data-meme-tab="grid">Gallery</button>
         <button class="tagmgr-tab ${MEME_SHOWING_DUPLICATES ? 'active' : ''}" data-meme-tab="duplicates">Possible Duplicates</button>
+        <button class="ref-btn ${MEME_STATE.untaggedOnly ? 'active' : ''}" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;${MEME_STATE.untaggedOnly ? 'background:var(--purple);color:#fff;' : ''}" data-meme-untagged-only="1" title="Show only untagged reactions">${untaggedCount} untagged</button>
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-meme-manage-moods="1" title="Manage mood groups (rename/delete)">✏️ Manage</button>
       </div>
       ${!MEME_SHOWING_DUPLICATES ? `
@@ -2756,29 +3021,38 @@ function attachMemeGridHandlers() {
   document.querySelectorAll('[data-meme-tab]').forEach((el) => {
     el.onclick = () => { MEME_SHOWING_DUPLICATES = el.getAttribute('data-meme-tab') === 'duplicates'; render(); };
   });
+  const untaggedOnlyBtn = document.querySelector('[data-meme-untagged-only]');
+  if (untaggedOnlyBtn) untaggedOnlyBtn.onclick = () => { MEME_STATE.untaggedOnly = !MEME_STATE.untaggedOnly; render(); };
   const scanMemeDupBtn = document.querySelector('[data-scan-meme-duplicates]');
   if (scanMemeDupBtn) scanMemeDupBtn.onclick = () => scanForMemeDuplicates();
+  document.querySelectorAll('[data-dismiss-meme-dup-group]').forEach((el) => {
+    el.onclick = (ev) => { ev.stopPropagation(); dismissMemeDupGroup(Number(el.getAttribute('data-dismiss-meme-dup-group'))); };
+  });
 }
 
 function openMemeEditModal(id) {
   const r = ALL_REACTIONS.find((x) => x.id === id);
   if (!r) return;
   openModal(`
-    <h3>Edit reaction</h3>
-    ${r.dataUrl
-      ? `<img src="${r.dataUrl}" alt="" style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`
-      : `<div class="cover-placeholder" style="height:180px;margin-bottom:10px;">⏳ Still downloading from Drive…</div>`}
+    <div class="modal-close-corner-wrap">
+      <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
+      <h3>Edit reaction</h3>
+      ${r.dataUrl
+        ? `<img src="${r.dataUrl}" alt="" style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`
+        : `<div class="cover-placeholder" style="height:180px;margin-bottom:10px;">⏳ Still downloading from Drive…</div>`}
     <div class="field-row"><label>Caption/keywords (for search)</label><input type="text" id="meme-note-input" value="${escapeHtml(r.note || '')}" placeholder="e.g. blushing, screaming, oh no"></div>
     <div class="field-row">
       <label>Mood ${!(r.moodTags || []).length ? '<span style="color:var(--red-flag);">— pick at least one</span>' : ''}</label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">
-        ${allMoodOptions().map((m) => `<button class="mood-chip ${(r.moodTags || []).includes(m.key) ? 'active' : ''}" data-meme-toggle-mood="${escapeHtml(m.key)}" data-meme-id="${r.id}">${m.emoji} ${escapeHtml(m.label)}</button>`).join('')}
+        ${allMoodOptions().map((m) => `<button class="mood-chip ${(r.moodTags || []).includes(m.key) ? 'active' : ''}" data-meme-toggle-mood="${escapeHtml(m.key)}" data-meme-id="${r.id}">${m.emoji ? m.emoji + ' ' : ''}${escapeHtml(m.label)}</button>`).join('')}
         <button class="mood-chip" data-meme-add-mood-for="${r.id}">➕ New mood</button>
       </div>
     </div>
-    <div class="modal-actions">
-      <button class="btn-ghost" data-delete-meme="${r.id}">🗑️ Delete</button>
-      <button class="btn-primary" data-close-modal="1">Done</button>
+      <div class="modal-actions">
+        <button class="btn-ghost" data-delete-meme="${r.id}">🗑️ Delete</button>
+        ${r.dataUrl && !/^data:image\/(gif|webp)/.test(r.dataUrl) ? `<button class="btn-ghost" data-crop-meme="${r.id}">✂️ Crop</button>` : ''}
+        <button class="btn-primary" data-close-modal="1">Done</button>
+      </div>
     </div>
   `);
   const noteInput = document.getElementById('meme-note-input');
@@ -2788,12 +3062,168 @@ function openMemeEditModal(id) {
   };
 }
 
+// Simple drag-to-move, drag-corner-to-resize crop box over the reaction
+// image — no external cropping library, just Pointer Events + canvas.
+// Static images only (see the Crop button's animated-file check above):
+// cropping via canvas would flatten a GIF/WebP to its first frame, which
+// would silently kill the animation, so the button never appears for those.
+function openCropReactionModal(id) {
+  const r = ALL_REACTIONS.find((x) => x.id === id);
+  if (!r || !r.dataUrl) return;
+  openModal(`
+    <div class="modal-close-corner-wrap">
+      <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
+      <h3>Crop reaction</h3>
+      <div class="crop-stage" id="crop-stage">
+        <img src="${r.dataUrl}" id="crop-img" alt="" draggable="false">
+        <div class="crop-box" id="crop-box">
+          <div class="crop-handle" id="crop-handle-br"></div>
+        </div>
+      </div>
+      <p style="font-size:11px;color:var(--text-dim);margin-top:8px;">Drag the box to move it, drag the corner dot to resize, then Save.</p>
+      <div class="modal-actions">
+        <button class="btn-ghost" data-close-modal="1">Cancel</button>
+        <button class="btn-primary" data-save-crop="${r.id}">✂️ Save Crop</button>
+      </div>
+    </div>
+  `);
+  wireCropStage();
+}
+
+function wireCropStage() {
+  const stage = document.getElementById('crop-stage');
+  const img = document.getElementById('crop-img');
+  const box = document.getElementById('crop-box');
+  const handle = document.getElementById('crop-handle-br');
+  if (!stage || !img || !box || !handle) return;
+
+  function initBox() {
+    const stageRect = stage.getBoundingClientRect();
+    const imgRect = img.getBoundingClientRect();
+    const left = imgRect.left - stageRect.left;
+    const top = imgRect.top - stageRect.top;
+    const iw = imgRect.width, ih = imgRect.height;
+    box._imgOffset = { left, top, w: iw, h: ih };
+    box.style.left = (left + iw * 0.1) + 'px';
+    box.style.top = (top + ih * 0.1) + 'px';
+    box.style.width = (iw * 0.8) + 'px';
+    box.style.height = (ih * 0.8) + 'px';
+  }
+  if (img.complete && img.naturalWidth) initBox(); else img.onload = initBox;
+
+  function clampBox() {
+    const off = box._imgOffset;
+    if (!off) return;
+    let left = parseFloat(box.style.left), top = parseFloat(box.style.top);
+    let w = parseFloat(box.style.width), h = parseFloat(box.style.height);
+    w = Math.max(24, Math.min(w, off.w));
+    h = Math.max(24, Math.min(h, off.h));
+    left = Math.max(off.left, Math.min(left, off.left + off.w - w));
+    top = Math.max(off.top, Math.min(top, off.top + off.h - h));
+    box.style.left = left + 'px'; box.style.top = top + 'px';
+    box.style.width = w + 'px'; box.style.height = h + 'px';
+  }
+
+  let dragMode = null;
+  let start = null;
+  box.onpointerdown = (ev) => {
+    if (ev.target === handle) return;
+    dragMode = 'move';
+    start = { x: ev.clientX, y: ev.clientY, left: parseFloat(box.style.left), top: parseFloat(box.style.top) };
+    box.setPointerCapture(ev.pointerId);
+    ev.preventDefault();
+  };
+  handle.onpointerdown = (ev) => {
+    dragMode = 'resize';
+    start = { x: ev.clientX, y: ev.clientY, w: parseFloat(box.style.width), h: parseFloat(box.style.height) };
+    handle.setPointerCapture(ev.pointerId);
+    ev.stopPropagation();
+    ev.preventDefault();
+  };
+  function onMove(ev) {
+    if (!dragMode) return;
+    const dx = ev.clientX - start.x, dy = ev.clientY - start.y;
+    if (dragMode === 'move') {
+      box.style.left = (start.left + dx) + 'px';
+      box.style.top = (start.top + dy) + 'px';
+    } else if (dragMode === 'resize') {
+      box.style.width = (start.w + dx) + 'px';
+      box.style.height = (start.h + dy) + 'px';
+    }
+    clampBox();
+  }
+  box.onpointermove = onMove;
+  handle.onpointermove = onMove;
+  function endDrag() { dragMode = null; }
+  box.onpointerup = endDrag;
+  handle.onpointerup = endDrag;
+  box.onpointercancel = endDrag;
+  handle.onpointercancel = endDrag;
+}
+
+async function saveCroppedReaction(id) {
+  const r = ALL_REACTIONS.find((x) => x.id === id);
+  const img = document.getElementById('crop-img');
+  const box = document.getElementById('crop-box');
+  if (!r || !img || !box || !box._imgOffset) return;
+  const off = box._imgOffset;
+  const scaleX = img.naturalWidth / off.w;
+  const scaleY = img.naturalHeight / off.h;
+  const boxLeft = parseFloat(box.style.left) - off.left;
+  const boxTop = parseFloat(box.style.top) - off.top;
+  const boxW = parseFloat(box.style.width);
+  const boxH = parseFloat(box.style.height);
+  const sx = boxLeft * scaleX, sy = boxTop * scaleY, sw = boxW * scaleX, sh = boxH * scaleY;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(sw));
+  canvas.height = Math.max(1, Math.round(sh));
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  const newDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+  r.dataUrl = newDataUrl;
+  r.hash = await hashDataUrl(newDataUrl);
+  await saveReaction(r);
+  showToast('Cropped!');
+  closeModal();
+  openMemeEditModal(id);
+  tryUploadImageToDrive(newDataUrl, `reaction-${r.id}.jpg`, 'reaction').then((fileId) => {
+    if (!fileId) return;
+    const fresh = ALL_REACTIONS.find((x) => x.id === r.id);
+    if (!fresh) return;
+    fresh.driveId = fileId;
+    saveReaction(fresh);
+  });
+}
+
 // Uploads into the standalone meme/reaction library (bottom-nav "Reactions").
 // These are never attached to a specific journal entry — just organized by
 // mood tag and searched by caption/keywords, Giphy-style.
+// Flags an outlier upload before we even try to process it — mainly aimed
+// at large animated GIFs, since those skip the usual canvas compression
+// (see isAnimated below) and could otherwise silently bloat IndexedDB/Drive
+// or blow past Firestore's 1MiB doc cap with no explanation to the user.
+const MAX_REACTION_FILE_BYTES = 20 * 1024 * 1024; // 20MB
+function showOversizedFilesModal(oversizedFiles) {
+  const items = oversizedFiles.map((file) => {
+    const url = URL.createObjectURL(file);
+    const mb = (file.size / (1024 * 1024)).toFixed(1);
+    return `<div style="margin-bottom:12px;"><img src="${url}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;background:#000;margin-bottom:6px;"><div style="font-size:13px;">${escapeHtml(file.name)} — ${mb}MB</div></div>`;
+  }).join('');
+  openModal(`
+    <div class="modal-close-corner-wrap">
+      <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
+      <h3>File${oversizedFiles.length === 1 ? '' : 's'} too large</h3>
+      <p style="color:var(--text-dim);font-size:13px;">${oversizedFiles.length === 1 ? "This file wasn't" : "These weren't"} uploaded — anything over 20MB is too large to save reliably. Try a smaller or compressed version.</p>
+      ${items}
+      <div class="modal-actions"><button class="btn-primary" data-close-modal="1">OK</button></div>
+    </div>
+  `);
+}
 async function addReactionFiles(fileList) {
   const added = [];
+  const oversized = [];
   for (const file of fileList) {
+    if (file.size > MAX_REACTION_FILE_BYTES) { oversized.push(file); continue; }
     // GIFs (and animated WebP) lose their animation the moment they get
     // redrawn onto a <canvas> and re-encoded — fileToCompressedDataUrl()
     // does exactly that, which is why every reaction used to end up a
@@ -2812,7 +3242,7 @@ async function addReactionFiles(fileList) {
     await saveReaction(reaction);
     added.push(reaction);
     const ext = isAnimated ? (file.type === 'image/gif' ? 'gif' : 'webp') : 'jpg';
-    tryUploadImageToDrive(dataUrl, `reaction-${reaction.id}.${ext}`).then((fileId) => {
+    tryUploadImageToDrive(dataUrl, `reaction-${reaction.id}.${ext}`, 'reaction').then((fileId) => {
       if (!fileId) return;
       const fresh = ALL_REACTIONS.find((r) => r.id === reaction.id);
       if (!fresh) return;
@@ -2820,6 +3250,7 @@ async function addReactionFiles(fileList) {
       saveReaction(fresh);
     });
   }
+  if (oversized.length) showOversizedFilesModal(oversized);
   return added;
 }
 
@@ -2924,6 +3355,7 @@ async function applySuggestedMatch(entryId) {
     e.tags = Array.from(merged);
   }
   if (!e.author && sm.author) e.author = sm.author;
+  if (!e.artist && sm.artist) e.artist = sm.artist;
   applyTitleSwap(e, sm);
   e.suggestedMatch = null;
   e.suggestedMatchDismissed = false;
@@ -3093,7 +3525,13 @@ function renderDetail(e) {
       <div class="field-row"><label>Artist</label><input type="text" id="edit-artist" value="${escapeHtml(e.artist || '')}"></div>
       <div class="field-row"><label>Chapters</label><input type="number" id="edit-chapters" value="${e.totalChapters || ''}"></div>
       <div class="field-row"><label>Seasons</label><input type="number" id="edit-seasons" value="${e.totalSeasons || ''}"></div>
-      <div class="field-row"><label>Status</label><input type="text" id="edit-status" value="${escapeHtml(e.status || '')}"></div>
+      <div class="field-row"><label>Status</label>
+        <select id="edit-status">
+          <option value="" ${!e.status ? 'selected' : ''}>—</option>
+          <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
+          <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
+        </select>
+      </div>
       <div class="modal-actions" style="margin-top:6px;">
         <button class="btn-ghost" data-cancel-edit="1">Cancel</button>
         <button class="btn-primary" data-save-edit="1">Save</button>
@@ -3165,6 +3603,19 @@ function renderDetail(e) {
         </div>
         ${confirmedSummaryHtml}
         ${matchColumnHtml}
+      </div>
+
+      <!-- 1b. Reading link -->
+      <div class="panel">
+        <div class="field-row">
+          <label>Reading Link</label>
+          ${e.readingLink
+            ? `<div style="display:flex;gap:8px;align-items:center;">
+                 <a href="${escapeHtml(e.readingLink)}" target="_blank" rel="noopener noreferrer" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--purple);">${escapeHtml(e.readingLink)}</a>
+                 <button class="icon-btn-inline" data-clear-reading-link="1" title="Remove link">✕</button>
+               </div>`
+            : `<input type="text" id="reading-link-input" placeholder="Paste the link where you're reading this...">`}
+        </div>
       </div>
 
       <!-- 2. Ratings -->
@@ -3244,9 +3695,10 @@ function renderDetail(e) {
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
           <label class="upload-btn" style="flex:1;">📎 Add photo(s)<input type="file" accept="image/*" multiple id="screencap-input"></label>
         </div>
-        <div class="screencap-grid">
-          ${(e.screencaps || []).map((src, i) => `<div class="screencap-thumb"><img src="${src}" data-view-screencap="${i}"><button class="del" data-del-screencap="${i}">✕</button></div>`).join('')}
+        <div class="image-masonry screencap-dropzone" id="screencap-dropzone">
+          ${(e.screencaps || []).map((src, i) => `<div class="masonry-item"><img src="${src}" data-view-screencap="${i}" loading="lazy"><button class="del" data-del-screencap="${i}">✕</button></div>`).join('')}
         </div>
+        ${!(e.screencaps || []).length ? `<div class="empty-state" style="padding:16px 0;">No images yet — drag and drop, or tap "Add photo(s)".</div>` : ''}
       </div>
 
     </div>
@@ -3319,6 +3771,16 @@ function renderDatabase() {
             <button class="ref-btn" data-run-image-backfill="1">☁️ Upload local-only images to Drive (${imageBackfillCandidates().length} pending)</button>
           </div>
           <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">Images added before Drive was hooked up (or while it was disconnected) only ever saved on the device that added them. This pushes anything still local-only up to your Drive so other devices can finally pull it down. Requires Google Drive to be connected.</p>
+        `}
+        ${DRIVE_CONSOLIDATE.running ? `
+          <div class="export-row" style="margin-top:8px;">
+            <div style="flex:1;font-size:12.5px;color:var(--text-dim);">🗂️ Consolidating duplicate Drive folders…</div>
+          </div>
+        ` : `
+          <div class="export-row" style="margin-top:8px;">
+            <button class="ref-btn" data-consolidate-drive-folders="1">🗂️ Consolidate duplicate Drive folders</button>
+          </div>
+          <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">A past bug could create more than one "Yaoi Journal Images" folder in your Drive when two images uploaded at nearly the same time. This finds every duplicate, moves its files into one "Yaoi Journal/Images" and "Yaoi Journal/Reactions" folder pair, and deletes the empties — safe to run anytime, and safe to run more than once. Requires Google Drive to be connected.${DRIVE_CONSOLIDATE.summary ? ` Last run: moved ${DRIVE_CONSOLIDATE.summary.movedImages + DRIVE_CONSOLIDATE.summary.movedReactions} file(s), removed ${DRIVE_CONSOLIDATE.summary.foldersRemoved} duplicate folder(s).` : ''}</p>
         `}
       </div>
       ${renderSettingsPanel()}
@@ -3526,6 +3988,24 @@ async function mergeIntoTarget(sourceId, targetId) {
   navigate('detail', targetId);
 }
 
+// Merge triggered from inside a duplicate-group comparison (Database >
+// Review Duplicates). Two differences from the generic mergeIntoTarget()
+// above: no picker (the target is already known — it's the other item in
+// the comparison), and it stays on the Review Duplicates list afterward
+// instead of jumping to the surviving entry's detail page, since the whole
+// point is to keep working through the rest of the list.
+async function mergeDuplicateGroupItem(sourceId, targetId) {
+  const source = getEntry(sourceId);
+  const target = getEntry(targetId);
+  if (!source || !target) return;
+  if (!confirm(`Merge "${source.title}" into "${target.title}"? Its notes/ratings/tags/images are combined in, then "${source.title}" is deleted.`)) return;
+  mergeEntryData(target, source);
+  await saveEntry(target);
+  await deleteEntry(sourceId);
+  showToast('Merged and deleted');
+  render();
+}
+
 function findDuplicateGroups() {
   const groups = {};
   ALL_ENTRIES.forEach((e) => {
@@ -3568,6 +4048,12 @@ function renderDuplicateGroup(group) {
     const cover = coverSrc
       ? `<img src="${escapeHtml(coverSrc)}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='<div class=\\'cover-placeholder\\'>🍆</div>'">`
       : `<div class="cover-placeholder">🍆</div>`;
+    // Within a duplicate comparison there are only ever a couple of items
+    // being looked at, so "Merge into" should just pull whichever other
+    // item(s) are already in this same comparison — no need to reopen a
+    // picker and search the whole library for the one you're staring at.
+    const others = group.filter((x) => x.id !== e.id).map((x) => x.id).join(',');
+    const mergeLabel = group.length === 2 ? `🔀 Merge into #${group.findIndex((x) => x.id !== e.id) + 1}` : '🔀 Merge into…';
     return `
       <div class="dup-item">
         <div class="cover-thumb" style="width:64px;flex:0 0 64px;">${cover}</div>
@@ -3578,7 +4064,7 @@ function renderDuplicateGroup(group) {
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;">
           <button class="ref-btn" data-open-entry="${e.id}">Open</button>
-          <button class="ref-btn" data-merge-entry="${e.id}" title="Merge this into another entry">🔀 Merge into…</button>
+          <button class="ref-btn" data-merge-group-source="${e.id}" data-merge-group-targets="${others}" title="Merge this into the other item(s) in this comparison">${mergeLabel}</button>
           <button class="btn-ghost" data-dup-delete="${e.id}">Delete this one</button>
         </div>
       </div>`;
@@ -3796,11 +4282,14 @@ function hdBookmarkletSource() {
     var tags = [], tm;
     while ((tm = tagRe.exec(html)) !== null) { var tg = dec(tm[1]).trim(); if (tg && tags.indexOf(tg) === -1) tags.push(tg); }
     var author = '';
-    var sm = html.match(/([A-Za-z0-9 .'-]+)\s*<\/[a-z]+>?\s*(Original Creator|Story\s*&\s*Art|Author|Artist)/i);
-    if (sm) author = sm[1].trim();
-    data = { site: 'Anime-Planet', sourceUrl: url, title: title, altTitle: alt, coverUrl: meta('og:image'), summary: meta('og:description'), tags: tags, author: author };
+    var authorM = html.match(/([A-Za-z0-9 .'-]+)\s*<\/[a-z]+>?\s*(Original Creator|Story\s*&\s*Art|Author)(?!s)/i);
+    if (authorM) author = authorM[1].trim();
+    var artist = '';
+    var artistM = html.match(/([A-Za-z0-9 .'-]+)\s*<\/[a-z]+>?\s*Artist/i);
+    if (artistM) artist = artistM[1].trim();
+    data = { site: 'Anime-Planet', sourceUrl: url, title: title, altTitle: alt, coverUrl: meta('og:image'), summary: meta('og:description'), tags: tags, author: author, artist: artist };
   } else if (url.indexOf('mangago.me') > -1) {
-    data = { site: 'MangaGo', sourceUrl: url, title: meta('og:title'), altTitle: '', coverUrl: meta('og:image'), summary: meta('og:description'), tags: [], author: '' };
+    data = { site: 'MangaGo', sourceUrl: url, title: meta('og:title'), altTitle: '', coverUrl: meta('og:image'), summary: meta('og:description'), tags: [], author: '', artist: '' };
   } else {
     alert('Open an Anime-Planet or MangaGo title page first, then tap this bookmarklet.');
     return;
@@ -3882,6 +4371,7 @@ function dataToSuggestedMatch(data) {
     summary: data.summary,
     tags: data.tags,
     author: data.author,
+    artist: data.artist,
     url: data.sourceUrl,
     site: data.site,
     confidence: data.confidence || 'auto',
@@ -3921,6 +4411,7 @@ async function confirmReference(entryId) {
     e.tags = Array.from(merged);
   }
   if (!e.author && data.author) e.author = data.author;
+  if (!e.artist && data.artist) e.artist = data.artist;
   if (!e.altTitle && data.altTitle) e.altTitle = data.altTitle;
   await saveEntry(e);
   showToast('Linked! Summary & cover pulled in.');
@@ -4004,7 +4495,21 @@ function attachRootHandlers() {
   root.querySelectorAll('[data-nav]').forEach((el) => {
     el.onclick = () => {
       const view = el.getAttribute('data-nav');
-      if (view === 'home') { STATE.showFavoritesOnly = false; STATE.showOnDriveOnly = false; STATE.showHentaiOnly = false; FILTERS_COLLAPSED = false; }
+      if (view === 'home') {
+        // The Journal footer icon should always land on a completely clean
+        // homepage — clear every filter and the search box, not just the
+        // favorites/on-HD/hentai toggles.
+        STATE.shelf = 'ALL';
+        STATE.tagFilters = [];
+        STATE.search = '';
+        STATE.showFavoritesOnly = false;
+        STATE.showOnDriveOnly = false;
+        STATE.showHentaiOnly = false;
+        STATE.smutFilter = null;
+        STATE.qualityFilter = null;
+        STATE.flagFilter = null;
+        FILTERS_COLLAPSED = false;
+      }
       navigate(view);
     };
   });
@@ -4048,6 +4553,9 @@ function attachRootHandlers() {
       searchInput.focus();
       searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
     }
+    // Pressing Enter submits the search — blur so the mobile keyboard
+    // closes automatically instead of staying up until manually dismissed.
+    searchInput.onkeydown = (ev) => { if (ev.key === 'Enter') searchInput.blur(); };
   }
   root.querySelectorAll('[data-format]').forEach((el) => {
     el.onclick = () => { STATE.format = el.getAttribute('data-format'); STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.flagFilter = null; render(); };
@@ -4128,6 +4636,25 @@ function attachRootHandlers() {
   if (favBtn) favBtn.onclick = async () => {
     const e = getEntry(STATE.entryId); e.favorite = !e.favorite; await saveEntry(e); render();
   };
+  const readingLinkInput = root.querySelector('#reading-link-input');
+  if (readingLinkInput) readingLinkInput.onblur = async () => {
+    let val = readingLinkInput.value.trim();
+    if (!val) return;
+    if (!/^https?:\/\//i.test(val)) val = 'https://' + val;
+    const e = getEntry(STATE.entryId);
+    if (!e) return;
+    e.readingLink = val;
+    await saveEntry(e);
+    render();
+  };
+  const clearReadingLinkBtn = root.querySelector('[data-clear-reading-link]');
+  if (clearReadingLinkBtn) clearReadingLinkBtn.onclick = async () => {
+    const e = getEntry(STATE.entryId);
+    if (!e) return;
+    e.readingLink = '';
+    await saveEntry(e);
+    render();
+  };
   const hdBtn = root.querySelector('[data-toggle-hd]');
   if (hdBtn) hdBtn.onclick = async () => {
     const e = getEntry(STATE.entryId);
@@ -4155,6 +4682,30 @@ function attachRootHandlers() {
   // there can legitimately be more than one on screen at once.
   root.querySelectorAll('[data-merge-entry]').forEach((el) => {
     el.onclick = () => openMergePickerModal(el.getAttribute('data-merge-entry'));
+  });
+  root.querySelectorAll('[data-merge-group-source]').forEach((el) => {
+    el.onclick = () => {
+      const sourceId = el.getAttribute('data-merge-group-source');
+      const targets = (el.getAttribute('data-merge-group-targets') || '').split(',').filter(Boolean);
+      if (targets.length === 1) {
+        mergeDuplicateGroupItem(sourceId, targets[0]);
+      } else if (targets.length > 1) {
+        // 3+ items flagged as possible duplicates together — ask which of
+        // the other items in *this* comparison to merge into, rather than
+        // reopening a full-library picker.
+        const options = targets.map((id) => getEntry(id)).filter(Boolean);
+        openModal(`
+          <h3>Merge into which one?</h3>
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            ${options.map((o) => `<button class="ref-btn" style="width:100%;text-align:left;" data-merge-group-pick="${o.id}">${escapeHtml(o.title)}</button>`).join('')}
+          </div>
+          <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Cancel</button></div>
+        `);
+        document.querySelectorAll('[data-merge-group-pick]').forEach((btn) => {
+          btn.onclick = () => { closeModal(); mergeDuplicateGroupItem(sourceId, btn.getAttribute('data-merge-group-pick')); };
+        });
+      }
+    };
   });
   const shelfSelectEl = root.querySelector('[data-shelf-select]');
   if (shelfSelectEl) shelfSelectEl.onchange = async () => {
@@ -4318,31 +4869,9 @@ function attachRootHandlers() {
     };
   }
   const screencapInput = root.querySelector('#screencap-input');
-  if (screencapInput) screencapInput.onchange = async () => {
-    const e = getEntry(STATE.entryId);
-    e.screencaps = e.screencaps || [];
-    e.screencapDriveIds = e.screencapDriveIds || [];
-    const newDataUrls = [];
-    for (const file of screencapInput.files) {
-      const dataUrl = await fileToCompressedDataUrl(file, 900);
-      e.screencaps.push(dataUrl);
-      newDataUrls.push(dataUrl);
-    }
-    await saveEntry(e); render();
-    // Upload each new screencap to Drive in the background and append its
-    // id once it resolves — order isn't guaranteed against further edits in
-    // the meantime, so re-fetch the entry fresh before each append.
-    newDataUrls.forEach((dataUrl, i) => {
-      tryUploadImageToDrive(dataUrl, `${e.id}-screencap-${Date.now()}-${i}.jpg`).then((fileId) => {
-        if (!fileId) return;
-        const fresh = getEntry(e.id);
-        if (!fresh) return;
-        fresh.screencapDriveIds = fresh.screencapDriveIds || [];
-        fresh.screencapDriveIds.push(fileId);
-        saveEntry(fresh);
-      });
-    });
-  };
+  if (screencapInput) screencapInput.onchange = () => applyScreencapFiles(screencapInput.files);
+  const screencapDropzone = root.querySelector('#screencap-dropzone');
+  if (screencapDropzone) wireImageDropZone(screencapDropzone, (file) => applyScreencapFiles([file]));
   root.querySelectorAll('[data-del-screencap]').forEach((el) => {
     el.onclick = async (ev) => {
       ev.stopPropagation();
@@ -4370,6 +4899,11 @@ function attachRootHandlers() {
       const id = el.getAttribute('data-del-reaction');
       if (!confirm('Delete this image from your library? Any entries it\'s already attached to keep their own copy.')) return;
       await deleteReaction(id);
+      // Once you've decided which copy to keep, that possible-duplicate
+      // group is resolved — drop it from whichever duplicate list is
+      // showing right now instead of leaving it there until a rescan.
+      if (MEME_DUP_GROUPS) MEME_DUP_GROUPS = MEME_DUP_GROUPS.filter((g) => !g.some((r) => r.id === id));
+      if (IMAGE_DUP_GROUPS) IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS.filter((g) => !g.some((img) => img.reactionId === id));
       showToast('Deleted');
       render();
     };
@@ -4434,6 +4968,9 @@ function attachRootHandlers() {
   if (manageImageGroupsBtn) manageImageGroupsBtn.onclick = openManageImageGroupsModal;
   const scanDupBtn = root.querySelector('[data-scan-duplicates]');
   if (scanDupBtn) scanDupBtn.onclick = () => scanForImageDuplicates();
+  root.querySelectorAll('[data-dismiss-image-dup-group]').forEach((el) => {
+    el.onclick = (ev) => { ev.stopPropagation(); dismissImageDupGroup(Number(el.getAttribute('data-dismiss-image-dup-group'))); };
+  });
 
   // Meme/reaction library
   attachMemeGridHandlers();
@@ -4455,6 +4992,7 @@ function attachRootHandlers() {
       memeSearchInput.focus();
       memeSearchInput.setSelectionRange(memeSearchInput.value.length, memeSearchInput.value.length);
     }
+    memeSearchInput.onkeydown = (ev) => { if (ev.key === 'Enter') memeSearchInput.blur(); };
   }
   root.querySelectorAll('[data-meme-mood-filter]').forEach((el) => {
     el.onclick = () => {
@@ -4724,6 +5262,8 @@ function attachRootHandlers() {
   if (imageBackfillBtn) imageBackfillBtn.onclick = runImageBackfill;
   const stopImageBackfillBtn = root.querySelector('[data-stop-image-backfill]');
   if (stopImageBackfillBtn) stopImageBackfillBtn.onclick = cancelImageBackfill;
+  const consolidateDriveBtn = root.querySelector('[data-consolidate-drive-folders]');
+  if (consolidateDriveBtn) consolidateDriveBtn.onclick = consolidateDriveFolders;
   const dbSearch = root.querySelector('#db-search');
   if (dbSearch) dbSearch.oninput = () => {
     const q = dbSearch.value.toLowerCase();
@@ -4747,6 +5287,7 @@ function attachRootHandlers() {
         e.tags = Array.from(merged);
       }
       if (!e.author && sm.author) e.author = sm.author;
+      if (!e.artist && sm.artist) e.artist = sm.artist;
       applyTitleSwap(e, sm);
       e.suggestedMatch = null;
       e.suggestedMatchDismissed = false;
@@ -4949,6 +5490,8 @@ document.addEventListener('click', (ev) => {
       closeModal();
     });
   }
+  if (t.matches('[data-crop-meme]')) openCropReactionModal(t.getAttribute('data-crop-meme'));
+  if (t.matches('[data-save-crop]')) saveCroppedReaction(t.getAttribute('data-save-crop'));
   if (t.matches('[data-carousel-use]')) {
     const entryId = MATCH_REVIEW_QUEUE[MATCH_REVIEW_INDEX];
     applySuggestedMatch(entryId).then(() => {
@@ -5176,7 +5719,7 @@ async function runImageBackfill() {
         }
         await saveEntry(e);
       } else if (t.kind === 'reaction') {
-        const id = await tryUploadImageToDrive(t.reaction.dataUrl, `reaction-${t.reaction.id}.jpg`);
+        const id = await tryUploadImageToDrive(t.reaction.dataUrl, `reaction-${t.reaction.id}.jpg`, 'reaction');
         if (id) { t.reaction.driveId = id; await saveReaction(t.reaction); IMAGE_BACKFILL.uploaded++; }
       }
     } catch (err) {
@@ -5256,6 +5799,10 @@ async function boot() {
     if (savedImageGroups && Array.isArray(savedImageGroups.value)) IMAGE_GROUPS = new Set(savedImageGroups.value);
     const savedImageTagMap = await idbGet(STORE_META, 'imageTagMap');
     if (savedImageTagMap && savedImageTagMap.value && typeof savedImageTagMap.value === 'object') IMAGE_TAG_MAP = savedImageTagMap.value;
+    const savedIgnoredImageDup = await idbGet(STORE_META, 'ignoredImageDupGroups');
+    if (savedIgnoredImageDup && Array.isArray(savedIgnoredImageDup.value)) IGNORED_IMAGE_DUP_GROUPS = new Set(savedIgnoredImageDup.value);
+    const savedIgnoredMemeDup = await idbGet(STORE_META, 'ignoredMemeDupGroups');
+    if (savedIgnoredMemeDup && Array.isArray(savedIgnoredMemeDup.value)) IGNORED_MEME_DUP_GROUPS = new Set(savedIgnoredMemeDup.value);
     if ('serviceWorker' in navigator) {
       setupAutoUpdatingServiceWorker();
     }
