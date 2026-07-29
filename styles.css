@@ -218,6 +218,10 @@ a { color: var(--pink); }
 /* ---------- Main / grid ---------- */
 main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150px + env(safe-area-inset-bottom, 0px)); }
 .section-title { font-size: 19px; font-weight: 700; text-align: center; color: var(--text); text-transform: uppercase; letter-spacing: .06em; margin: 18px 4px 10px; }
+/* Homepage shelf-row headers double as expand/collapse toggles — see
+   homeSectionHtml()/HOME_COLLAPSED_SECTIONS. */
+.home-section-title { cursor: pointer; user-select: none; }
+.home-section-chevron { display: inline-block; color: var(--purple); font-size: 15px; margin-right: 2px; }
 
 .cover-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 12px;
@@ -427,6 +431,9 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
    block from the Summary text below, matching the reference mockup. */
 .field-row-2col { display: flex; gap: 14px; }
 .field-row-2col > div { flex: 1; min-width: 0; }
+/* Extra breathing room specifically between Total Seasons/Chapters and the
+   Status pill — the default 14px gap read as too cramped there. */
+.field-row-2col.wide-gap { gap: 28px; }
 .details-divider { height: 3px; background: var(--pink); border-radius: 999px; margin: 12px 0; }
 .details-divider-full { margin: 14px 0; }
 
@@ -532,16 +539,16 @@ textarea {
   display: block; color: var(--pink); text-decoration: underline; font-size: 13.5px;
   overflow-wrap: anywhere; word-break: break-word;
 }
-.reading-chapter-col { flex: 0 0 108px; }
+.reading-chapter-col { flex: 0 0 108px; text-align: center; }
 .reading-chapter-col label {
   display: block; font-size: 10.5px; color: var(--text-dim); text-transform: uppercase;
-  letter-spacing: .04em; margin-bottom: 2px;
+  letter-spacing: .04em; margin-bottom: 2px; text-align: center;
 }
 .chapter-pill-input {
-  width: 100%; box-sizing: border-box; background: var(--purple); color: #170b26; border: none;
-  border-radius: 10px; padding: 6px 10px; font-size: 12.5px; font-weight: 700; text-align: center; font-family: inherit;
+  width: 100%; box-sizing: border-box; background: var(--purple); color: #fff; border: none;
+  border-radius: 10px; padding: 6px 10px; font-size: 12.5px; font-weight: 400; text-align: center; font-family: inherit;
 }
-.chapter-pill-input::placeholder { color: rgba(23,11,38,.6); }
+.chapter-pill-input::placeholder { color: rgba(255,255,255,.75); }
 .reading-link-row .reading-link-clear { align-self: center; margin-top: 16px; }
 
 .pdf-row { display: flex; gap: 8px; align-items: center; }

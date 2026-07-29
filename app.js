@@ -447,6 +447,10 @@ async function pullMetaState() {
       TAG_SUGGESTIONS_COLLAPSED = data.tagSuggestionsCollapsed;
       await idbPut(STORE_META, { key: 'tagSuggestionsCollapsed', value: TAG_SUGGESTIONS_COLLAPSED });
     }
+    if (Array.isArray(data.homeCollapsedSections)) {
+      HOME_COLLAPSED_SECTIONS = new Set([...HOME_COLLAPSED_SECTIONS, ...data.homeCollapsedSections]);
+      await idbPut(STORE_META, { key: 'homeCollapsedSections', value: Array.from(HOME_COLLAPSED_SECTIONS) });
+    }
     // Adopt whatever Drive folder id(s) another device already established
     // (see findOrCreateDriveFolder()) so this device never independently
     // searches/creates its own copy of "Yaoi Journal"/"Images"/"Reactions" —
@@ -1907,6 +1911,17 @@ async function setSuggestionsCollapsed(collapsed) {
   await idbPut(STORE_META, { key: 'tagSuggestionsCollapsed', value: collapsed });
   pushMetaField('tagSuggestionsCollapsed', collapsed);
 }
+// Homepage shelf rows (Currently Reading, Completed, etc. — see scrollRow())
+// each remember their own collapsed/expanded state here, keyed by row id, so
+// a section she's collapsed stays collapsed across visits/devices instead of
+// resetting open every time the homepage re-renders.
+let HOME_COLLAPSED_SECTIONS = new Set();
+async function toggleHomeSectionCollapsed(rowId) {
+  if (HOME_COLLAPSED_SECTIONS.has(rowId)) HOME_COLLAPSED_SECTIONS.delete(rowId); else HOME_COLLAPSED_SECTIONS.add(rowId);
+  const arr = Array.from(HOME_COLLAPSED_SECTIONS);
+  await idbPut(STORE_META, { key: 'homeCollapsedSections', value: arr });
+  pushMetaField('homeCollapsedSections', arr);
+}
 function isHiddenTag(t) {
   const norm = normalizeTagKey(t);
   return HIDDEN_TAG_KEYS.has(norm) || DELETED_TAG_KEYS.has(norm) || USER_HIDDEN_TAG_KEYS.has(norm);
@@ -2031,6 +2046,20 @@ function scrollRow(rowId, innerHtml) {
     </div>`;
 }
 
+// Homepage shelf/suggested-matches sections — same section-title + scroll
+// row as before, but the header itself is now a toggle: tap it to collapse
+// the row out of the way (state remembered per-row in HOME_COLLAPSED_SECTIONS,
+// synced like every other UI toggle in the app) instead of it always taking
+// up vertical space.
+function homeSectionHtml(rowId, title, count, innerHtml) {
+  const collapsed = HOME_COLLAPSED_SECTIONS.has(rowId);
+  return `
+    <div class="section-title home-section-title" data-toggle-home-section="${rowId}">
+      <span class="home-section-chevron">${collapsed ? '▸' : '▾'}</span> ${escapeHtml(title)} <span style="opacity:.6">(${count})</span>
+    </div>
+    ${collapsed ? '' : scrollRow(rowId, innerHtml)}`;
+}
+
 function renderHome() {
   const entries = filteredEntries();
   const tags = topTags(ALL_ENTRIES.filter((e) => e.format === STATE.format));
@@ -2042,8 +2071,7 @@ function renderHome() {
     // and jump into without leaving the homepage.
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
-      body += `<div class="section-title">🔎 Suggested Matches <span style="opacity:.6">(${suggestedGroup.length})</span></div>`;
-      body += scrollRow('row-suggested', suggestedGroup.map((e) => renderCoverCard(e, true)).join(''));
+      body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)).join(''));
     }
     // grouped by shelf, each group scrolls horizontally so hundreds of entries
     // don't turn into an endless vertical scroll.
@@ -2052,8 +2080,7 @@ function renderHome() {
       const group = entries.filter((e) => e.shelf === shelf);
       if (group.length === 0) return;
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
-      body += `<div class="section-title">${escapeHtml(shelf)} <span style="opacity:.6">(${group.length})</span></div>`;
-      body += scrollRow(rowId, group.map((e) => renderCoverCard(e)).join(''));
+      body += homeSectionHtml(rowId, shelf, group.length, group.map((e) => renderCoverCard(e)).join(''));
     });
     if (!body) body = `<div class="empty-state">Nothing here yet. Tap + to add a ${STATE.format === 'reading' ? 'manhwa/manga' : 'anime'}.</div>`;
   } else {
@@ -2173,6 +2200,9 @@ function findSimilarTags(query) {
   for (const name of names) {
     const norm = normalizeTagKey(name);
     if (!norm || norm === q) continue;
+    // A hidden tag isn't offered as a "reuse this instead" suggestion — if
+    // it's hidden, it shouldn't resurface anywhere as a possible tag to use.
+    if (isHiddenTag(name)) continue;
     let match = norm.includes(q) || q.includes(norm);
     if (!match) {
       const dist = levenshteinDistance(norm, q);
@@ -4412,7 +4442,7 @@ async function applySuggestedMatch(entryId) {
   if (sm.url) { e.referenceUrl = sm.url; e.referenceSite = sm.site || 'Anime-Planet'; e.referenceStatus = 'confirmed'; }
   if (sm.summary) e.summaryCache = sm.summary;
   if (sm.tags && sm.tags.length) {
-    const merged = new Set([...(e.tags || []), ...sm.tags]);
+    const merged = new Set([...(e.tags || []), ...sanitizeIncomingTags(sm.tags)]);
     e.tags = Array.from(merged);
   }
   if (!e.author && sm.author) e.author = sm.author;
@@ -4574,6 +4604,15 @@ function renderDetail(e) {
       </div>`;
   }
 
+  // Computed up here (rather than after topFieldsHtml, where it used to
+  // live) so the display-mode branch below can drop it directly under the
+  // Status pill instead of under the cover thumbnail — per her mockup, the
+  // "Currently Read" shelf picker belongs next to Status, not the cover.
+  const shelfSelect = isReading ? `
+    <select class="shelf-select" data-shelf-select="1">
+      ${SHELVES_READING.map((s) => `<option value="${escapeHtml(s)}" ${e.shelf === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+    </select>` : '';
+
   // Display vs. edit mode for the top fields (Title, Alt Title, Novel, Author,
   // Artist, Chapters/Seasons, Status) — toggled by the pencil icon.
   let topFieldsHtml;
@@ -4608,15 +4647,17 @@ function renderDetail(e) {
     `;
   } else {
     topFieldsHtml = isReading ? `
-      <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)}</div></div>
-      ${e.altTitle ? `<div class="field-row"><label>Alt title</label><div class="value plain">${escapeHtml(e.altTitle)}</div></div>` : ''}
+      <div class="field-row-2col">
+        <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)}</div></div>
+        <div class="field-row"><label>Alt title</label><div class="value plain">${escapeHtml(e.altTitle) || '—'}</div></div>
+      </div>
       ${(e.isNovel || e.novelAuthor) ? `<div class="field-row"><label>Novel</label><div class="value plain">${escapeHtml(formatNames(e.novelAuthor)) || '—'}</div></div>` : ''}
       <div class="field-row-2col">
         <div class="field-row"><label>Author</label><div class="value plain">${escapeHtml(formatNames(e.author)) || '—'}</div></div>
         <div class="field-row"><label>Artist</label><div class="value plain">${escapeHtml(formatNames(e.artist)) || '—'}</div></div>
       </div>
       <div class="details-divider"></div>
-      <div class="field-row-2col">
+      <div class="field-row-2col wide-gap">
         <div>
           <div class="field-row"><label>Total Seasons</label><div class="value plain">${e.totalSeasons || '—'}</div></div>
           <div class="field-row" style="margin-bottom:0;"><label>Total Chapters</label><div class="value plain">${e.totalChapters || '—'}</div></div>
@@ -4628,6 +4669,7 @@ function renderDetail(e) {
             <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
             <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
           </select>
+          ${shelfSelect ? `<div style="margin-top:8px;">${shelfSelect}</div>` : ''}
         </div>
       </div>
     ` : `
@@ -4636,11 +4678,6 @@ function renderDetail(e) {
       <div class="field-row"><label>Notes (legacy)</label><div class="value plain">${escapeHtml(e.legacyNote) || '—'}</div></div>
     `;
   }
-
-  const shelfSelect = isReading ? `
-    <select class="shelf-select" data-shelf-select="1">
-      ${SHELVES_READING.map((s) => `<option value="${escapeHtml(s)}" ${e.shelf === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
-    </select>` : '';
 
   return `
     <div class="detail-header">
@@ -4682,7 +4719,6 @@ function renderDetail(e) {
             <div class="cover-slot">${e.coverUrl ? `<img src="${escapeHtml(e.coverUrl)}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='🍆'">` : '🍆'}</div>
             <div class="cover-actions-row">
               <label class="upload-btn small">📷 ${e.coverUrl ? 'Change' : 'Upload'}<input type="file" accept="image/*" style="display:none" id="cover-upload-input"></label>
-              ${shelfSelect}
             </div>
           </div>
           <div>
@@ -4721,6 +4757,10 @@ function renderDetail(e) {
           <div class="rating-block">
             <div class="label">Overall</div>
             <div class="rating-icons" data-rating="qualityRating">${renderRatingIcons(e.qualityRating, '❤️')}</div>
+          </div>
+          <div class="rating-block">
+            <div class="label">LOL</div>
+            <div class="rating-icons" data-rating="lolRating">${renderRatingIcons(e.lolRating, '😂')}</div>
           </div>
         </div>
       </div>
@@ -5021,6 +5061,7 @@ function mergeEntryData(target, source) {
   target.favorite = !!(target.favorite || source.favorite);
   target.smutRating = Math.max(target.smutRating || 0, source.smutRating || 0);
   target.qualityRating = Math.max(target.qualityRating || 0, source.qualityRating || 0);
+  target.lolRating = Math.max(target.lolRating || 0, source.lolRating || 0);
   target.notes = mergeText(target.notes, source.notes);
 
   ['semi', 'uke'].forEach((k) => {
@@ -5544,7 +5585,7 @@ async function submitAdd() {
     shelf: STATE.format === 'reading' ? 'Plan to Read' : 'Completed',
     tags: [], customTags: [], notes: '', favorite: false,
     coverUrl: null, referenceUrl: null, referenceSite: null, referenceStatus: 'none', suggestedMatch: null,
-    summaryCache: null, summaryCachedAt: null, smutRating: 0, qualityRating: 0,
+    summaryCache: null, summaryCachedAt: null, smutRating: 0, qualityRating: 0, lolRating: 0,
     semi: { flag: null, notes: '', photo: null }, uke: { flag: null, notes: '', photo: null },
     screencaps: [], pdfLink: '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
   };
@@ -5697,6 +5738,9 @@ function attachRootHandlers() {
       if (!target) return;
       target.scrollBy({ left: Number(btn.getAttribute('data-dir')) * 300, behavior: 'smooth' });
     };
+  });
+  root.querySelectorAll('[data-toggle-home-section]').forEach((el) => {
+    el.onclick = async () => { await toggleHomeSectionCollapsed(el.getAttribute('data-toggle-home-section')); render(); };
   });
   root.querySelectorAll('[data-smut-filter]').forEach((el) => {
     el.onclick = () => {
@@ -6498,16 +6542,14 @@ function renderHomeInPlace() {
   if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter && !STATE.linkFilter) {
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
-      body += `<div class="section-title">🔎 Suggested Matches <span style="opacity:.6">(${suggestedGroup.length})</span></div>`;
-      body += scrollRow('row-suggested', suggestedGroup.map((e) => renderCoverCard(e, true)).join(''));
+      body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)).join(''));
     }
     const shelvesToShow = STATE.format === 'reading' ? SHELVES_READING : ['Completed'];
     shelvesToShow.forEach((shelf) => {
       const group = entries.filter((e) => e.shelf === shelf);
       if (group.length === 0) return;
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
-      body += `<div class="section-title">${escapeHtml(shelf)} <span style="opacity:.6">(${group.length})</span></div>`;
-      body += scrollRow(rowId, group.map((e) => renderCoverCard(e)).join(''));
+      body += homeSectionHtml(rowId, shelf, group.length, group.map((e) => renderCoverCard(e)).join(''));
     });
     if (!body) body = `<div class="empty-state">Nothing here yet.</div>`;
   } else {
@@ -6529,6 +6571,9 @@ function renderHomeInPlace() {
         if (!target) return;
         target.scrollBy({ left: Number(btn.getAttribute('data-dir')) * 300, behavior: 'smooth' });
       };
+    });
+    main.querySelectorAll('[data-toggle-home-section]').forEach((el) => {
+      el.onclick = async () => { await toggleHomeSectionCollapsed(el.getAttribute('data-toggle-home-section')); render(); };
     });
   }
 }
@@ -6977,6 +7022,8 @@ async function boot() {
     if (savedCustomMoods && Array.isArray(savedCustomMoods.value)) CUSTOM_MOODS = new Set(savedCustomMoods.value);
     const savedSuggCollapsed = await idbGet(STORE_META, 'tagSuggestionsCollapsed');
     if (savedSuggCollapsed && typeof savedSuggCollapsed.value === 'boolean') TAG_SUGGESTIONS_COLLAPSED = savedSuggCollapsed.value;
+    const savedHomeCollapsed = await idbGet(STORE_META, 'homeCollapsedSections');
+    if (savedHomeCollapsed && Array.isArray(savedHomeCollapsed.value)) HOME_COLLAPSED_SECTIONS = new Set(savedHomeCollapsed.value);
     const savedImageGroups = await idbGet(STORE_META, 'imageGroups');
     if (savedImageGroups && Array.isArray(savedImageGroups.value)) IMAGE_GROUPS = new Set(savedImageGroups.value);
     const savedImageTagMap = await idbGet(STORE_META, 'imageTagMap');
