@@ -82,6 +82,7 @@ let IGNORED_DUP_GROUPS = new Set();
 // which is why the same ~40 groups kept coming back for review forever.
 let IGNORED_IMAGE_DUP_GROUPS = new Set();
 let IGNORED_MEME_DUP_GROUPS = new Set();
+let IGNORED_H_DUP_GROUPS = new Set();
 // Which existing (entry-sourced) images the user has "pulled" into the H
 // tab — a Set of imageKey(dataUrl), same lightweight technique as
 // IMAGE_TAG_MAP below, so a photo already attached to a journal entry can be
@@ -117,6 +118,7 @@ let STATE = {
   smutFilter: null,         // null or 1-5, meaning "at least N eggplants"
   qualityFilter: null,      // null or 1-5, meaning "at least N hearts"
   flagFilter: null,         // null or 'green'|'red'|'black'
+  linkFilter: false,        // true = only show entries with a reading link attached
   search: '',
 };
 
@@ -474,6 +476,10 @@ async function pullMetaState() {
     if (Array.isArray(data.ignoredMemeDupGroups) && data.ignoredMemeDupGroups.length) {
       IGNORED_MEME_DUP_GROUPS = new Set([...IGNORED_MEME_DUP_GROUPS, ...data.ignoredMemeDupGroups]);
       await idbPut(STORE_META, { key: 'ignoredMemeDupGroups', value: Array.from(IGNORED_MEME_DUP_GROUPS) });
+    }
+    if (Array.isArray(data.ignoredHDupGroups) && data.ignoredHDupGroups.length) {
+      IGNORED_H_DUP_GROUPS = new Set([...IGNORED_H_DUP_GROUPS, ...data.ignoredHDupGroups]);
+      await idbPut(STORE_META, { key: 'ignoredHDupGroups', value: Array.from(IGNORED_H_DUP_GROUPS) });
     }
     if (Array.isArray(data.hImageKeys) && data.hImageKeys.length) {
       H_IMAGE_KEYS = new Set([...H_IMAGE_KEYS, ...data.hImageKeys]);
@@ -1259,6 +1265,13 @@ function openModal(html) {
   document.getElementById('overlay').classList.add('open');
 }
 
+// Images/Reactions/H all accept short video clips now, not just stills — this
+// is the one check every thumbnail/modal render site uses to decide between
+// an <img> and a <video> tag for a given dataUrl.
+function isVideoUrl(dataUrl) {
+  return typeof dataUrl === 'string' && dataUrl.startsWith('data:video/');
+}
+
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1754,6 +1767,7 @@ function renderGlobalHeader() {
         <span>🔍</span>
         <input type="search" id="search-input" placeholder="Search all reads &amp; anime..." value="${escapeHtml(STATE.search)}">
       </div>
+      <button class="header-add-btn" data-add-entry="1" title="Add new entry">+</button>
     </div>
     ${needsReconnect ? `
       <div class="drive-reconnect-banner">
@@ -1814,6 +1828,7 @@ function filteredEntries() {
       const hasFlag = (e.semi && e.semi.flag === STATE.flagFilter) || (e.uke && e.uke.flag === STATE.flagFilter);
       if (!hasFlag) return false;
     }
+    if (STATE.linkFilter && !e.readingLink) return false;
     if (q) {
       const hay = [e.title, e.altTitle, e.author, e.artist, e.notes, ...(e.tags || []), ...(e.customTags || [])]
         .filter(Boolean).join(' ').toLowerCase();
@@ -1985,7 +2000,7 @@ function renderHome() {
   const tags = topTags(ALL_ENTRIES.filter((e) => e.format === STATE.format));
 
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter && !STATE.linkFilter) {
     // Suggested-matches row sits above the shelf rows, same section-title +
     // horizontal-scroll treatment, so unconfirmed matches are easy to spot
     // and jump into without leaving the homepage.
@@ -2040,6 +2055,10 @@ function renderHome() {
   const hentaiChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showHentaiOnly ? 'active' : ''}" data-nav-filter="${STATE.showHentaiOnly ? 'home' : 'hentai'}" title="Hentai only">💦</span>`;
   const favoritesChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showFavoritesOnly ? 'active' : ''}" data-nav-filter="${STATE.showFavoritesOnly ? 'home' : 'favorites'}" title="Favorites only">💜</span>`;
   const onDriveChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showOnDriveOnly ? 'active' : ''}" data-nav-filter="${STATE.showOnDriveOnly ? 'home' : 'onDrive'}" title="On HD only">💾</span>`;
+  // Reading-link chip — unlike favorites/on-HD/hentai this doesn't replace
+  // the whole shelf, it's an additive AND-filter like smut/quality/flag, so
+  // it stacks with whatever else is already filtered.
+  const linkChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.linkFilter ? 'active' : ''}" data-link-filter="1" title="Has a reading link attached">🔗</span>`;
 
   return `
     <div class="app-header">
@@ -2050,11 +2069,10 @@ function renderHome() {
         <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
         <div class="filter-section-label">Ratings &amp; Flags</div>
-        <div class="rating-pick-row">${formatIcons}${hentaiChip}${favoritesChip}${onDriveChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${flagChips}</div>
+        <div class="rating-pick-row">${formatIcons}${hentaiChip}${favoritesChip}${onDriveChip}${linkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${flagChips}</div>
       </div>
     </div>
     <main>${body}</main>
-    <button class="fab" data-add-entry="1">+</button>
     ${renderBottomNav('home')}
   `;
 }
@@ -2804,7 +2822,7 @@ function renderReactionsLibrary() {
         <div class="cover-placeholder" style="height:100%;">⏳</div>
       </div>`
     : `<div class="masonry-item ${IMAGE_SELECT_MODE ? 'selectable' : ''} ${IMAGE_SELECTED.has(img.dataUrl) ? 'selected' : ''}" data-images-item="${escapeHtml(img.dataUrl)}">
-      <img src="${img.dataUrl}" alt="" loading="lazy">
+      ${isVideoUrl(img.dataUrl) ? `<video src="${img.dataUrl}" muted></video>` : `<img src="${img.dataUrl}" alt="" loading="lazy">`}
       ${IMAGE_SELECT_MODE ? `<span class="select-check">${IMAGE_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : ''}
       ${!IMAGE_SELECT_MODE && img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : ''}
       ${!IMAGE_SELECT_MODE && img.reactionId ? `<button class="del" data-del-reaction="${img.reactionId}">✕</button>` : ''}
@@ -2843,7 +2861,7 @@ function renderReactionsLibrary() {
       <div class="brand-row"><h1>🖼️ Images</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${items.length} image${items.length === 1 ? '' : 's'} across the app. Tap one to see which reads it's attached to.</div>
       <div class="export-row" style="margin-bottom:10px;">
-        <label class="upload-btn" style="flex:1;">📎 Add image(s)<input type="file" accept="image/*" multiple id="reaction-upload-input"></label>
+        <label class="upload-btn" style="flex:1;">📎 Add image(s)<input type="file" accept="image/*,video/*" multiple id="reaction-upload-input"></label>
         <button class="ref-btn" data-images-toggle-select="1">${IMAGE_SELECT_MODE ? '✕ Cancel select' : '☑️ Select'}</button>
       </div>
       ${IMAGE_SELECT_MODE ? `
@@ -2927,7 +2945,9 @@ async function openImageAttachmentsModal(dataUrl) {
   const inH = isDataUrlInH(dataUrl);
   openModal(`
     <h3>Attached to</h3>
-    <img src="${dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">
+    ${isVideoUrl(dataUrl)
+      ? `<video src="${dataUrl}" controls playsinline style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
+      : `<img src="${dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">`}
     ${entries.length
       ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;">${entries.map((e) => `
           <button class="ref-btn" style="text-align:left;" data-goto-entry-from-modal="${e.id}">${escapeHtml(e.title)}</button>`).join('')}</div>`
@@ -3068,7 +3088,7 @@ function renderMemeGrid() {
     ? `<div class="image-masonry">${items.map((r) => `
         <div class="masonry-item" data-open-meme="${r.id}">
           ${r.dataUrl
-            ? `<img src="${r.dataUrl}" alt="" loading="lazy">`
+            ? (isVideoUrl(r.dataUrl) ? `<video src="${r.dataUrl}" muted></video>` : `<img src="${r.dataUrl}" alt="" loading="lazy">`)
             : `<div class="cover-placeholder" title="Still downloading from Drive…">⏳</div>`}
           ${!(r.moodTags || []).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
         </div>`).join('')}</div>`
@@ -3146,7 +3166,7 @@ function memeMainBody() {
         </div>
         <div class="image-masonry">${group.map((r) => `
           <div class="masonry-item" data-open-meme="${r.id}">
-            <img src="${r.dataUrl}" alt="" loading="lazy">
+            ${isVideoUrl(r.dataUrl) ? `<video src="${r.dataUrl}" muted></video>` : `<img src="${r.dataUrl}" alt="" loading="lazy">`}
             <button class="del" data-del-reaction="${r.id}">✕</button>
           </div>`).join('')}</div>
       </div>`).join('');
@@ -3171,7 +3191,7 @@ function renderMemeLibrary() {
     <div class="app-header">
       <div class="brand-row"><h1>🎭 Reactions</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${ALL_REACTIONS.length} meme${ALL_REACTIONS.length === 1 ? '' : 's'} saved${untaggedCount ? ` · ${untaggedCount} untagged` : ''}.</div>
-      <label class="upload-btn" style="margin-bottom:10px;">📎 Add reaction(s)<input type="file" accept="image/*" multiple id="meme-upload-input"></label>
+      <label class="upload-btn" style="margin-bottom:10px;">📎 Add reaction(s)<input type="file" accept="image/*,video/*" multiple id="meme-upload-input"></label>
       <div class="search-bar" style="margin-bottom:8px;"><span>🔍</span><input type="search" id="meme-search-input" placeholder="Search captions/keywords..." value="${escapeHtml(MEME_STATE.search)}"></div>
       <div class="tagmgr-tabs" style="margin-bottom:8px;">
         <button class="tagmgr-tab ${!MEME_SHOWING_DUPLICATES ? 'active' : ''}" data-meme-tab="grid">Gallery</button>
@@ -3215,7 +3235,9 @@ function openMemeEditModal(id) {
       <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
       <h3>Edit reaction</h3>
       ${r.dataUrl
-        ? `<img src="${r.dataUrl}" alt="" style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`
+        ? (isVideoUrl(r.dataUrl)
+            ? `<video src="${r.dataUrl}" controls playsinline style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
+            : `<img src="${r.dataUrl}" alt="" style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`)
         : `<div class="cover-placeholder" style="height:180px;margin-bottom:10px;">⏳ Still downloading from Drive…</div>`}
     <div class="field-row"><label>Caption/keywords (for search)</label><input type="text" id="meme-note-input" value="${escapeHtml(r.note || '')}" placeholder="e.g. blushing, screaming, oh no"></div>
     <div class="field-row">
@@ -3235,7 +3257,7 @@ function openMemeEditModal(id) {
     ` : ''}
       <div class="modal-actions">
         <button class="btn-ghost" data-delete-meme="${r.id}">🗑️ Delete</button>
-        ${r.dataUrl && !/^data:image\/(gif|webp)/.test(r.dataUrl) ? `<button class="btn-ghost" data-crop-meme="${r.id}">✂️ Crop</button>` : ''}
+        ${r.dataUrl && !isVideoUrl(r.dataUrl) && !/^data:image\/(gif|webp)/.test(r.dataUrl) ? `<button class="btn-ghost" data-crop-meme="${r.id}">✂️ Crop</button>` : ''}
         <button class="btn-primary" data-close-modal="1">Done</button>
       </div>
     </div>
@@ -3392,7 +3414,10 @@ function showOversizedFilesModal(oversizedFiles) {
   const items = oversizedFiles.map((file) => {
     const url = URL.createObjectURL(file);
     const mb = (file.size / (1024 * 1024)).toFixed(1);
-    return `<div style="margin-bottom:12px;"><img src="${url}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;background:#000;margin-bottom:6px;"><div style="font-size:13px;">${escapeHtml(file.name)} — ${mb}MB</div></div>`;
+    const preview = file.type.startsWith('video/')
+      ? `<video src="${url}" muted controls style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;background:#000;margin-bottom:6px;"></video>`
+      : `<img src="${url}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;background:#000;margin-bottom:6px;">`;
+    return `<div style="margin-bottom:12px;">${preview}<div style="font-size:13px;">${escapeHtml(file.name)} — ${mb}MB</div></div>`;
   }).join('');
   openModal(`
     <div class="modal-close-corner-wrap">
@@ -3417,7 +3442,11 @@ async function addReactionFiles(fileList) {
     // gallery grid and in the single-reaction edit view; only flatten/
     // downscale the normal static-image case.
     const isAnimated = file.type === 'image/gif' || file.type === 'image/webp';
-    const dataUrl = isAnimated ? await fileToDataUrl(file) : await fileToCompressedDataUrl(file, 800);
+    // Video clips get the same "leave the original bytes alone" treatment as
+    // animated GIF/WebP — canvas re-encoding only makes sense for a static
+    // image, and would silently mangle a video into a single frame.
+    const isVideo = file.type.startsWith('video/');
+    const dataUrl = (isAnimated || isVideo) ? await fileToDataUrl(file) : await fileToCompressedDataUrl(file, 800);
     const hash = await hashDataUrl(dataUrl);
     const dupe = findReactionByHash(hash);
     if (dupe) {
@@ -3426,7 +3455,7 @@ async function addReactionFiles(fileList) {
     const reaction = { id: uid('reaction'), dataUrl, hash, moodTags: [], note: '', createdAt: new Date().toISOString() };
     await saveReaction(reaction);
     added.push(reaction);
-    const ext = isAnimated ? (file.type === 'image/gif' ? 'gif' : 'webp') : 'jpg';
+    const ext = isVideo ? (file.type.split('/')[1] || 'mp4') : (isAnimated ? (file.type === 'image/gif' ? 'gif' : 'webp') : 'jpg');
     tryUploadImageToDrive(dataUrl, `reaction-${reaction.id}.${ext}`, 'reaction').then((fileId) => {
       if (!fileId) return;
       const fresh = ALL_REACTIONS.find((r) => r.id === reaction.id);
@@ -3444,9 +3473,9 @@ function openReactionPickerModal(entryId) {
   openModal(`
     <h3>🖼️ Add from Images</h3>
     <p style="font-size:12px;color:var(--text-dim);">Tap to select, then Add. Or upload a brand-new one straight into this entry.</p>
-    <label class="upload-btn" style="margin-bottom:10px;">📎 Upload new<input type="file" accept="image/*" multiple id="reaction-picker-upload"></label>
+    <label class="upload-btn" style="margin-bottom:10px;">📎 Upload new<input type="file" accept="image/*,video/*" multiple id="reaction-picker-upload"></label>
     <div class="reaction-picker-grid" id="reaction-picker-grid">
-      ${items.length ? items.map((r) => `<div class="reaction-thumb pickable" data-pick-reaction="${r.id}"><img src="${r.dataUrl}" alt=""></div>`).join('') : '<div class="empty-state">No images saved yet — upload one above.</div>'}
+      ${items.length ? items.map((r) => `<div class="reaction-thumb pickable" data-pick-reaction="${r.id}">${isVideoUrl(r.dataUrl) ? `<video src="${r.dataUrl}" muted></video>` : `<img src="${r.dataUrl}" alt="">`}</div>`).join('') : '<div class="empty-state">No images saved yet — upload one above.</div>'}
     </div>
     <div class="modal-actions">
       <button class="btn-ghost" data-close-modal="1">Cancel</button>
@@ -3681,7 +3710,8 @@ async function addHImageFiles(fileList) {
   for (const file of fileList) {
     if (file.size > MAX_REACTION_FILE_BYTES) { oversized.push(file); continue; }
     const isAnimated = file.type === 'image/gif' || file.type === 'image/webp';
-    const dataUrl = isAnimated ? await fileToDataUrl(file) : await fileToCompressedDataUrl(file, 900);
+    const isVideo = file.type.startsWith('video/');
+    const dataUrl = (isAnimated || isVideo) ? await fileToDataUrl(file) : await fileToCompressedDataUrl(file, 900);
     const hash = await hashDataUrl(dataUrl);
     const dupe = findHImageByHash(hash);
     if (dupe) {
@@ -3690,7 +3720,7 @@ async function addHImageFiles(fileList) {
     const hImage = { id: uid('h'), dataUrl, hash, createdAt: new Date().toISOString() };
     await saveHImage(hImage);
     added.push(hImage);
-    const ext = isAnimated ? (file.type === 'image/gif' ? 'gif' : 'webp') : 'jpg';
+    const ext = isVideo ? (file.type.split('/')[1] || 'mp4') : (isAnimated ? (file.type === 'image/gif' ? 'gif' : 'webp') : 'jpg');
     tryUploadImageToDrive(dataUrl, `h-${hImage.id}.${ext}`, 'h').then((fileId) => {
       if (!fileId) return;
       const fresh = ALL_H_IMAGES.find((x) => x.id === hImage.id);
@@ -3840,8 +3870,6 @@ function allHImages() {
   return [...entryItems, ...uploadItems].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 }
 
-let H_SELECT_MODE = false;
-let H_SELECTED = new Set();
 let H_GROUP_FILTER = null;
 // Same shape/behavior as MEME_STATE, so the H gallery's search/untagged
 // filtering works exactly like the Reactions gallery's.
@@ -3849,23 +3877,95 @@ let H_STATE = { search: '', untaggedOnly: false };
 
 function hFilteredItems() {
   const q = H_STATE.search.trim().toLowerCase();
-  let items = allHImages();
+  // Untagged-first, same rule as the Reactions gallery (memeFilteredItems)
+  // — images still needing a group sort to the top, and drop out of that
+  // top spot as soon as they're assigned one.
+  let items = allHImages().slice().sort((a, b) => {
+    const aUntagged = !getHTags(a.dataUrl).length;
+    const bUntagged = !getHTags(b.dataUrl).length;
+    if (aUntagged !== bUntagged) return aUntagged ? -1 : 1;
+    return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+  });
   if (H_GROUP_FILTER) items = items.filter((i) => getHTags(i.dataUrl).includes(H_GROUP_FILTER));
   if (H_STATE.untaggedOnly) items = items.filter((i) => !getHTags(i.dataUrl).length);
   if (q) items = items.filter((i) => getHNote(i.dataUrl).toLowerCase().includes(q));
   return items;
 }
 
-function hMainBody() {
-  const items = hFilteredItems();
-  const masonryItem = (img) => `
-    <div class="masonry-item ${H_SELECT_MODE ? 'selectable' : ''} ${H_SELECTED.has(img.dataUrl) ? 'selected' : ''}" data-h-item="${escapeHtml(img.dataUrl)}">
-      <img src="${img.dataUrl}" alt="" loading="lazy">
-      ${H_SELECT_MODE ? `<span class="select-check">${H_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : ''}
-      ${!H_SELECT_MODE && !getHTags(img.dataUrl).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
+function hMasonryItem(img) {
+  return `
+    <div class="masonry-item" data-h-item="${escapeHtml(img.dataUrl)}">
+      ${isVideoUrl(img.dataUrl) ? `<video src="${img.dataUrl}" muted></video>` : `<img src="${img.dataUrl}" alt="" loading="lazy">`}
+      ${!getHTags(img.dataUrl).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
     </div>`;
+}
+
+// Possible-Duplicates for H — same perceptual-hash approach as the
+// Reactions/Images scanners, just scoped to allHImages().
+let H_DUP_GROUPS = null;
+let H_DUP_SCANNING = false;
+let H_SHOWING_DUPLICATES = false;
+function hDupSignature(group) {
+  return group.map((i) => i.id || i.dataUrl).sort().join('|');
+}
+function persistIgnoredHDupGroups() {
+  idbPut(STORE_META, { key: 'ignoredHDupGroups', value: Array.from(IGNORED_H_DUP_GROUPS) });
+  pushMetaField('ignoredHDupGroups', Array.from(IGNORED_H_DUP_GROUPS));
+}
+function dismissHDupGroup(idx) {
+  if (!H_DUP_GROUPS || !H_DUP_GROUPS[idx]) return;
+  IGNORED_H_DUP_GROUPS.add(hDupSignature(H_DUP_GROUPS[idx]));
+  persistIgnoredHDupGroups();
+  H_DUP_GROUPS = H_DUP_GROUPS.filter((_, i) => i !== idx);
+  render();
+}
+async function scanForHDuplicates() {
+  H_DUP_SCANNING = true;
+  render();
+  const items = allHImages().filter((i) => i.dataUrl);
+  const withHashes = [];
+  for (const i of items) {
+    const hash = await perceptualHash(i.dataUrl);
+    withHashes.push({ i, hash });
+  }
+  const groups = [];
+  const used = new Set();
+  for (let i = 0; i < withHashes.length; i++) {
+    if (used.has(i) || !withHashes[i].hash) continue;
+    const group = [withHashes[i].i];
+    used.add(i);
+    for (let j = i + 1; j < withHashes.length; j++) {
+      if (used.has(j) || !withHashes[j].hash) continue;
+      if (hammingDistance(withHashes[i].hash, withHashes[j].hash) <= 6) {
+        group.push(withHashes[j].i);
+        used.add(j);
+      }
+    }
+    if (group.length > 1 && !IGNORED_H_DUP_GROUPS.has(hDupSignature(group))) groups.push(group);
+  }
+  H_DUP_GROUPS = groups;
+  H_DUP_SCANNING = false;
+  render();
+}
+
+function hMainBody() {
+  if (H_SHOWING_DUPLICATES) {
+    if (H_DUP_SCANNING) return `<div class="empty-state">Scanning ${allHImages().length} H images for duplicates…</div>`;
+    if (H_DUP_GROUPS === null) return `<div style="padding:8px 0;"><button class="btn-primary" style="width:100%;" data-scan-h-duplicates="1">🔍 Scan for possible duplicates</button></div>`;
+    if (!H_DUP_GROUPS.length) return `<div class="empty-state">No possible duplicates found. 🎉</div><button class="ref-btn" style="width:100%;" data-scan-h-duplicates="1">Scan again</button>`;
+    return `<button class="ref-btn" style="width:100%;margin-bottom:10px;" data-scan-h-duplicates="1">Scan again</button>` +
+      H_DUP_GROUPS.map((group, idx) => `
+        <div class="panel">
+          <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <span>Possible duplicate (${group.length} images)</span>
+            <button class="ref-btn" style="flex:0 0 auto;padding:4px 10px;font-size:12px;" data-dismiss-h-dup-group="${idx}">Not duplicates</button>
+          </div>
+          <div class="image-masonry">${group.map(hMasonryItem).join('')}</div>
+        </div>`).join('');
+  }
+  const items = hFilteredItems();
   return items.length
-    ? `<div class="image-masonry">${items.map(masonryItem).join('')}</div>`
+    ? `<div class="image-masonry">${items.map(hMasonryItem).join('')}</div>`
     : `<div class="empty-state">${H_GROUP_FILTER || H_STATE.search || H_STATE.untaggedOnly ? 'No H images match. Try clearing the filter/search.' : 'No H images yet. Pull some in from Images or Reactions (open one → 🔴 Pull into H), or upload directly above.'}</div>`;
 }
 
@@ -3878,30 +3978,27 @@ function renderHLibraryInPlace() {
 function renderHLibrary() {
   const untaggedCount = allHImages().filter((i) => !getHTags(i.dataUrl).length).length;
   const groupList = Array.from(H_GROUPS).sort((a, b) => a.localeCompare(b));
-  const groupChips = groupList.map((name) => `<button class="mood-chip ${H_GROUP_FILTER === name ? 'active' : ''}" data-h-group-filter="${escapeHtml(name)}">🏷️ ${escapeHtml(name)}</button>`).join('');
+  // No 🏷️ prefix here, same as the Reactions mood-chip row — matches how
+  // she wanted the top controls of H to read like the Reactions tab's.
+  const groupChips = groupList.map((name) => `<button class="mood-chip ${H_GROUP_FILTER === name ? 'active' : ''}" data-h-group-filter="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join('');
   return `
     <div class="app-header">
       <div class="brand-row"><h1><span class="icon-h" style="font-size:20px;">H</span> Hentai</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${allHImages().length} image${allHImages().length === 1 ? '' : 's'} saved${untaggedCount ? ` · ${untaggedCount} untagged` : ''} — kept separate from the rest of the app.</div>
-      <div class="export-row" style="margin-bottom:10px;">
-        <label class="upload-btn" style="flex:1;">📎 Add image(s)<input type="file" accept="image/*" multiple id="h-upload-input"></label>
-        <button class="ref-btn" data-h-toggle-select="1">${H_SELECT_MODE ? '✕ Cancel select' : '☑️ Select'}</button>
-      </div>
-      ${H_SELECT_MODE ? `
-        <div class="export-row" style="margin-bottom:10px;background:var(--card);border:1px solid var(--purple);border-radius:var(--radius-sm);padding:8px;">
-          <div style="flex:1;font-size:12.5px;color:var(--text-dim);align-self:center;">${H_SELECTED.size} selected</div>
-          <button class="ref-btn" data-h-remove-selected="1" ${H_SELECTED.size ? '' : 'disabled'}>🗑️ Remove selected</button>
-        </div>
-      ` : ''}
+      <label class="upload-btn" style="margin-bottom:10px;">📎 Add image(s)<input type="file" accept="image/*,video/*" multiple id="h-upload-input"></label>
       <div class="search-bar" style="margin-bottom:8px;"><span>🔍</span><input type="search" id="h-search-input" placeholder="Search captions/keywords..." value="${escapeHtml(H_STATE.search)}"></div>
       <div class="tagmgr-tabs" style="margin-bottom:8px;">
+        <button class="tagmgr-tab ${!H_SHOWING_DUPLICATES ? 'active' : ''}" data-h-tab="grid">Gallery</button>
+        <button class="tagmgr-tab ${H_SHOWING_DUPLICATES ? 'active' : ''}" data-h-tab="duplicates">Possible Duplicates</button>
         <button class="ref-btn ${H_STATE.untaggedOnly ? 'active' : ''}" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;${H_STATE.untaggedOnly ? 'background:var(--purple);color:#fff;' : ''}" data-h-untagged-only="1" title="Show only untagged H images">${untaggedCount} untagged</button>
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-h-manage-groups="1" title="Manage H groups (rename/delete)">✏️ Manage</button>
       </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
-        ${groupChips}
-        <button class="mood-chip" data-h-add-group="1">➕ New group</button>
-      </div>
+      ${!H_SHOWING_DUPLICATES ? `
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+          ${groupChips}
+          <button class="mood-chip" data-h-add-group="1">➕ New group</button>
+        </div>
+      ` : ''}
     </div>
     <main>${hMainBody()}</main>
     ${renderBottomNav('h')}
@@ -3919,14 +4016,16 @@ async function openHImageModal(dataUrl) {
       <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
       <h3><span class="icon-h">H</span> image</h3>
       ${dataUrl
-        ? `<img src="${dataUrl}" alt="" style="width:100%;max-height:60vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`
+        ? (isVideoUrl(dataUrl)
+            ? `<video src="${dataUrl}" controls playsinline style="width:100%;max-height:60vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
+            : `<img src="${dataUrl}" alt="" style="width:100%;max-height:60vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`)
         : `<div class="cover-placeholder" style="height:180px;margin-bottom:10px;">⏳ Still downloading from Drive…</div>`}
       ${entries.length ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Pulled from: ${entries.map((e) => escapeHtml(e.title)).join(', ')}</div>` : ''}
       <div class="field-row"><label>Caption/keywords (for search)</label><input type="text" id="h-note-input" value="${escapeHtml(getHNote(dataUrl))}" placeholder="e.g. favorite, wallpaper-worthy"></div>
       <div class="field-row">
         <label>Groups</label>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
-          ${groupList.map((name) => `<button class="mood-chip ${currentTags.includes(name) ? 'active' : ''}" data-toggle-h-tag="${escapeHtml(name)}" data-h-url="${escapeHtml(dataUrl)}">🏷️ ${escapeHtml(name)}</button>`).join('')}
+          ${groupList.map((name) => `<button class="mood-chip ${currentTags.includes(name) ? 'active' : ''}" data-toggle-h-tag="${escapeHtml(name)}" data-h-url="${escapeHtml(dataUrl)}">${escapeHtml(name)}</button>`).join('')}
           <button class="mood-chip" data-h-add-group-for="${escapeHtml(dataUrl)}">➕ New group</button>
         </div>
       </div>
@@ -3935,9 +4034,10 @@ async function openHImageModal(dataUrl) {
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
           ${mediaToggleButtonsHtml(dataUrl, inReactions, true)}
         </div>
-        ${upload ? `<div style="font-size:11px;color:var(--text-dim);margin-top:6px;">This image only lives in H — turning "In H" off deletes it, since it has no entry or other library to fall back to.</div>` : ''}
+        ${upload ? `<div style="font-size:11px;color:var(--text-dim);margin-top:6px;">Deleting removes this image entirely — it has no entry or other library to fall back to.</div>` : `<div style="font-size:11px;color:var(--text-dim);margin-top:6px;">Deleting removes it from H only — the entry it came from keeps its photo.</div>`}
       </div>
       <div class="modal-actions">
+        <button class="btn-ghost" data-delete-h-image="${escapeHtml(dataUrl)}">🗑️ Delete</button>
         <button class="btn-primary" data-close-modal="1">Done</button>
       </div>
     </div>
@@ -3948,28 +4048,26 @@ async function openHImageModal(dataUrl) {
 
 function attachHGridHandlers() {
   document.querySelectorAll('[data-h-item]').forEach((el) => {
+    el.onclick = () => openHImageModal(el.getAttribute('data-h-item'));
+  });
+  document.querySelectorAll('[data-h-tab]').forEach((el) => {
+    el.onclick = () => { H_SHOWING_DUPLICATES = el.getAttribute('data-h-tab') === 'duplicates'; render(); };
+  });
+  const scanHDupBtn = document.querySelector('[data-scan-h-duplicates]');
+  if (scanHDupBtn) scanHDupBtn.onclick = () => scanForHDuplicates();
+  document.querySelectorAll('[data-dismiss-h-dup-group]').forEach((el) => {
+    el.onclick = (ev) => { ev.stopPropagation(); dismissHDupGroup(Number(el.getAttribute('data-dismiss-h-dup-group'))); };
+  });
+  document.querySelectorAll('[data-delete-h-image]').forEach((el) => {
     el.onclick = () => {
-      const url = el.getAttribute('data-h-item');
-      if (H_SELECT_MODE) {
-        if (H_SELECTED.has(url)) H_SELECTED.delete(url); else H_SELECTED.add(url);
-        render();
-      } else {
-        openHImageModal(url);
-      }
+      const url = el.getAttribute('data-delete-h-image');
+      if (!confirm('Delete this H image?')) return;
+      removeFromH(url);
+      closeModal();
+      showToast('Deleted');
+      render();
     };
   });
-  const toggleSelectBtn = document.querySelector('[data-h-toggle-select]');
-  if (toggleSelectBtn) toggleSelectBtn.onclick = () => { H_SELECT_MODE = !H_SELECT_MODE; H_SELECTED = new Set(); render(); };
-  const removeSelectedBtn = document.querySelector('[data-h-remove-selected]');
-  if (removeSelectedBtn) removeSelectedBtn.onclick = () => {
-    if (!H_SELECTED.size) return;
-    if (!confirm(`Remove ${H_SELECTED.size} image(s) from H?`)) return;
-    Array.from(H_SELECTED).forEach((url) => removeFromH(url));
-    H_SELECT_MODE = false;
-    H_SELECTED = new Set();
-    showToast('Removed');
-    render();
-  };
   document.querySelectorAll('[data-h-group-filter]').forEach((el) => {
     el.onclick = () => { const g = el.getAttribute('data-h-group-filter'); H_GROUP_FILTER = H_GROUP_FILTER === g ? null : g; render(); };
   });
@@ -4259,11 +4357,9 @@ function renderDetail(e) {
 
   return `
     <div class="detail-header">
-      <div class="detail-header-top">
+      <div class="detail-header-row">
         <button class="back-btn" data-nav-back="1">← Back</button>
         <h2>${escapeHtml(e.title)}</h2>
-      </div>
-      <div class="detail-header-icons">
         <div class="icon-action">
           <button class="icon-btn save" data-force-save="1" title="Save now">✅</button>
           <span class="icon-label">Save</span>
@@ -5213,6 +5309,7 @@ function attachRootHandlers() {
         STATE.smutFilter = null;
         STATE.qualityFilter = null;
         STATE.flagFilter = null;
+        STATE.linkFilter = false;
         FILTERS_COLLAPSED = false;
       }
       navigate(view);
@@ -5263,7 +5360,7 @@ function attachRootHandlers() {
     searchInput.onkeydown = (ev) => { if (ev.key === 'Enter') searchInput.blur(); };
   }
   root.querySelectorAll('[data-format]').forEach((el) => {
-    el.onclick = () => { STATE.format = el.getAttribute('data-format'); STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.flagFilter = null; render(); };
+    el.onclick = () => { STATE.format = el.getAttribute('data-format'); STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.flagFilter = null; STATE.linkFilter = false; render(); };
   });
   root.querySelectorAll('[data-shelf]').forEach((el) => {
     el.onclick = () => { STATE.shelf = el.getAttribute('data-shelf'); render(); };
@@ -5315,6 +5412,12 @@ function attachRootHandlers() {
     el.onclick = () => {
       const c = el.getAttribute('data-flag-filter');
       STATE.flagFilter = STATE.flagFilter === c ? null : c;
+      render();
+    };
+  });
+  root.querySelectorAll('[data-link-filter]').forEach((el) => {
+    el.onclick = () => {
+      STATE.linkFilter = !STATE.linkFilter;
       render();
     };
   });
@@ -6071,7 +6174,7 @@ function renderHomeInPlace() {
   const main = root.querySelector('main');
   const entries = filteredEntries();
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter && !STATE.linkFilter) {
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
       body += `<div class="section-title">🔎 Suggested Matches <span style="opacity:.6">(${suggestedGroup.length})</span></div>`;
@@ -6560,6 +6663,8 @@ async function boot() {
     if (savedIgnoredImageDup && Array.isArray(savedIgnoredImageDup.value)) IGNORED_IMAGE_DUP_GROUPS = new Set(savedIgnoredImageDup.value);
     const savedIgnoredMemeDup = await idbGet(STORE_META, 'ignoredMemeDupGroups');
     if (savedIgnoredMemeDup && Array.isArray(savedIgnoredMemeDup.value)) IGNORED_MEME_DUP_GROUPS = new Set(savedIgnoredMemeDup.value);
+    const savedIgnoredHDup = await idbGet(STORE_META, 'ignoredHDupGroups');
+    if (savedIgnoredHDup && Array.isArray(savedIgnoredHDup.value)) IGNORED_H_DUP_GROUPS = new Set(savedIgnoredHDup.value);
     const savedHImageKeys = await idbGet(STORE_META, 'hImageKeys');
     if (savedHImageKeys && Array.isArray(savedHImageKeys.value)) H_IMAGE_KEYS = new Set(savedHImageKeys.value);
     const savedHGroups = await idbGet(STORE_META, 'hGroups');
