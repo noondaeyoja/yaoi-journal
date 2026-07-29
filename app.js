@@ -117,6 +117,7 @@ let STATE = {
   tagFilters: [],           // array of tag strings; entry matches if it has ANY of these
   smutFilter: null,         // null or 1-5, meaning "at least N eggplants"
   qualityFilter: null,      // null or 1-5, meaning "at least N hearts"
+  lolFilter: null,          // null or 1-5, meaning "at least N laughing faces"
   flagFilter: null,         // null or 'green'|'red'|'black'
   linkFilter: false,        // true = only show entries with a reading link attached
   search: '',
@@ -1864,6 +1865,7 @@ function filteredEntries() {
     }
     if (STATE.smutFilter && (e.smutRating || 0) < STATE.smutFilter) return false;
     if (STATE.qualityFilter && (e.qualityRating || 0) < STATE.qualityFilter) return false;
+    if (STATE.lolFilter && (e.lolRating || 0) < STATE.lolFilter) return false;
     if (STATE.flagFilter) {
       const hasFlag = (e.semi && e.semi.flag === STATE.flagFilter) || (e.uke && e.uke.flag === STATE.flagFilter);
       if (!hasFlag) return false;
@@ -2057,7 +2059,7 @@ function renderHome() {
   const tags = topTags(ALL_ENTRIES.filter((e) => e.format === STATE.format));
 
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter && !STATE.linkFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.flagFilter && !STATE.linkFilter) {
     // Suggested-matches row sits above the shelf rows, same section-title +
     // horizontal-scroll treatment, so unconfirmed matches are easy to spot
     // and jump into without leaving the homepage.
@@ -2103,6 +2105,7 @@ function renderHome() {
 
   const smutChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.smutFilter && n <= STATE.smutFilter ? 'active' : ''}" data-smut-filter="${n}" title="${n}+ eggplants">🍆</span>`).join('');
   const qualityChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.qualityFilter && n <= STATE.qualityFilter ? 'active' : ''}" data-quality-filter="${n}" title="${n}+ hearts">❤️</span>`).join('');
+  const lolChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.lolFilter && n <= STATE.lolFilter ? 'active' : ''}" data-lol-filter="${n}" title="${n}+ laughs">😂</span>`).join('');
   const flagChips = FLAG_COLORS.map((c) => `<span class="rating-pick-icon flag-filter-icon ${STATE.flagFilter === c ? 'active' : ''}" data-flag-filter="${c}" style="color:${FLAG_HEX[c]}" title="${c} flag">&#9873;</span>`).join('');
   // Favorites/On HD used to be separate bottom-nav destinations; they're now
   // toggle chips here instead (same nav-filter mechanism the hentai chip
@@ -2124,7 +2127,7 @@ function renderHome() {
         <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
         <div class="filter-section-label">Ratings &amp; Flags</div>
-        <div class="rating-pick-row">${formatIcons}${hentaiChip}${favoritesChip}${onDriveChip}${linkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${flagChips}</div>
+        <div class="rating-pick-row">${formatIcons}${hentaiChip}${favoritesChip}${onDriveChip}${linkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}${lolChips}<span class="rating-pick-divider"></span>${flagChips}</div>
       </div>
     </div>
     <main>${body}</main>
@@ -2541,11 +2544,18 @@ function entryImageUrls(e) {
   return [...(e.screencaps || []), e.semi && e.semi.photo, e.uke && e.uke.photo].filter(Boolean);
 }
 
-// Images = only pictures that live on a journal entry (screencaps, semi/uke
-// photos) — always attached to a read, by definition. The standalone meme
-// library (bottom-nav "Reactions") is a completely separate collection, kept
-// out of this aggregation, since reactions are meant to stay unattached to
-// any specific entry and organized by mood tag instead (see renderMemeLibrary).
+// Images gallery = the individual-reads images container: pictures that live
+// on a journal entry (screencaps, semi/uke photos, always attached to a
+// read) PLUS anything uploaded directly through the Images tab's own upload
+// button (tagged source: 'images' by addReactionFiles — see below). Here,
+// "Unattached" means "no individual read item attached to it".
+// The standalone Reactions library (bottom-nav "Reactions") is a separate
+// collection, organized by mood tag instead of by read — its uploads are
+// tagged source: 'reactions' and deliberately excluded from this
+// aggregation, so a picture saved as a mood reaction doesn't also clutter
+// the Images gallery. There, "attached"/"unattached" instead means whether
+// it's been sorted into a mood group yet (see renderMemeLibrary /
+// renderHLibrary) — a different axis entirely from entry-attachment.
 function allAppImages() {
   const map = new Map();
   // Images this device knows exist (has a Drive id for) but hasn't
@@ -2598,9 +2608,15 @@ function allAppImages() {
   // they'd never show up in the `map` built above — that's what made direct
   // uploads to Images invisible (no count bump, nothing in "Unattached").
   // Fold in any ALL_REACTIONS record whose dataUrl isn't already accounted
-  // for by an entry, skipping anything already pulled into H.
+  // for by an entry, skipping anything already pulled into H — but only ones
+  // sourced from the Images tab itself (source: 'images', or no source at
+  // all, meaning it predates this distinction and stays visible so nothing
+  // already-shown here disappears). True Reactions-tab uploads (source:
+  // 'reactions') are excluded — they belong exclusively to the standalone
+  // mood-tagged Reactions library now, not this "individual reads images"
+  // gallery, per her clarification on what "Unattached" should mean here.
   const standaloneReactions = ALL_REACTIONS
-    .filter((r) => r.dataUrl && !map.has(r.dataUrl) && !H_IMAGE_KEYS.has(imageKey(r.dataUrl)))
+    .filter((r) => r.dataUrl && !map.has(r.dataUrl) && !H_IMAGE_KEYS.has(imageKey(r.dataUrl)) && r.source !== 'reactions')
     .map((r) => ({
       dataUrl: r.dataUrl,
       reactionId: r.id,
@@ -2774,7 +2790,10 @@ async function attachImagesToEntry(dataUrls, entryId) {
 async function addImageAsReaction(dataUrl) {
   const hash = await hashDataUrl(dataUrl);
   if (findReactionByHash(hash)) return null;
-  const reaction = { id: uid('reaction'), dataUrl, hash, moodTags: [], note: '', createdAt: new Date().toISOString() };
+  // "Add as reactions" (Images gallery -> Reactions library) — the resulting
+  // record is meant to live and be organized by mood tag from here on, so it
+  // gets source: 'reactions' just like a direct Reactions-tab upload would.
+  const reaction = { id: uid('reaction'), dataUrl, hash, moodTags: [], note: '', source: 'reactions', createdAt: new Date().toISOString() };
   await saveReaction(reaction);
   tryUploadImageToDrive(dataUrl, `reaction-${reaction.id}.jpg`, 'reaction').then((fileId) => {
     if (!fileId) return;
@@ -2961,7 +2980,7 @@ function renderReactionsLibrary() {
         <button class="tagmgr-tab ${IMAGES_TAB === 'attached' ? 'active' : ''}" data-images-tab="attached">Attached (${attached.length})</button>
         <button class="tagmgr-tab ${IMAGES_TAB === 'unattached' ? 'active' : ''}" data-images-tab="unattached">Unattached (${unattached.length})</button>
         <button class="tagmgr-tab ${IMAGES_TAB === 'duplicates' ? 'active' : ''}" data-images-tab="duplicates">Possible Duplicates</button>
-        ${IMAGES_TAB !== 'duplicates' ? `<button class="ref-btn ${IMAGES_UNTAGGED_ONLY ? 'active' : ''}" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;${IMAGES_UNTAGGED_ONLY ? 'background:var(--purple);color:#fff;' : ''}" data-images-untagged-only="1" title="Show only untagged images">${untaggedCount} untagged</button>` : ''}
+        ${IMAGES_TAB !== 'duplicates' ? `<button class="ref-btn ${IMAGES_UNTAGGED_ONLY ? 'active' : ''}" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;${IMAGES_UNTAGGED_ONLY ? 'background:var(--purple);color:#fff;' : ''}" data-images-untagged-only="1" title="Show images not yet grouped into a mood — separate from the Unattached tab, which is about whether an image is attached to a read">${untaggedCount} unattached mood</button>` : ''}
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-images-manage-groups="1" title="Manage image groups (rename/delete)">✏️ Manage</button>
       </div>
       ${IMAGES_TAB !== 'duplicates' ? `
@@ -3725,7 +3744,15 @@ function showOversizedFilesModal(oversizedFiles) {
     </div>
   `);
 }
-async function addReactionFiles(fileList) {
+// `source` records which gallery an upload came in through — 'images' (the
+// Images tab's own upload, or an entry's reaction picker) vs 'reactions' (the
+// standalone Reactions/mood library). This is what lets allAppImages() tell
+// the two apart: only 'images'-sourced standalone reactions belong in the
+// Images gallery's Unattached pool, while true Reactions-tab uploads (meant
+// to live purely by mood tag) stay out of it. Records saved before this
+// distinction existed have no `source` at all — those default to 'images' in
+// allAppImages() so nothing already visible there disappears retroactively.
+async function addReactionFiles(fileList, source = 'images') {
   const added = [];
   const oversized = [];
   for (const file of fileList) {
@@ -3748,7 +3775,7 @@ async function addReactionFiles(fileList) {
     if (dupe) {
       if (!confirm('This looks like a duplicate of a reaction/meme you already saved. Add it again anyway?')) continue;
     }
-    const reaction = { id: uid('reaction'), dataUrl, hash, moodTags: [], note: '', createdAt: new Date().toISOString() };
+    const reaction = { id: uid('reaction'), dataUrl, hash, moodTags: [], note: '', source, createdAt: new Date().toISOString() };
     await saveReaction(reaction);
     added.push(reaction);
     const ext = isVideo ? (file.type.split('/')[1] || 'mp4') : (isAnimated ? (file.type === 'image/gif' ? 'gif' : 'webp') : 'jpg');
@@ -4601,7 +4628,7 @@ function renderDetail(e) {
   // Status pill instead of under the cover thumbnail — per her mockup, the
   // "Currently Read" shelf picker belongs next to Status, not the cover.
   const shelfSelect = isReading ? `
-    <select class="shelf-select" data-shelf-select="1">
+    <select class="shelf-select reading-status-select" data-shelf-select="1">
       ${SHELVES_READING.map((s) => `<option value="${escapeHtml(s)}" ${e.shelf === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
     </select>` : '';
 
@@ -4617,7 +4644,7 @@ function renderDetail(e) {
       <div class="field-row"><label>Artist</label><input type="text" id="edit-artist" value="${escapeHtml(e.artist || '')}"></div>
       <div class="field-row"><label>Chapters</label><input type="number" id="edit-chapters" value="${e.totalChapters || ''}"></div>
       <div class="field-row"><label>Seasons</label><input type="number" id="edit-seasons" value="${e.totalSeasons || ''}"></div>
-      <div class="field-row"><label>Status</label>
+      <div class="field-row"><label>Story Status</label>
         <select id="edit-status">
           <option value="" ${!e.status ? 'selected' : ''}>—</option>
           <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
@@ -4655,13 +4682,13 @@ function renderDetail(e) {
           <div class="field-row" style="margin-bottom:0;"><label>Total Chapters</label><div class="value plain">${e.totalChapters || '—'}</div></div>
         </div>
         <div class="field-row" style="margin-bottom:0;">
-          <label>Status</label>
+          <label>Story Status</label>
           <select class="shelf-select" data-status-select="1">
             <option value="" ${!e.status ? 'selected' : ''}>—</option>
             <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
             <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
           </select>
-          ${shelfSelect ? `<div style="margin-top:8px;">${shelfSelect}</div>` : ''}
+          ${shelfSelect ? `<div style="margin-top:8px;"><label class="reading-status-label">Reading Status</label>${shelfSelect}</div>` : ''}
         </div>
       </div>
     ` : `
@@ -4691,6 +4718,10 @@ function renderDetail(e) {
         <div class="icon-action">
           <button class="icon-btn ${e.favorite ? 'fav-active' : ''}" data-toggle-fav="1" title="Favorite">${e.favorite ? '💜' : '🤍'}</button>
           <span class="icon-label">Favorite</span>
+        </div>
+        <div class="icon-action">
+          <button class="icon-btn ${isHentai(e) ? 'hentai-active' : ''}" data-toggle-hentai="1" title="${isHentai(e) ? 'Hentai — tap to unmark' : 'Mark as Hentai'}">💦</button>
+          <span class="icon-label">Hentai</span>
         </div>
         <div class="icon-action">
           <button class="icon-btn ${isOnDrive(e) ? 'hd-active' : ''}" data-toggle-hd="1" title="${isOnDrive(e) ? 'On HD — tap to unmark' : 'Mark as On HD'}">💾</button>
@@ -5601,7 +5632,7 @@ function attachRootHandlers() {
   if (galleryDropzone && (STATE.view === 'reactions' || STATE.view === 'meme' || STATE.view === 'h')) {
     wireMultiFileDropZone(galleryDropzone, async (files) => {
       if (STATE.view === 'h') await addHImageFiles(files);
-      else await addReactionFiles(files);
+      else await addReactionFiles(files, STATE.view === 'meme' ? 'reactions' : 'images');
       render();
     });
   }
@@ -5645,6 +5676,7 @@ function attachRootHandlers() {
         STATE.showHentaiOnly = false;
         STATE.smutFilter = null;
         STATE.qualityFilter = null;
+        STATE.lolFilter = null;
         STATE.flagFilter = null;
         STATE.linkFilter = false;
         FILTERS_COLLAPSED = false;
@@ -5697,7 +5729,7 @@ function attachRootHandlers() {
     searchInput.onkeydown = (ev) => { if (ev.key === 'Enter') searchInput.blur(); };
   }
   root.querySelectorAll('[data-format]').forEach((el) => {
-    el.onclick = () => { STATE.format = el.getAttribute('data-format'); STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.flagFilter = null; STATE.linkFilter = false; render(); };
+    el.onclick = () => { STATE.format = el.getAttribute('data-format'); STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.lolFilter = null; STATE.flagFilter = null; STATE.linkFilter = false; render(); };
   });
   root.querySelectorAll('[data-shelf]').forEach((el) => {
     el.onclick = () => { STATE.shelf = el.getAttribute('data-shelf'); render(); };
@@ -5746,6 +5778,13 @@ function attachRootHandlers() {
     el.onclick = () => {
       const n = Number(el.getAttribute('data-quality-filter'));
       STATE.qualityFilter = STATE.qualityFilter === n ? null : n;
+      render();
+    };
+  });
+  root.querySelectorAll('[data-lol-filter]').forEach((el) => {
+    el.onclick = () => {
+      const n = Number(el.getAttribute('data-lol-filter'));
+      STATE.lolFilter = STATE.lolFilter === n ? null : n;
       render();
     };
   });
@@ -5819,6 +5858,21 @@ function attachRootHandlers() {
       e.customTags = (e.customTags || []).filter((t) => normalizeTagKey(t) !== ON_DRIVE_TAG_KEY);
     } else {
       e.customTags = [...(e.customTags || []), 'On HD'];
+    }
+    await saveEntry(e); render();
+  };
+  // Hentai toggle — same tag-based on/off pattern as On HD above. Since
+  // isHentai() just checks whether the entry has a "hentai" tag, typing that
+  // tag in manually has the same effect as tapping this button; they're two
+  // paths to the same underlying state, per her spec.
+  const hentaiBtn = root.querySelector('[data-toggle-hentai]');
+  if (hentaiBtn) hentaiBtn.onclick = async () => {
+    const e = getEntry(STATE.entryId);
+    if (isHentai(e)) {
+      e.tags = (e.tags || []).filter((t) => normalizeTagKey(t) !== HENTAI_TAG_KEY);
+      e.customTags = (e.customTags || []).filter((t) => normalizeTagKey(t) !== HENTAI_TAG_KEY);
+    } else {
+      e.customTags = [...(e.customTags || []), 'Hentai'];
     }
     await saveEntry(e); render();
   };
@@ -6155,7 +6209,7 @@ function attachRootHandlers() {
   const memeUploadInput = root.querySelector('#meme-upload-input');
   if (memeUploadInput) memeUploadInput.onchange = async () => {
     if (!memeUploadInput.files.length) return;
-    await addReactionFiles(memeUploadInput.files);
+    await addReactionFiles(memeUploadInput.files, 'reactions');
     render();
   };
 
@@ -6532,7 +6586,7 @@ function renderHomeInPlace() {
   const main = root.querySelector('main');
   const entries = filteredEntries();
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.flagFilter && !STATE.linkFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.flagFilter && !STATE.linkFilter) {
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
       body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)).join(''));

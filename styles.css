@@ -344,7 +344,7 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 /* Same pink as the active bottom-nav tab (--pink), filled solid rather than
    just outlined, so Favorite/On HD read as clearly "on" at a glance — not
    just a subtle color shift. */
-.icon-btn.hd-active, .icon-btn.fav-active { background: var(--pink); color: #170b26; border-color: var(--pink); }
+.icon-btn.hd-active, .icon-btn.fav-active, .icon-btn.hentai-active { background: var(--pink); color: #170b26; border-color: var(--pink); }
 .icon-btn.save { color: #22c55e; border-color: rgba(34,197,94,.45); }
 .icon-btn.save.active { background: #22c55e; color: #08130c; }
 
@@ -533,6 +533,15 @@ textarea {
   border-radius: 10px; padding: 6px 10px; font-size: 12.5px; font-weight: 400; text-align: center; font-family: inherit;
 }
 .chapter-pill-input::placeholder { color: rgba(255,255,255,.75); }
+/* "Reading Status" pill (the Currently Reading/Completed/etc shelf picker
+   under Story Status) — same title-label treatment as the Current Chapter
+   pill, and its dropdown restyled to match: white, not-bold text, instead of
+   the default .shelf-select dark/bold pill look. */
+.reading-status-label {
+  display: block; font-size: 10.5px; color: var(--text-dim); text-transform: uppercase;
+  letter-spacing: .04em; margin-bottom: 2px; text-align: center;
+}
+.reading-status-select { color: #fff; font-weight: 400; }
 .reading-link-row .reading-link-clear { align-self: center; margin-top: 16px; }
 
 .pdf-row { display: flex; gap: 8px; align-items: center; }
