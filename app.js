@@ -487,6 +487,10 @@ async function pullMetaState() {
       H_TAG_MAP = { ...data.hTagMap, ...H_TAG_MAP };
       await idbPut(STORE_META, { key: 'hTagMap', value: H_TAG_MAP });
     }
+    if (data.hNoteMap && typeof data.hNoteMap === 'object') {
+      H_NOTE_MAP = { ...data.hNoteMap, ...H_NOTE_MAP };
+      await idbPut(STORE_META, { key: 'hNoteMap', value: H_NOTE_MAP });
+    }
   } catch (err) {
     console.error('Meta pull failed:', err);
   }
@@ -925,6 +929,50 @@ async function hydrateDriveImages(entry) {
   const idx = ALL_ENTRIES.findIndex((e) => e.id === entry.id);
   if (idx > -1) ALL_ENTRIES[idx] = entry;
   if (STATE.view === 'detail' && STATE.entryId === entry.id) render();
+}
+
+// hydrateDriveImages() above only ever ran for ONE entry at a time — the one
+// you happened to open on the detail page, or whichever the live Firestore
+// listener just touched. A device that's mostly used for browsing (e.g. a
+// phone that never has every single entry individually opened) could go
+// indefinitely without ever hydrating most images locally — and since
+// allAppImages() used to only count images with a dataUrl already present,
+// that showed up as "why does my phone only have 127 images when desktop has
+// 190" (root cause: it's not that the images don't exist on the phone's
+// account, it's that most were never downloaded to that device yet, and
+// nothing was proactively fetching them). This walks every entry still
+// missing a cover/semi/uke/screencap image it has a Drive id for and
+// hydrates it, same retry-on-tab-open/reconnect pattern as
+// hydrateMissingReactions()/hydrateMissingHImages().
+let ENTRY_IMAGE_HYDRATE_BUSY = false;
+function entryNeedsImageHydration(e) {
+  return !!(
+    (e.coverDriveId && !e.coverUrl) ||
+    (e.semi && e.semi.photoDriveId && !e.semi.photo) ||
+    (e.uke && e.uke.photoDriveId && !e.uke.photo) ||
+    (e.screencapDriveIds && e.screencapDriveIds.length && (!e.screencaps || e.screencaps.length < e.screencapDriveIds.length))
+  );
+}
+async function hydrateMissingEntryImages() {
+  if (ENTRY_IMAGE_HYDRATE_BUSY || !driveTokenValid()) return;
+  const missing = ALL_ENTRIES.filter(entryNeedsImageHydration);
+  if (!missing.length) return;
+  ENTRY_IMAGE_HYDRATE_BUSY = true;
+  let lastRender = 0;
+  for (const e of missing) {
+    if (!driveTokenValid()) break; // token expired mid-run — stop rather than fail through the rest one by one
+    try {
+      await hydrateDriveImages(e);
+    } catch (err) {
+      console.error('Entry image hydrate failed:', err);
+    }
+    if (STATE.view === 'reactions' && Date.now() - lastRender > 400) {
+      render();
+      lastRender = Date.now();
+    }
+  }
+  if (STATE.view === 'reactions') render();
+  ENTRY_IMAGE_HYDRATE_BUSY = false;
 }
 
 // Same idea as hydrateDriveImages, for the standalone reactions/meme library.
@@ -1419,6 +1467,7 @@ function navigate(view, entryId, opts) {
   if (view === 'detail' && entryId) hydrateDriveImages(getEntry(entryId)).catch(() => {});
   if (view === 'meme') hydrateMissingReactions().catch(() => {});
   if (view === 'h') hydrateMissingHImages().catch(() => {});
+  if (view === 'reactions') hydrateMissingEntryImages().catch(() => {});
 }
 // What every "← Back" button now calls, instead of a hardcoded data-nav
 // target — pops the real previous screen off the stack. Falls back to Home
@@ -1659,6 +1708,7 @@ async function reconnectGoogleDrive() {
     // own, or the entry currently open) should get another shot.
     hydrateMissingReactions().catch(() => {});
     hydrateMissingHImages().catch(() => {});
+    hydrateMissingEntryImages().catch(() => {});
     if (STATE.view === 'detail' && STATE.entryId) hydrateDriveImages(getEntry(STATE.entryId)).catch(() => {});
     return true;
   } catch (err) {
@@ -2422,21 +2472,39 @@ function entryImageUrls(e) {
 // any specific entry and organized by mood tag instead (see renderMemeLibrary).
 function allAppImages() {
   const map = new Map();
+  // Images this device knows exist (has a Drive id for) but hasn't
+  // downloaded a local copy of yet — see hydrateMissingEntryImages(). These
+  // used to be invisible to this whole aggregation (only images with a
+  // dataUrl already present got counted), which is why a device that hadn't
+  // opened every single entry showed a much lower "Images" count than one
+  // that had — the images weren't missing, they just hadn't been fetched to
+  // THIS device yet. Counting them as pending placeholders makes the count
+  // accurate immediately, and they fill in with the real picture as
+  // hydration catches up.
+  const pending = [];
   ALL_ENTRIES.forEach((e) => {
     if (e.semi && e.semi.photo) {
       const rec = map.get(e.semi.photo) || { dataUrl: e.semi.photo, reactionId: null, createdAt: e.updatedAt || e.createdAt, kinds: new Set() };
       rec.kinds.add('semi'); map.set(e.semi.photo, rec);
+    } else if (e.semi && e.semi.photoDriveId) {
+      pending.push({ pending: true, entryId: e.id, entryTitle: e.title, kinds: ['semi'], createdAt: e.updatedAt || e.createdAt });
     }
     if (e.uke && e.uke.photo) {
       const rec = map.get(e.uke.photo) || { dataUrl: e.uke.photo, reactionId: null, createdAt: e.updatedAt || e.createdAt, kinds: new Set() };
       rec.kinds.add('uke'); map.set(e.uke.photo, rec);
+    } else if (e.uke && e.uke.photoDriveId) {
+      pending.push({ pending: true, entryId: e.id, entryTitle: e.title, kinds: ['uke'], createdAt: e.updatedAt || e.createdAt });
     }
     (e.screencaps || []).forEach((src) => {
       const rec = map.get(src) || { dataUrl: src, reactionId: null, createdAt: e.updatedAt || e.createdAt, kinds: new Set() };
       rec.kinds.add('screencap'); map.set(src, rec);
     });
+    const missingScreencaps = (e.screencapDriveIds || []).length - (e.screencaps || []).length;
+    for (let i = 0; i < missingScreencaps; i++) {
+      pending.push({ pending: true, entryId: e.id, entryTitle: e.title, kinds: ['screencap'], createdAt: e.updatedAt || e.createdAt });
+    }
   });
-  return Array.from(map.values())
+  const hydrated = Array.from(map.values())
     // Images pulled into the H tab (see H_IMAGE_KEYS / pullImageIntoH) stay
     // attached to whatever entry they came from, but stop showing up here —
     // "without them floating around the rest of the yaoi journal", per her
@@ -2444,9 +2512,18 @@ function allAppImages() {
     .filter((img) => !H_IMAGE_KEYS.has(imageKey(img.dataUrl)))
     .map((img) => ({
       ...img,
+      dataUrl: img.dataUrl,
+      pending: false,
       kinds: Array.from(img.kinds),
       attachedEntries: ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(img.dataUrl)),
-    }))
+    }));
+  const pendingItems = pending.map((p) => ({
+    ...p,
+    dataUrl: null,
+    reactionId: null,
+    attachedEntries: [{ id: p.entryId, title: p.entryTitle }],
+  }));
+  return [...hydrated, ...pendingItems]
     .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 }
 
@@ -2722,8 +2799,11 @@ function renderReactionsLibrary() {
   const attached = items.filter((i) => i.attachedEntries.length > 0);
   const unattached = items.filter((i) => i.attachedEntries.length === 0);
 
-  const masonryItem = (img) => `
-    <div class="masonry-item ${IMAGE_SELECT_MODE ? 'selectable' : ''} ${IMAGE_SELECTED.has(img.dataUrl) ? 'selected' : ''}" data-images-item="${escapeHtml(img.dataUrl)}">
+  const masonryItem = (img) => img.pending
+    ? `<div class="masonry-item" data-images-pending-entry="${escapeHtml(img.entryId)}" title="Still downloading from Drive — tap to open ${escapeHtml(img.entryTitle || '')}">
+        <div class="cover-placeholder" style="height:100%;">⏳</div>
+      </div>`
+    : `<div class="masonry-item ${IMAGE_SELECT_MODE ? 'selectable' : ''} ${IMAGE_SELECTED.has(img.dataUrl) ? 'selected' : ''}" data-images-item="${escapeHtml(img.dataUrl)}">
       <img src="${img.dataUrl}" alt="" loading="lazy">
       ${IMAGE_SELECT_MODE ? `<span class="select-check">${IMAGE_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : ''}
       ${!IMAGE_SELECT_MODE && img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : ''}
@@ -2796,10 +2876,55 @@ function renderReactionsLibrary() {
   `;
 }
 
-function openImageAttachmentsModal(dataUrl) {
+/* ---------------------------------------------------------------------- */
+/* Cross-library membership toggles — every media file (an entry-sourced   */
+/* image, a standalone reaction, or a standalone H upload) can be marked   */
+/* into Reactions and/or H independently, from whichever individual-item   */
+/* modal it's currently open in. Toggling something OFF that has no other  */
+/* home (a pure reaction with no entry attachment, or a standalone H       */
+/* upload) deletes that record outright, same as the dedicated Delete/     */
+/* Remove buttons already did — there's nothing left to "un-toggle" to.    */
+/* ---------------------------------------------------------------------- */
+async function isDataUrlInReactions(dataUrl) {
+  if (!dataUrl) return false;
+  const hash = await hashDataUrl(dataUrl);
+  return !!findReactionByHash(hash);
+}
+function isDataUrlInH(dataUrl) {
+  return !!dataUrl && H_IMAGE_KEYS.has(imageKey(dataUrl));
+}
+async function toggleReactionMembership(dataUrl) {
+  const hash = await hashDataUrl(dataUrl);
+  const existing = findReactionByHash(hash);
+  if (existing) {
+    await deleteReaction(existing.id);
+    return false;
+  }
+  await addImageAsReaction(dataUrl);
+  return true;
+}
+function toggleHMembership(dataUrl) {
+  if (H_IMAGE_KEYS.has(imageKey(dataUrl))) {
+    removeFromH(dataUrl);
+    return false;
+  }
+  pullImageIntoH(dataUrl);
+  return true;
+}
+// Shared button pair rendered at the bottom of every individual-item modal.
+function mediaToggleButtonsHtml(dataUrl, inReactions, inH) {
+  return `
+    <button class="mood-chip ${inReactions ? 'active' : ''}" data-toggle-reaction-membership="${escapeHtml(dataUrl)}">🎭 ${inReactions ? 'In Reactions ✓' : 'Use as reaction'}</button>
+    <button class="mood-chip ${inH ? 'active' : ''}" data-toggle-h-membership="${escapeHtml(dataUrl)}" style="${inH ? 'background:#f43f5e;border-color:#f43f5e;color:#fff;' : 'color:#f43f5e;'}">🔴 ${inH ? 'In H ✓' : 'Pull into H'}</button>
+  `;
+}
+
+async function openImageAttachmentsModal(dataUrl) {
   const entries = ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(dataUrl));
   const groupList = Array.from(IMAGE_GROUPS).sort((a, b) => a.localeCompare(b));
   const currentTags = getImageTags(dataUrl);
+  const inReactions = await isDataUrlInReactions(dataUrl);
+  const inH = isDataUrlInH(dataUrl);
   openModal(`
     <h3>Attached to</h3>
     <img src="${dataUrl}" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;margin-bottom:10px;">
@@ -2815,10 +2940,14 @@ function openImageAttachmentsModal(dataUrl) {
         </div>
       </div>
     ` : ''}
+    <div class="field-row">
+      <label>Also in</label>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
+        ${mediaToggleButtonsHtml(dataUrl, inReactions, inH)}
+      </div>
+    </div>
     <div class="modal-actions">
       <button class="btn-ghost" data-close-modal="1">Close</button>
-      <button class="btn-ghost" data-pull-into-h="${escapeHtml(dataUrl)}" style="color:#f43f5e;">🔴 Pull into H</button>
-      <button class="btn-primary" data-use-as-reaction="${escapeHtml(dataUrl)}">🎭 Use as reaction</button>
     </div>
   `);
 }
@@ -2917,12 +3046,16 @@ function memeFilteredItems() {
   const q = MEME_STATE.search.trim().toLowerCase();
   // Untagged reactions surface first (they're the ones that still need
   // sorting into a mood), then newest-first within each bucket.
-  let items = ALL_REACTIONS.slice().sort((a, b) => {
-    const aUntagged = !(a.moodTags || []).length;
-    const bUntagged = !(b.moodTags || []).length;
-    if (aUntagged !== bUntagged) return aUntagged ? -1 : 1;
-    return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
-  });
+  let items = ALL_REACTIONS.slice()
+    // Same "hidden anywhere else while in H" rule as the Images tab —
+    // a reaction pulled into H stops showing up here too.
+    .filter((r) => !H_IMAGE_KEYS.has(imageKey(r.dataUrl)))
+    .sort((a, b) => {
+      const aUntagged = !(a.moodTags || []).length;
+      const bUntagged = !(b.moodTags || []).length;
+      if (aUntagged !== bUntagged) return aUntagged ? -1 : 1;
+      return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+    });
   if (MEME_STATE.moodFilter) items = items.filter((r) => (r.moodTags || []).includes(MEME_STATE.moodFilter));
   if (MEME_STATE.untaggedOnly) items = items.filter((r) => !(r.moodTags || []).length);
   if (q) items = items.filter((r) => (r.note || '').toLowerCase().includes(q));
@@ -3092,6 +3225,14 @@ function openMemeEditModal(id) {
         <button class="mood-chip" data-meme-add-mood-for="${r.id}">➕ New mood</button>
       </div>
     </div>
+    ${r.dataUrl ? `
+    <div class="field-row">
+      <label>Also in</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">
+        ${mediaToggleButtonsHtml(r.dataUrl, true, isDataUrlInH(r.dataUrl))}
+      </div>
+    </div>
+    ` : ''}
       <div class="modal-actions">
         <button class="btn-ghost" data-delete-meme="${r.id}">🗑️ Delete</button>
         ${r.dataUrl && !/^data:image\/(gif|webp)/.test(r.dataUrl) ? `<button class="btn-ghost" data-crop-meme="${r.id}">✂️ Crop</button>` : ''}
@@ -3620,6 +3761,23 @@ function toggleHTag(dataUrl, tag) {
   H_TAG_MAP[key] = Array.from(tags);
   persistHTagMap();
 }
+// Free-text caption/keywords per image, same idea as a reaction's `note`
+// field (and searched the same way) — kept as a lookup map rather than a
+// field on a record, since an H image can be either a standalone upload OR
+// a live reference to an entry's photo, and only the map approach works for
+// both uniformly (mirrors H_TAG_MAP for the same reason).
+let H_NOTE_MAP = {};
+function persistHNoteMap() {
+  idbPut(STORE_META, { key: 'hNoteMap', value: H_NOTE_MAP });
+  pushMetaField('hNoteMap', H_NOTE_MAP);
+}
+function getHNote(dataUrl) {
+  return H_NOTE_MAP[imageKey(dataUrl)] || '';
+}
+function setHNote(dataUrl, note) {
+  H_NOTE_MAP[imageKey(dataUrl)] = note;
+  persistHNoteMap();
+}
 function openManageHGroupsModal() {
   const list = Array.from(H_GROUPS).sort((a, b) => a.localeCompare(b));
   openModal(`
@@ -3685,24 +3843,46 @@ function allHImages() {
 let H_SELECT_MODE = false;
 let H_SELECTED = new Set();
 let H_GROUP_FILTER = null;
+// Same shape/behavior as MEME_STATE, so the H gallery's search/untagged
+// filtering works exactly like the Reactions gallery's.
+let H_STATE = { search: '', untaggedOnly: false };
 
-function renderHLibrary() {
+function hFilteredItems() {
+  const q = H_STATE.search.trim().toLowerCase();
   let items = allHImages();
   if (H_GROUP_FILTER) items = items.filter((i) => getHTags(i.dataUrl).includes(H_GROUP_FILTER));
-  const groupList = Array.from(H_GROUPS).sort((a, b) => a.localeCompare(b));
-  const groupChips = groupList.map((name) => `<button class="mood-chip ${H_GROUP_FILTER === name ? 'active' : ''}" data-h-group-filter="${escapeHtml(name)}">🏷️ ${escapeHtml(name)}</button>`).join('');
+  if (H_STATE.untaggedOnly) items = items.filter((i) => !getHTags(i.dataUrl).length);
+  if (q) items = items.filter((i) => getHNote(i.dataUrl).toLowerCase().includes(q));
+  return items;
+}
+
+function hMainBody() {
+  const items = hFilteredItems();
   const masonryItem = (img) => `
     <div class="masonry-item ${H_SELECT_MODE ? 'selectable' : ''} ${H_SELECTED.has(img.dataUrl) ? 'selected' : ''}" data-h-item="${escapeHtml(img.dataUrl)}">
       <img src="${img.dataUrl}" alt="" loading="lazy">
       ${H_SELECT_MODE ? `<span class="select-check">${H_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : ''}
+      ${!H_SELECT_MODE && !getHTags(img.dataUrl).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
     </div>`;
-  const body = items.length
+  return items.length
     ? `<div class="image-masonry">${items.map(masonryItem).join('')}</div>`
-    : `<div class="empty-state">No H images yet. Pull some in from Images (open an image → 🔴 Pull into H), or upload directly below.</div>`;
+    : `<div class="empty-state">${H_GROUP_FILTER || H_STATE.search || H_STATE.untaggedOnly ? 'No H images match. Try clearing the filter/search.' : 'No H images yet. Pull some in from Images or Reactions (open one → 🔴 Pull into H), or upload directly above.'}</div>`;
+}
+
+function renderHLibraryInPlace() {
+  const main = document.querySelector('#view-root main');
+  if (main) main.innerHTML = hMainBody();
+  attachHGridHandlers();
+}
+
+function renderHLibrary() {
+  const untaggedCount = allHImages().filter((i) => !getHTags(i.dataUrl).length).length;
+  const groupList = Array.from(H_GROUPS).sort((a, b) => a.localeCompare(b));
+  const groupChips = groupList.map((name) => `<button class="mood-chip ${H_GROUP_FILTER === name ? 'active' : ''}" data-h-group-filter="${escapeHtml(name)}">🏷️ ${escapeHtml(name)}</button>`).join('');
   return `
     <div class="app-header">
       <div class="brand-row"><h1><span class="icon-h" style="font-size:20px;">H</span> Hentai</h1></div>
-      <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${items.length} image${items.length === 1 ? '' : 's'}, kept separate from the rest of the app.</div>
+      <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${allHImages().length} image${allHImages().length === 1 ? '' : 's'} saved${untaggedCount ? ` · ${untaggedCount} untagged` : ''} — kept separate from the rest of the app.</div>
       <div class="export-row" style="margin-bottom:10px;">
         <label class="upload-btn" style="flex:1;">📎 Add image(s)<input type="file" accept="image/*" multiple id="h-upload-input"></label>
         <button class="ref-btn" data-h-toggle-select="1">${H_SELECT_MODE ? '✕ Cancel select' : '☑️ Select'}</button>
@@ -3713,22 +3893,27 @@ function renderHLibrary() {
           <button class="ref-btn" data-h-remove-selected="1" ${H_SELECTED.size ? '' : 'disabled'}>🗑️ Remove selected</button>
         </div>
       ` : ''}
+      <div class="search-bar" style="margin-bottom:8px;"><span>🔍</span><input type="search" id="h-search-input" placeholder="Search captions/keywords..." value="${escapeHtml(H_STATE.search)}"></div>
+      <div class="tagmgr-tabs" style="margin-bottom:8px;">
+        <button class="ref-btn ${H_STATE.untaggedOnly ? 'active' : ''}" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;${H_STATE.untaggedOnly ? 'background:var(--purple);color:#fff;' : ''}" data-h-untagged-only="1" title="Show only untagged H images">${untaggedCount} untagged</button>
+        <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-h-manage-groups="1" title="Manage H groups (rename/delete)">✏️ Manage</button>
+      </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
         ${groupChips}
         <button class="mood-chip" data-h-add-group="1">➕ New group</button>
-        <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-h-manage-groups="1" title="Manage H groups (rename/delete)">✏️ Manage</button>
       </div>
     </div>
-    <main>${body}</main>
+    <main>${hMainBody()}</main>
     ${renderBottomNav('h')}
   `;
 }
 
-function openHImageModal(dataUrl) {
+async function openHImageModal(dataUrl) {
   const upload = ALL_H_IMAGES.find((h) => h.dataUrl === dataUrl);
   const groupList = Array.from(H_GROUPS).sort((a, b) => a.localeCompare(b));
   const currentTags = getHTags(dataUrl);
   const entries = upload ? [] : ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(dataUrl));
+  const inReactions = await isDataUrlInReactions(dataUrl);
   openModal(`
     <div class="modal-close-corner-wrap">
       <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
@@ -3737,6 +3922,7 @@ function openHImageModal(dataUrl) {
         ? `<img src="${dataUrl}" alt="" style="width:100%;max-height:60vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`
         : `<div class="cover-placeholder" style="height:180px;margin-bottom:10px;">⏳ Still downloading from Drive…</div>`}
       ${entries.length ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Pulled from: ${entries.map((e) => escapeHtml(e.title)).join(', ')}</div>` : ''}
+      <div class="field-row"><label>Caption/keywords (for search)</label><input type="text" id="h-note-input" value="${escapeHtml(getHNote(dataUrl))}" placeholder="e.g. favorite, wallpaper-worthy"></div>
       <div class="field-row">
         <label>Groups</label>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
@@ -3744,12 +3930,20 @@ function openHImageModal(dataUrl) {
           <button class="mood-chip" data-h-add-group-for="${escapeHtml(dataUrl)}">➕ New group</button>
         </div>
       </div>
+      <div class="field-row">
+        <label>Also in</label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
+          ${mediaToggleButtonsHtml(dataUrl, inReactions, true)}
+        </div>
+        ${upload ? `<div style="font-size:11px;color:var(--text-dim);margin-top:6px;">This image only lives in H — turning "In H" off deletes it, since it has no entry or other library to fall back to.</div>` : ''}
+      </div>
       <div class="modal-actions">
-        <button class="btn-ghost" data-remove-from-h="${escapeHtml(dataUrl)}">🗑️ ${upload ? 'Delete' : 'Remove from H'}</button>
         <button class="btn-primary" data-close-modal="1">Done</button>
       </div>
     </div>
   `);
+  const noteInput = document.getElementById('h-note-input');
+  if (noteInput) noteInput.onblur = () => setHNote(dataUrl, noteInput.value);
 }
 
 function attachHGridHandlers() {
@@ -3786,6 +3980,13 @@ function attachHGridHandlers() {
   };
   const manageGroupsBtn = document.querySelector('[data-h-manage-groups]');
   if (manageGroupsBtn) manageGroupsBtn.onclick = openManageHGroupsModal;
+  const untaggedOnlyBtn = document.querySelector('[data-h-untagged-only]');
+  if (untaggedOnlyBtn) untaggedOnlyBtn.onclick = () => { H_STATE.untaggedOnly = !H_STATE.untaggedOnly; render(); };
+  const hSearchInput = document.querySelector('#h-search-input');
+  if (hSearchInput) {
+    hSearchInput.oninput = (ev) => { H_STATE.search = ev.target.value; renderHLibraryInPlace(); };
+    hSearchInput.onkeydown = (ev) => { if (ev.key === 'Enter') hSearchInput.blur(); };
+  }
   const uploadInput = document.querySelector('#h-upload-input');
   if (uploadInput) uploadInput.onchange = async () => {
     if (!uploadInput.files.length) return;
@@ -5408,6 +5609,9 @@ function attachRootHandlers() {
       }
     };
   });
+  root.querySelectorAll('[data-images-pending-entry]').forEach((el) => {
+    el.onclick = () => navigate('detail', el.getAttribute('data-images-pending-entry'));
+  });
   const toggleSelectBtn = root.querySelector('[data-images-toggle-select]');
   if (toggleSelectBtn) toggleSelectBtn.onclick = () => {
     IMAGE_SELECT_MODE = !IMAGE_SELECT_MODE;
@@ -6012,24 +6216,18 @@ document.addEventListener('click', (ev) => {
     const key = addHGroup(prompt('Name this new H group:'));
     if (key) { toggleHTag(url, key); openHImageModal(url); }
   }
-  if (t.matches('[data-remove-from-h]')) {
-    const url = t.getAttribute('data-remove-from-h');
-    removeFromH(url);
-    showToast('Removed from H');
-    closeModal();
-    render();
-  }
-  if (t.matches('[data-use-as-reaction]')) {
-    const url = t.getAttribute('data-use-as-reaction');
-    addImageAsReaction(url).then((r) => {
-      showToast(r ? 'Added to Reactions — tag it with a mood from the Reactions tab' : 'Already in your Reactions library');
+  if (t.matches('[data-toggle-reaction-membership]')) {
+    const url = t.getAttribute('data-toggle-reaction-membership');
+    toggleReactionMembership(url).then((nowIn) => {
+      showToast(nowIn ? 'Added to Reactions — tag it with a mood from the Reactions tab' : 'Removed from Reactions');
       closeModal();
+      render();
     });
   }
-  if (t.matches('[data-pull-into-h]')) {
-    const url = t.getAttribute('data-pull-into-h');
-    pullImageIntoH(url);
-    showToast('Pulled into H — hidden from the Images tab from now on.');
+  if (t.matches('[data-toggle-h-membership]')) {
+    const url = t.getAttribute('data-toggle-h-membership');
+    const nowIn = toggleHMembership(url);
+    showToast(nowIn ? 'Pulled into H — hidden elsewhere in the app from now on.' : 'Removed from H');
     closeModal();
     render();
   }
@@ -6353,6 +6551,8 @@ async function boot() {
     if (savedHGroups && Array.isArray(savedHGroups.value)) H_GROUPS = new Set(savedHGroups.value);
     const savedHTagMap = await idbGet(STORE_META, 'hTagMap');
     if (savedHTagMap && savedHTagMap.value && typeof savedHTagMap.value === 'object') H_TAG_MAP = savedHTagMap.value;
+    const savedHNoteMap = await idbGet(STORE_META, 'hNoteMap');
+    if (savedHNoteMap && savedHNoteMap.value && typeof savedHNoteMap.value === 'object') H_NOTE_MAP = savedHNoteMap.value;
     if ('serviceWorker' in navigator) {
       setupAutoUpdatingServiceWorker();
     }
@@ -6412,5 +6612,37 @@ async function boot() {
     console.error('Boot failed:', err);
   }
 }
+
+/* ---------------------------------------------------------------------- */
+/* Pull-to-refresh (mobile)                                               */
+/* Installed/standalone PWAs don't reliably get the browser's native pull-*/
+/* to-refresh gesture (iOS Safari in particular suppresses it once "Add to*/
+/* Home Screen" is used), so this adds a manual equivalent: dragging down  */
+/* from the very top of the page reloads the app. Only arms while at the  */
+/* very top of the page scroll AND no modal is open (a modal has its own  */
+/* internal scroll — e.g. a long Groups/Manage list — and shouldn't get   */
+/* hijacked into reloading the whole app mid-scroll).                     */
+/* ---------------------------------------------------------------------- */
+(function setupPullToRefresh() {
+  const THRESHOLD = 80; // px of downward drag before it counts as a "pull"
+  let startY = null;
+  let armed = false;
+  window.addEventListener('touchstart', (ev) => {
+    const overlay = document.getElementById('overlay');
+    if (overlay && overlay.classList.contains('open')) { startY = null; return; }
+    if (window.scrollY > 0 || ev.touches.length !== 1) { startY = null; return; }
+    startY = ev.touches[0].clientY;
+    armed = false;
+  }, { passive: true });
+  window.addEventListener('touchmove', (ev) => {
+    if (startY === null) return;
+    const dy = ev.touches[0].clientY - startY;
+    if (dy > THRESHOLD && window.scrollY === 0) armed = true;
+  }, { passive: true });
+  window.addEventListener('touchend', () => {
+    if (armed) { armed = false; startY = null; location.reload(); return; }
+    startY = null;
+  });
+})();
 
 boot();

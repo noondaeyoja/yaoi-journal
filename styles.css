@@ -267,6 +267,11 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
    emoji, per her spec, so it reads unambiguously at nav-icon size. */
 .icon-h { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; font-weight: 800; color: #f43f5e; line-height: 1; }
 .bottom-nav button.active .icon-h { color: #f43f5e; }
+/* A plain bold letter reads visually smaller than the other tabs' emoji at
+   the same font-size, so it gets a small bump here to match their apparent
+   weight/size in the nav bar specifically (the page-title usage above sets
+   its own inline size and is unaffected). */
+.bottom-nav button .icon-h { font-size: 20px; }
 
 /* ---------- Reactions/meme library ---------- */
 .reaction-thumb { position: relative; aspect-ratio: 1/1; border-radius: var(--radius-sm); overflow: hidden; background: var(--navy-2); cursor: pointer; }
