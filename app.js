@@ -3146,7 +3146,7 @@ function renderReactionsLibrary() {
       ${isVideoUrl(img.dataUrl) ? `<video src="${img.dataUrl}" autoplay loop muted playsinline></video>` : `<img src="${img.dataUrl}" alt="" loading="lazy">`}
       ${IMAGE_SELECT_MODE ? `<span class="select-check">${IMAGE_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : ''}
       ${!IMAGE_SELECT_MODE && isImageUntagged(img) ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : (!IMAGE_SELECT_MODE && img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : '')}
-      ${!IMAGE_SELECT_MODE && img.reactionId ? `<button class="del" data-del-reaction="${img.reactionId}">✕</button>` : (!IMAGE_SELECT_MODE && forceDel ? `<button class="del" data-del-dup-image="${escapeHtml(img.dataUrl)}" title="Delete this image">✕</button>` : '')}
+      ${!IMAGE_SELECT_MODE && forceDel ? `<button class="del" data-del-dup-image="${escapeHtml(img.dataUrl)}" title="Delete this image">✕</button>` : ''}
     </div>`;
 
   let tabBody;
@@ -3299,6 +3299,7 @@ async function openImageAttachmentsModal(dataUrl) {
       ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;">${entries.map((e) => `
           <button class="ref-btn" style="text-align:left;" data-goto-entry-from-modal="${e.id}">${escapeHtml(e.title)}</button>`).join('')}</div>`
       : `<div class="empty-state">Not attached to any read yet.</div>`}
+    <button class="ref-btn" style="width:100%;margin-bottom:10px;" data-attach-this-image="${escapeHtml(dataUrl)}">📎 Attach to a read…</button>
     <div class="field-row">
       <label>Groups</label>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
@@ -6960,6 +6961,15 @@ document.addEventListener('click', async (ev) => {
   if (t.matches('[data-goto-entry-from-modal]')) {
     closeModal();
     navigate('detail', t.getAttribute('data-goto-entry-from-modal'));
+  }
+  if (t.matches('[data-attach-this-image]')) {
+    // Reuses the same "Attach to a read..." picker the multi-select bulk
+    // action already uses, just with a single-item array — before this, the
+    // Images gallery's individual item view could only show which reads an
+    // image was ALREADY attached to, with no way to attach it to one from
+    // here (only possible one at a time from inside that entry's own page,
+    // or via multi-select back on the gallery grid).
+    openAttachImagesToEntryModal([t.getAttribute('data-attach-this-image')]);
   }
   if (t.matches('[data-merge-pick-target]')) {
     const targetId = t.getAttribute('data-merge-pick-target');
