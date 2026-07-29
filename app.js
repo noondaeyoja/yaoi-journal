@@ -2868,6 +2868,13 @@ function openManageImageGroupsModal() {
 let IMAGE_SELECT_MODE = false;
 let IMAGE_SELECTED = new Set();
 let IMAGE_KIND_FILTER = null; // null | 'semi' | 'uke'
+// Manual Semi/Uke tags — she can flag ANY image in the Images gallery as
+// "Semi only"/"Uke only" from its individual view, same chip-toggle
+// mechanism as a mood group, on top of the automatic kind-based tagging
+// (an image that's literally the entry's current/former semi or uke photo
+// — see allAppImages()/photoHistory). Semi-only/Uke-only match either.
+const SEMI_TAG = 'Semi';
+const UKE_TAG = 'Uke';
 let IMAGE_GROUP_FILTER = null;
 let IMAGES_UNTAGGED_ONLY = false;
 
@@ -2920,7 +2927,10 @@ async function attachImagesToEntry(dataUrls, entryId) {
 // instead of having to re-download/re-upload it separately.
 async function addImageAsReaction(dataUrl) {
   const hash = await hashDataUrl(dataUrl);
-  if (findReactionByHash(hash)) return null;
+  // Scoped to the reactions pool specifically (not any hash match) — an
+  // 'images'-sourced record with the same hash shouldn't count as "already
+  // added to Reactions" and silently block this from actually adding it.
+  if (findReactionsPoolRecordByHash(hash)) return null;
   // "Add as reactions" (Images gallery -> Reactions library) — the resulting
   // record is meant to live and be organized by mood tag from here on, so it
   // gets source: 'reactions' just like a direct Reactions-tab upload would.
@@ -3037,7 +3047,11 @@ async function scanForImageDuplicates() {
 
 function renderReactionsLibrary() {
   let items = allAppImages();
-  if (IMAGE_KIND_FILTER) items = items.filter((i) => i.kinds.includes(IMAGE_KIND_FILTER));
+  // Matches images that are AUTOMATICALLY semi/uke (kind-derived — current
+  // or former semi/uke photo, see allAppImages()) OR manually flagged Semi/
+  // Uke via the Groups chips in the individual item view.
+  const kindTagName = IMAGE_KIND_FILTER === 'semi' ? SEMI_TAG : IMAGE_KIND_FILTER === 'uke' ? UKE_TAG : null;
+  if (IMAGE_KIND_FILTER) items = items.filter((i) => i.kinds.includes(IMAGE_KIND_FILTER) || getImageTags(i.dataUrl).includes(kindTagName));
   if (IMAGE_GROUP_FILTER) items = items.filter((i) => getImageTags(i.dataUrl).includes(IMAGE_GROUP_FILTER));
   // Untagged-first, same rule as the Reactions gallery — images with no
   // group assigned yet (and not already a semi/uke photo — see
@@ -3146,17 +3160,27 @@ function renderReactionsLibrary() {
 /* upload) deletes that record outright, same as the dedicated Delete/     */
 /* Remove buttons already did — there's nothing left to "un-toggle" to.    */
 /* ---------------------------------------------------------------------- */
+// "Is this in Reactions" has to mean "is there a copy actually visible in
+// the Reactions gallery" (source !== 'images', same pool as
+// reactionsPoolItems()) — NOT "does any record with this hash exist
+// anywhere". An Images-tab upload or entry photo can share a hash with
+// itself without that meaning it's in Reactions; checking ANY hash match
+// used to let this wrongly report "in reactions" (or delete the wrong
+// record when toggled off) for images that only ever lived in Images.
+function findReactionsPoolRecordByHash(hash) {
+  return ALL_REACTIONS.find((r) => r.hash === hash && r.source !== 'images');
+}
 async function isDataUrlInReactions(dataUrl) {
   if (!dataUrl) return false;
   const hash = await hashDataUrl(dataUrl);
-  return !!findReactionByHash(hash);
+  return !!findReactionsPoolRecordByHash(hash);
 }
 function isDataUrlInH(dataUrl) {
   return !!dataUrl && H_IMAGE_KEYS.has(imageKey(dataUrl));
 }
 async function toggleReactionMembership(dataUrl) {
   const hash = await hashDataUrl(dataUrl);
-  const existing = findReactionByHash(hash);
+  const existing = findReactionsPoolRecordByHash(hash);
   if (existing) {
     await deleteReaction(existing.id);
     return false;
@@ -3173,9 +3197,16 @@ function toggleHMembership(dataUrl) {
   return true;
 }
 // Shared button pair rendered at the bottom of every individual-item modal.
-function mediaToggleButtonsHtml(dataUrl, inReactions, inH) {
+// The "Use as reaction"/"In Reactions" toggle only makes sense from the
+// Images gallery's own item view — it answers "does this Images item ALSO
+// have a copy in Reactions", one-directional (Images -> Reactions only).
+// From inside Reactions' own item view it'd always just read "In Reactions
+// ✓" trivially, and from inside H it doesn't apply at all (H items aren't
+// meant to shuttle back into Reactions from there) — so both of those pass
+// showReactionsToggle = false to hide it, keeping only "Pull into H".
+function mediaToggleButtonsHtml(dataUrl, inReactions, inH, showReactionsToggle = true) {
   return `
-    <button class="mood-chip ${inReactions ? 'active' : ''}" data-toggle-reaction-membership="${escapeHtml(dataUrl)}">🎭 ${inReactions ? 'In Reactions ✓' : 'Use as reaction'}</button>
+    ${showReactionsToggle ? `<button class="mood-chip ${inReactions ? 'active' : ''}" data-toggle-reaction-membership="${escapeHtml(dataUrl)}">🎭 ${inReactions ? 'In Reactions ✓' : 'Use as reaction'}</button>` : ''}
     <button class="mood-chip ${inH ? 'active' : ''}" data-toggle-h-membership="${escapeHtml(dataUrl)}" style="${inH ? 'background:#f43f5e;border-color:#f43f5e;color:#fff;' : 'color:#f43f5e;'}">🔴 ${inH ? 'In H ✓' : 'Pull into H'}</button>
   `;
 }
@@ -3198,14 +3229,13 @@ async function openImageAttachmentsModal(dataUrl) {
       ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;">${entries.map((e) => `
           <button class="ref-btn" style="text-align:left;" data-goto-entry-from-modal="${e.id}">${escapeHtml(e.title)}</button>`).join('')}</div>`
       : `<div class="empty-state">Not attached to any read yet.</div>`}
-    ${groupList.length ? `
-      <div class="field-row">
-        <label>Groups</label>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
-          ${groupList.map((name) => `<button class="mood-chip ${currentTags.includes(name) ? 'active' : ''}" data-toggle-image-tag="${escapeHtml(name)}" data-image-url="${escapeHtml(dataUrl)}">${escapeHtml(name)}</button>`).join('')}
-        </div>
+    <div class="field-row">
+      <label>Groups</label>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
+        ${[SEMI_TAG, UKE_TAG].map((name) => `<button class="mood-chip ${currentTags.includes(name) ? 'active' : ''}" data-toggle-image-tag="${escapeHtml(name)}" data-image-url="${escapeHtml(dataUrl)}">${escapeHtml(name)} only</button>`).join('')}
+        ${groupList.map((name) => `<button class="mood-chip ${currentTags.includes(name) ? 'active' : ''}" data-toggle-image-tag="${escapeHtml(name)}" data-image-url="${escapeHtml(dataUrl)}">${escapeHtml(name)}</button>`).join('')}
       </div>
-    ` : ''}
+    </div>
     <div class="field-row">
       <label>Also in</label>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
@@ -3557,7 +3587,7 @@ function openMemeEditModal(id) {
     <div class="field-row">
       <label>Also in</label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">
-        ${mediaToggleButtonsHtml(r.dataUrl, true, isDataUrlInH(r.dataUrl))}
+        ${mediaToggleButtonsHtml(r.dataUrl, true, isDataUrlInH(r.dataUrl), false)}
       </div>
     </div>
     ` : ''}
@@ -4511,7 +4541,7 @@ async function openHImageModal(dataUrl) {
       <div class="field-row">
         <label>Also in</label>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
-          ${mediaToggleButtonsHtml(dataUrl, inReactions, true)}
+          ${mediaToggleButtonsHtml(dataUrl, inReactions, true, false)}
         </div>
         ${upload ? `<div style="font-size:11px;color:var(--text-dim);margin-top:6px;">Deleting removes this image entirely — it has no entry or other library to fall back to.</div>` : `<div style="font-size:11px;color:var(--text-dim);margin-top:6px;">Deleting removes it from H only — the entry it came from keeps its photo.</div>`}
       </div>
