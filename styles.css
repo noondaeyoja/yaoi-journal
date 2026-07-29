@@ -199,39 +199,23 @@ a { color: var(--pink); }
 .tag-ms-item input { accent-color: var(--purple); flex: 0 0 auto; }
 .tag-ms-panel.open > button, .tag-ms-panel.open > div { grid-column: 1 / -1; }
 
-/* Arrows stretch to the full height of the row (align-items:stretch), so
-   they always match however tall the cover thumbnails in that row are —
-   same idea as the cover/info equal-height trick on the detail page. */
-.scroll-row-wrap { position: relative; display: flex; align-items: stretch; }
-.scroll-row-wrap .cover-row-scroll { flex: 1; }
-.scroll-arrow {
-  flex: 0 0 auto; width: 40px; border-radius: 8px; background: rgba(18,22,46,.85);
-  border: 1px solid var(--border); color: var(--text); font-size: 26px; line-height: 1; cursor: pointer;
-  z-index: 5; display: flex; align-items: center; justify-content: center;
-}
-.scroll-arrow.left { margin-right: -6px; }
-.scroll-arrow.right { margin-left: -6px; }
-@media (min-width: 640px) {
-  .scroll-arrow { display: flex; }
-}
-
 /* ---------- Main / grid ---------- */
 main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150px + env(safe-area-inset-bottom, 0px)); }
 .section-title { font-size: 19px; font-weight: 700; text-align: center; color: var(--text); text-transform: uppercase; letter-spacing: .06em; margin: 18px 4px 10px; }
 /* Homepage shelf-row headers double as expand/collapse toggles — see
-   homeSectionHtml()/HOME_COLLAPSED_SECTIONS. */
+   homeSectionHtml()/HOME_COLLAPSED_SECTIONS. Same collapsible mechanic as
+   .filters-collapsible above: always rendered, max-height transition. */
 .home-section-title { cursor: pointer; user-select: none; }
 .home-section-chevron { display: inline-block; color: var(--purple); font-size: 15px; margin-right: 2px; }
+.home-section-body {
+  max-height: 6000px; overflow: hidden; opacity: 1;
+  transition: max-height .25s ease, opacity .2s ease, margin .2s ease;
+}
+.home-section-body.collapsed { max-height: 0; opacity: 0; pointer-events: none; }
 
 .cover-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 12px;
 }
-.cover-row-scroll {
-  display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; -webkit-overflow-scrolling: touch;
-  scroll-snap-type: x proximity; margin: 0 -12px; padding-left: 12px; padding-right: 12px;
-}
-.cover-row-scroll::-webkit-scrollbar { display: none; }
-.cover-row-scroll .cover-card { flex: 0 0 108px; scroll-snap-align: start; }
 .cover-card { cursor: pointer; }
 .cover-thumb {
   width: 100%; aspect-ratio: 2/3; border-radius: var(--radius-sm); background: var(--card);

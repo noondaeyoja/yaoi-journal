@@ -1911,7 +1911,7 @@ async function setSuggestionsCollapsed(collapsed) {
   await idbPut(STORE_META, { key: 'tagSuggestionsCollapsed', value: collapsed });
   pushMetaField('tagSuggestionsCollapsed', collapsed);
 }
-// Homepage shelf rows (Currently Reading, Completed, etc. — see scrollRow())
+// Homepage shelf rows (Currently Reading, Completed, etc. — see homeSectionHtml())
 // each remember their own collapsed/expanded state here, keyed by row id, so
 // a section she's collapsed stays collapsed across visits/devices instead of
 // resetting open every time the homepage re-renders.
@@ -2035,29 +2035,21 @@ function renderCoverCard(e, reviewMode) {
     </div>`;
 }
 
-// Wraps a horizontal-scroll row with left/right arrow buttons so it can be
-// navigated by click as well as by touch/swipe.
-function scrollRow(rowId, innerHtml) {
-  return `
-    <div class="scroll-row-wrap">
-      <button class="scroll-arrow left" data-scroll-target="${rowId}" data-dir="-1" aria-label="Scroll left">‹</button>
-      <div class="cover-row-scroll" id="${rowId}">${innerHtml}</div>
-      <button class="scroll-arrow right" data-scroll-target="${rowId}" data-dir="1" aria-label="Scroll right">›</button>
-    </div>`;
-}
-
-// Homepage shelf/suggested-matches sections — same section-title + scroll
-// row as before, but the header itself is now a toggle: tap it to collapse
-// the row out of the way (state remembered per-row in HOME_COLLAPSED_SECTIONS,
-// synced like every other UI toggle in the app) instead of it always taking
-// up vertical space.
+// Homepage shelf/suggested-matches sections — the header is a toggle (tap
+// to expand/collapse, state remembered per-row in HOME_COLLAPSED_SECTIONS,
+// synced like every other UI toggle in the app), same idea as the "Hide
+// Filters" toggle above the filter panel. No more horizontal-scroll carousel
+// with side arrows — opening a section shows every item in that category as
+// a full grid, same layout the search/filtered results view already uses.
 function homeSectionHtml(rowId, title, count, innerHtml) {
   const collapsed = HOME_COLLAPSED_SECTIONS.has(rowId);
   return `
     <div class="section-title home-section-title" data-toggle-home-section="${rowId}">
       <span class="home-section-chevron">${collapsed ? '▸' : '▾'}</span> ${escapeHtml(title)} <span style="opacity:.6">(${count})</span>
     </div>
-    ${collapsed ? '' : scrollRow(rowId, innerHtml)}`;
+    <div class="home-section-body ${collapsed ? 'collapsed' : ''}" id="${rowId}">
+      <div class="cover-grid">${innerHtml}</div>
+    </div>`;
 }
 
 function renderHome() {
@@ -5732,15 +5724,16 @@ function attachRootHandlers() {
     if (filtersEl) filtersEl.classList.toggle('collapsed', FILTERS_COLLAPSED);
     filtersToggleBtn.textContent = FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters';
   };
-  root.querySelectorAll('[data-scroll-target]').forEach((btn) => {
-    btn.onclick = () => {
-      const target = document.getElementById(btn.getAttribute('data-scroll-target'));
-      if (!target) return;
-      target.scrollBy({ left: Number(btn.getAttribute('data-dir')) * 300, behavior: 'smooth' });
-    };
-  });
   root.querySelectorAll('[data-toggle-home-section]').forEach((el) => {
-    el.onclick = async () => { await toggleHomeSectionCollapsed(el.getAttribute('data-toggle-home-section')); render(); };
+    el.onclick = async () => {
+      const rowId = el.getAttribute('data-toggle-home-section');
+      await toggleHomeSectionCollapsed(rowId);
+      const collapsed = HOME_COLLAPSED_SECTIONS.has(rowId);
+      const bodyEl = document.getElementById(rowId);
+      if (bodyEl) bodyEl.classList.toggle('collapsed', collapsed);
+      const chevron = el.querySelector('.home-section-chevron');
+      if (chevron) chevron.textContent = collapsed ? '▸' : '▾';
+    };
   });
   root.querySelectorAll('[data-smut-filter]').forEach((el) => {
     el.onclick = () => {
@@ -6565,15 +6558,16 @@ function renderHomeInPlace() {
     main.querySelectorAll('[data-review-match]').forEach((el) => {
       el.onclick = () => openMatchReviewCarousel(el.getAttribute('data-review-match'));
     });
-    main.querySelectorAll('[data-scroll-target]').forEach((btn) => {
-      btn.onclick = () => {
-        const target = document.getElementById(btn.getAttribute('data-scroll-target'));
-        if (!target) return;
-        target.scrollBy({ left: Number(btn.getAttribute('data-dir')) * 300, behavior: 'smooth' });
-      };
-    });
     main.querySelectorAll('[data-toggle-home-section]').forEach((el) => {
-      el.onclick = async () => { await toggleHomeSectionCollapsed(el.getAttribute('data-toggle-home-section')); render(); };
+      el.onclick = async () => {
+        const rowId = el.getAttribute('data-toggle-home-section');
+        await toggleHomeSectionCollapsed(rowId);
+        const collapsed = HOME_COLLAPSED_SECTIONS.has(rowId);
+        const bodyEl = document.getElementById(rowId);
+        if (bodyEl) bodyEl.classList.toggle('collapsed', collapsed);
+        const chevron = el.querySelector('.home-section-chevron');
+        if (chevron) chevron.textContent = collapsed ? '▸' : '▾';
+      };
     });
   }
 }
