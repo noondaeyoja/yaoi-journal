@@ -4611,11 +4611,25 @@ function renderDetail(e) {
       <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)}</div></div>
       ${e.altTitle ? `<div class="field-row"><label>Alt title</label><div class="value plain">${escapeHtml(e.altTitle)}</div></div>` : ''}
       ${(e.isNovel || e.novelAuthor) ? `<div class="field-row"><label>Novel</label><div class="value plain">${escapeHtml(formatNames(e.novelAuthor)) || '—'}</div></div>` : ''}
-      <div class="field-row"><label>Author</label><div class="value plain">${escapeHtml(formatNames(e.author)) || '—'}</div></div>
-      <div class="field-row"><label>Artist</label><div class="value plain">${escapeHtml(formatNames(e.artist)) || '—'}</div></div>
-      ${e.totalChapters ? `<div class="field-row"><label>Chapters</label><div class="value plain">${e.totalChapters}</div></div>` : ''}
-      ${e.totalSeasons ? `<div class="field-row"><label>Seasons</label><div class="value plain">${e.totalSeasons}</div></div>` : ''}
-      <div class="field-row"><label>Status</label><div class="value plain">${escapeHtml(e.status) || '—'}</div></div>
+      <div class="field-row-2col">
+        <div class="field-row"><label>Author</label><div class="value plain">${escapeHtml(formatNames(e.author)) || '—'}</div></div>
+        <div class="field-row"><label>Artist</label><div class="value plain">${escapeHtml(formatNames(e.artist)) || '—'}</div></div>
+      </div>
+      <div class="details-divider"></div>
+      <div class="field-row-2col">
+        <div>
+          <div class="field-row"><label>Total Seasons</label><div class="value plain">${e.totalSeasons || '—'}</div></div>
+          <div class="field-row" style="margin-bottom:0;"><label>Total Chapters</label><div class="value plain">${e.totalChapters || '—'}</div></div>
+        </div>
+        <div class="field-row" style="margin-bottom:0;">
+          <label>Status</label>
+          <select class="shelf-select" data-status-select="1">
+            <option value="" ${!e.status ? 'selected' : ''}>—</option>
+            <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
+            <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
+          </select>
+        </div>
+      </div>
     ` : `
       <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)}</div></div>
       ${e.altTitle ? `<div class="field-row"><label>Alt title</label><div class="value plain">${escapeHtml(e.altTitle)}</div></div>` : ''}
@@ -4675,20 +4689,25 @@ function renderDetail(e) {
             ${topFieldsHtml}
           </div>
         </div>
+        ${isReading && !DETAIL_EDIT_MODE ? `<div class="details-divider details-divider-full"></div>` : ''}
         ${confirmedSummaryHtml}
         ${matchColumnHtml}
       </div>
 
       <!-- 1b. Reading link -->
       <div class="panel">
-        <div class="field-row">
-          <label>Reading Link</label>
-          ${e.readingLink
-            ? `<div style="display:flex;gap:8px;align-items:center;">
-                 <a href="${escapeHtml(e.readingLink)}" target="_blank" rel="noopener noreferrer" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--purple);">${escapeHtml(e.readingLink)}</a>
-                 <button class="icon-btn-inline" data-clear-reading-link="1" title="Remove link">✕</button>
-               </div>`
-            : `<input type="text" id="reading-link-input" placeholder="Paste the link where you're reading this...">`}
+        <div class="reading-link-row">
+          <div class="field-row" style="flex:1;min-width:0;margin-bottom:0;">
+            <label>Reading Link</label>
+            ${e.readingLink
+              ? `<a href="${escapeHtml(e.readingLink)}" target="_blank" rel="noopener noreferrer" class="reading-link-value">${escapeHtml(e.readingLink)}</a>`
+              : `<input type="text" id="reading-link-input" placeholder="Paste the link where you're reading this...">`}
+          </div>
+          <div class="reading-chapter-col">
+            <label>Current Chapter</label>
+            <input type="text" class="chapter-pill-input" id="current-chapter-input" placeholder="—" value="${escapeHtml(e.currentChapter || '')}">
+          </div>
+          ${e.readingLink ? `<button class="icon-btn-inline reading-link-clear" data-clear-reading-link="1" title="Remove link">✕</button>` : ''}
         </div>
       </div>
 
@@ -5521,7 +5540,7 @@ async function submitAdd() {
     id: uid(STATE.format === 'reading' ? 'manhwa' : 'anime'),
     format: STATE.format, title, altTitle: '', novelAuthor: '', author, artist: '', isNovel: false,
     totalSeasons: null, totalChapters: null, epilogue: '', officialLink: '', released: null,
-    status: '', currentlyReadingRaw: '', downloaded: '',
+    status: '', currentlyReadingRaw: '', downloaded: '', currentChapter: '',
     shelf: STATE.format === 'reading' ? 'Plan to Read' : 'Completed',
     tags: [], customTags: [], notes: '', favorite: false,
     coverUrl: null, referenceUrl: null, referenceSite: null, referenceStatus: 'none', suggestedMatch: null,
@@ -5748,6 +5767,13 @@ function attachRootHandlers() {
     await saveEntry(e);
     render();
   };
+  const currentChapterInput = root.querySelector('#current-chapter-input');
+  if (currentChapterInput) currentChapterInput.onblur = async () => {
+    const e = getEntry(STATE.entryId);
+    if (!e) return;
+    e.currentChapter = currentChapterInput.value.trim();
+    await saveEntry(e);
+  };
   const hdBtn = root.querySelector('[data-toggle-hd]');
   if (hdBtn) hdBtn.onclick = async () => {
     const e = getEntry(STATE.entryId);
@@ -5806,6 +5832,14 @@ function attachRootHandlers() {
     e.shelf = shelfSelectEl.value;
     await saveEntry(e);
     showToast('Shelf updated');
+    render();
+  };
+  const statusSelectEl = root.querySelector('[data-status-select]');
+  if (statusSelectEl) statusSelectEl.onchange = async () => {
+    const e = getEntry(STATE.entryId);
+    e.status = statusSelectEl.value;
+    await saveEntry(e);
+    showToast('Status updated');
     render();
   };
   root.querySelectorAll('[data-rating]').forEach((container) => {

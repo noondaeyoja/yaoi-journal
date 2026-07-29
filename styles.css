@@ -420,6 +420,16 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 }
 .field-row .value.plain { background: none; border: none; padding: 0; }
 
+/* Details container redesign: Author/Artist and Total Seasons/Status pair up
+   into two columns, split by a pink divider bar — see renderDetailPage()'s
+   topFieldsHtml. A second, full-width divider (a direct sibling of
+   .split-row rather than nested inside it) separates the whole cover+fields
+   block from the Summary text below, matching the reference mockup. */
+.field-row-2col { display: flex; gap: 14px; }
+.field-row-2col > div { flex: 1; min-width: 0; }
+.details-divider { height: 3px; background: var(--pink); border-radius: 999px; margin: 12px 0; }
+.details-divider-full { margin: 14px 0; }
+
 .rating-row { display: flex; align-items: stretch; justify-content: space-around; gap: 10px; }
 .rating-block { text-align: center; flex: 1; }
 .rating-block .label { font-size: 13.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 10px; }
@@ -514,6 +524,25 @@ textarea {
 .icon-btn-inline {
   background: none; border: none; color: var(--text-dim); font-size: 13px; cursor: pointer; padding: 0 0 0 4px; vertical-align: middle;
 }
+
+/* Reading Link container redesign — link on the left, a new editable
+   "Current Chapter" pill on the right, remove (X) button aligned with both. */
+.reading-link-row { display: flex; gap: 14px; align-items: flex-start; }
+.reading-link-value {
+  display: block; color: var(--pink); text-decoration: underline; font-size: 13.5px;
+  overflow-wrap: anywhere; word-break: break-word;
+}
+.reading-chapter-col { flex: 0 0 108px; }
+.reading-chapter-col label {
+  display: block; font-size: 10.5px; color: var(--text-dim); text-transform: uppercase;
+  letter-spacing: .04em; margin-bottom: 2px;
+}
+.chapter-pill-input {
+  width: 100%; box-sizing: border-box; background: var(--purple); color: #170b26; border: none;
+  border-radius: 10px; padding: 6px 10px; font-size: 12.5px; font-weight: 700; text-align: center; font-family: inherit;
+}
+.chapter-pill-input::placeholder { color: rgba(23,11,38,.6); }
+.reading-link-row .reading-link-clear { align-self: center; margin-top: 16px; }
 
 .pdf-row { display: flex; gap: 8px; align-items: center; }
 .pdf-row input {
