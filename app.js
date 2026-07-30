@@ -19,6 +19,30 @@ const FLAG_COLORS = ['green', 'red', 'black'];
 const FLAG_HEX = { green: '#4ade80', red: '#f87171', black: '#6b6b7a' };
 
 /* ---------------------------------------------------------------------- */
+/* SFW / NSFW account theme                                               */
+/* A one-time, per-account choice made at sign-up (or, for accounts that   */
+/* predate this feature, via a one-time button in Database). Deliberately  */
+/* NOT changeable afterward once saved. Internally the existing "hentai"   */
+/* tag/state names (HENTAI_TAG_KEY, isHentai(), showHentaiOnly, etc.) are  */
+/* left completely alone on purpose — renaming the actual stored tag       */
+/* string risks silently orphaning every already-tagged entry/H image if   */
+/* a migration step ever partially fails across devices. SFW mode just     */
+/* hides/relabels all of that in the UI; NSFW mode looks exactly like the  */
+/* app always has. See THEME_MODE below for the synced value itself.       */
+/* ---------------------------------------------------------------------- */
+const ADMIN_EMAIL = 'noondaeyoja@gmail.com';
+let THEME_MODE = null;           // 'sfw' | 'nsfw' | null (not chosen yet)
+let THEME_PICKER_BLOCKING = false; // true only while the auto-forced new-user picker is open
+let THEME_PICKER_AUTO_SHOWN = false; // guards against re-popping the auto picker more than once per session
+function isSFW() { return THEME_MODE === 'sfw'; }
+function isAdmin() { return !!(CURRENT_USER && CURRENT_USER.email === ADMIN_EMAIL); }
+// The one shared "mascot" glyph used for decorative placeholders (cover
+// fallbacks, the global header, the Smut/Cute rating icon) — swaps for SFW
+// accounts so nothing eggplant-shaped shows up for someone who picked the
+// clean version.
+function themeIcon() { return isSFW() ? '💕' : '🍆'; }
+
+/* ---------------------------------------------------------------------- */
 /* Firebase (cross-device sync)                                          */
 /* Firestore is the cross-device source of truth; IndexedDB stays as a   */
 /* fast local cache so the app still works offline. Data lives under     */
@@ -239,16 +263,23 @@ function idbDelete(storeName, key) {
   });
 }
 
+// Used to bulk-load her original manga/anime library from seed_data.json
+// into IndexedDB on every fresh browser/device — a one-time bootstrap from
+// before Google sign-in existed, back when this was a single-user app.
+// Left running unconditionally, it turned into a real problem the moment
+// this app started going to other people: a brand-new beta user's very
+// first sign-in on a fresh device would find this seeded data already
+// sitting in local storage with nothing yet in their own Firestore account,
+// and syncWithFirestore()'s "push up anything local-only" logic would treat
+// it as theirs to upload — silently copying her entire library, hentai tags
+// included, into a stranger's account. Her own data has lived safely in
+// Firestore under her own uid for a long time now and doesn't need this
+// bootstrap anymore, so this just marks seeding done without ever writing
+// the seed entries, for every device from here on.
 async function ensureSeeded() {
   const meta = await idbGet(STORE_META, 'seeded');
   if (meta && meta.value) return;
-  const resp = await fetch('./seed_data.json');
-  const seed = await resp.json();
-  const now = new Date().toISOString();
-  seed.entries.forEach((e) => { e.createdAt = now; e.updatedAt = now; });
-  await idbBulkPut(STORE_ENTRIES, seed.entries);
   await idbPut(STORE_META, { key: 'seeded', value: true });
-  await idbPut(STORE_META, { key: 'user', value: seed.user || 'noondaeyoja' });
 }
 
 async function loadAllEntries() {
@@ -440,6 +471,16 @@ function pushMetaField(field, value) {
   ref.set({ [field]: value }, { merge: true }).catch((err) => console.error('Meta sync failed:', err));
 }
 
+// Saves the one-time SFW/NSFW choice both locally and to Firestore — same
+// dual-write pattern as every other piece of synced meta state. There's
+// deliberately no "unsave"/change function: once this is set it's meant to
+// stay set (see the big comment above THEME_MODE).
+async function saveThemeMode(mode) {
+  THEME_MODE = mode;
+  await idbPut(STORE_META, { key: 'themeMode', value: mode });
+  pushMetaField('themeMode', mode);
+}
+
 // Pulls whatever's already in Firestore and unions it into the local sets,
 // so a deletion/resolution made on one device shows up on the other without
 // ever silently losing one side's decisions.
@@ -533,6 +574,13 @@ async function pullMetaState() {
     if (data.hNoteMap && typeof data.hNoteMap === 'object') {
       H_NOTE_MAP = { ...data.hNoteMap, ...H_NOTE_MAP };
       await idbPut(STORE_META, { key: 'hNoteMap', value: H_NOTE_MAP });
+    }
+    // Only adopt a remote themeMode if this device doesn't already have one
+    // cached — same "never overwrite what's already decided" rule as the
+    // proxy URL above. Once set anywhere, it should read the same everywhere.
+    if (typeof data.themeMode === 'string' && data.themeMode && !THEME_MODE) {
+      THEME_MODE = data.themeMode;
+      await idbPut(STORE_META, { key: 'themeMode', value: THEME_MODE });
     }
   } catch (err) {
     console.error('Meta pull failed:', err);
@@ -1293,8 +1341,84 @@ function uid(prefix) {
 }
 
 function closeModal() {
+  THEME_PICKER_BLOCKING = false;
   document.getElementById('overlay').classList.remove('open');
   document.getElementById('modal-sheet').innerHTML = '';
+}
+
+/* ---------------------------------------------------------------------- */
+/* SFW/NSFW theme picker modal                                            */
+/* Three ways this opens: (1) auto-forced once for a brand-new account —   */
+/* no close button, backdrop click does nothing, has to pick one; (2) the  */
+/* one-time "Choose your theme" button an existing pre-feature account     */
+/* sees under Database > Synced Account — same picker, but closeable       */
+/* since the button just stays there to try again; (3) the admin-only      */
+/* read-only preview link — same picker again, but confirming never saves */
+/* anything, it just closes so noondaeyoja can see exactly what a new      */
+/* user sees without touching her own already-set theme.                  */
+/* ---------------------------------------------------------------------- */
+function themePickerModalHtml(opts) {
+  const preview = !!(opts && opts.preview);
+  const autoForced = !!(opts && opts.autoForced);
+  return `
+    <div class="modal-close-corner-wrap">
+      ${!autoForced ? `<button class="modal-close-x" data-close-modal="1" title="Close">✕</button>` : ''}
+      <h3>Choose your Theme</h3>
+      <p style="font-size:12.5px;color:var(--text-dim);margin:0 0 14px;">${preview
+        ? "Preview only — this is exactly what a new user sees. It won't change your own theme."
+        : "This is a one-time choice for your account — it can't be changed later, so take a look at both before picking."}</p>
+      <div class="theme-pick-card" data-theme-pick="sfw" id="theme-pick-sfw" style="border:2px solid transparent;border-radius:10px;padding:12px;cursor:pointer;background:rgba(255,255,255,0.03);margin-bottom:10px;">
+        <div style="font-size:26px;">💕</div>
+        <div style="font-weight:600;margin:6px 0 2px;">SFW Version</div>
+        <div style="font-size:12px;color:var(--text-dim);">The clean version — no explicit content, no 18+ gallery. Just reading/watching tracking, ratings, and reactions.</div>
+      </div>
+      <div class="theme-pick-card" data-theme-pick="nsfw" id="theme-pick-nsfw" style="border:2px solid transparent;border-radius:10px;padding:12px;cursor:pointer;background:rgba(255,255,255,0.03);">
+        <div style="font-size:26px;">💦</div>
+        <div style="font-weight:600;margin:6px 0 2px;">NSFW Version</div>
+        <div style="font-size:12px;color:var(--text-dim);">Everything unlocked — explicit tagging, the NSFW gallery, and every rating option.</div>
+        <label style="display:flex;align-items:flex-start;gap:6px;margin-top:8px;font-size:12px;color:var(--text-dim);cursor:pointer;">
+          <input type="checkbox" id="theme-age-confirm" style="margin-top:2px;">
+          <span>I confirm I am 18 years of age or older.</span>
+        </label>
+      </div>
+      <p style="font-size:10.5px;color:var(--text-dim);margin:12px 0 0;">This is a personal media-tracking tool — you're responsible for anything you upload to it.</p>
+      <div class="modal-actions" style="margin-top:14px;">
+        ${preview ? `<button class="btn-ghost" data-close-modal="1">Close preview</button>` : ''}
+        <button class="btn-primary" id="theme-confirm-btn" disabled>Confirm</button>
+      </div>
+    </div>
+  `;
+}
+function openThemePickerModal(opts) {
+  opts = opts || {};
+  THEME_PICKER_BLOCKING = !!opts.autoForced;
+  openModal(themePickerModalHtml(opts), { centered: true });
+  wireThemePickerModal(opts);
+}
+function wireThemePickerModal(opts) {
+  opts = opts || {};
+  let selected = null;
+  const sfwCard = document.getElementById('theme-pick-sfw');
+  const nsfwCard = document.getElementById('theme-pick-nsfw');
+  const ageBox = document.getElementById('theme-age-confirm');
+  const confirmBtn = document.getElementById('theme-confirm-btn');
+  function refresh() {
+    if (sfwCard) sfwCard.style.borderColor = selected === 'sfw' ? '#ff4fc3' : 'transparent';
+    if (nsfwCard) nsfwCard.style.borderColor = selected === 'nsfw' ? '#ff4fc3' : 'transparent';
+    const valid = selected === 'sfw' || (selected === 'nsfw' && ageBox && ageBox.checked);
+    if (confirmBtn) confirmBtn.disabled = !valid;
+  }
+  if (sfwCard) sfwCard.onclick = () => { selected = 'sfw'; refresh(); };
+  if (nsfwCard) nsfwCard.onclick = (ev) => { if (ev.target === ageBox) return; selected = 'nsfw'; refresh(); };
+  if (ageBox) ageBox.onclick = (ev) => { ev.stopPropagation(); selected = 'nsfw'; refresh(); };
+  if (confirmBtn) confirmBtn.onclick = async () => {
+    if (!selected) return;
+    if (opts.preview) { closeModal(); return; }
+    await saveThemeMode(selected);
+    closeModal();
+    showToast(selected === 'sfw' ? '💕 SFW theme set' : '💦 NSFW theme set');
+    render();
+  };
 }
 
 function openModal(html, opts) {
@@ -1881,7 +2005,7 @@ function renderGlobalHeader() {
   return `
     <div class="global-header">
       <span class="global-header-brand" data-header-home="1">
-        <span class="global-header-logo">🍆</span><span class="global-header-title">Yaoi Journal</span>
+        <span class="global-header-logo">${themeIcon()}</span><span class="global-header-title">${isSFW() ? 'BL Journal' : 'Yaoi Journal'}</span>
       </span>
       <div class="global-search-bar">
         <span>🔍</span>
@@ -1903,6 +2027,11 @@ function render() {
     attachAuthHandlers();
     return;
   }
+  // Defensive only — the nav button to get here is already hidden for SFW
+  // accounts, but a restored nav-history state from before switching (or any
+  // other stray path into STATE.view === 'h') shouldn't be able to reach the
+  // NSFW gallery either.
+  if (STATE.view === 'h' && isSFW()) STATE.view = 'home';
   let body = '';
   if (STATE.view === 'home') body = renderHome();
   else if (STATE.view === 'detail') body = renderDetail(getEntry(STATE.entryId));
@@ -2104,8 +2233,8 @@ function renderCoverCard(e, reviewMode) {
   const isSuggested = !e.coverUrl && e.suggestedMatch && e.suggestedMatch.coverUrl;
   const coverSrc = e.coverUrl || (e.suggestedMatch ? e.suggestedMatch.coverUrl : null);
   const cover = coverSrc
-    ? `<img src="${escapeHtml(coverSrc)}" alt="" loading="lazy" referrerpolicy="no-referrer" style="${isSuggested ? 'opacity:.55' : ''}" onerror="this.parentElement.innerHTML='<div class=\\'cover-placeholder\\'>🍆</div>'">`
-    : `<div class="cover-placeholder">🍆</div>`;
+    ? `<img src="${escapeHtml(coverSrc)}" alt="" loading="lazy" referrerpolicy="no-referrer" style="${isSuggested ? 'opacity:.55' : ''}" onerror="this.parentElement.innerHTML='<div class=\\'cover-placeholder\\'>${themeIcon()}</div>'">`
+    : `<div class="cover-placeholder">${themeIcon()}</div>`;
   const flagColor = e.semi && e.semi.flag ? FLAG_HEX[e.semi.flag] : (e.uke && e.uke.flag ? FLAG_HEX[e.uke.flag] : null);
   // Cards in the Suggested Matches row open the quick-review carousel modal
   // instead of the full detail page — that's the whole point of the row.
@@ -2207,14 +2336,18 @@ function renderHome() {
       </div>
     </div>`;
 
-  const smutChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.smutFilter && n <= STATE.smutFilter ? 'active' : ''}" data-smut-filter="${n}" title="${n}+ eggplants">🍆</span>`).join('');
+  const smutChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.smutFilter && n <= STATE.smutFilter ? 'active' : ''}" data-smut-filter="${n}" title="${n}+ ${isSFW() ? 'hearts' : 'eggplants'}">${themeIcon()}</span>`).join('');
   const qualityChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.qualityFilter && n <= STATE.qualityFilter ? 'active' : ''}" data-quality-filter="${n}" title="${n}+ hearts">❤️</span>`).join('');
   const lolChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.lolFilter && n <= STATE.lolFilter ? 'active' : ''}" data-lol-filter="${n}" title="${n}+ laughs">😂</span>`).join('');
-  const flagChips = FLAG_COLORS.map((c) => `<span class="rating-pick-icon flag-filter-icon ${STATE.flagFilter === c ? 'active' : ''}" data-flag-filter="${c}" style="color:${FLAG_HEX[c]}" title="${c} flag">&#9873;</span>`).join('');
+  // Semi/Uke green/red/black flags are hidden entirely for SFW accounts —
+  // her explicit call: this is a general relationship-dynamic marker, not
+  // just a hentai-adjacent thing, but it's still part of the SFW cut.
+  const flagChips = isSFW() ? '' : FLAG_COLORS.map((c) => `<span class="rating-pick-icon flag-filter-icon ${STATE.flagFilter === c ? 'active' : ''}" data-flag-filter="${c}" style="color:${FLAG_HEX[c]}" title="${c} flag">&#9873;</span>`).join('');
   // Favorites/On HD used to be separate bottom-nav destinations; they're now
   // toggle chips here instead (same nav-filter mechanism the hentai chip
   // already used), so removing them from the bottom nav doesn't lose access.
-  const hentaiChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showHentaiOnly ? 'active' : ''}" data-nav-filter="${STATE.showHentaiOnly ? 'home' : 'hentai'}" title="Hentai only">💦</span>`;
+  // Hidden entirely for SFW accounts, same as the H nav item/gallery.
+  const hentaiChip = isSFW() ? '' : `<span class="rating-pick-icon flag-filter-icon ${STATE.showHentaiOnly ? 'active' : ''}" data-nav-filter="${STATE.showHentaiOnly ? 'home' : 'hentai'}" title="NSFW only">💦</span>`;
   const artworkChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showArtworkOnly ? 'active' : ''}" data-nav-filter="${STATE.showArtworkOnly ? 'home' : 'artwork'}" title="Artwork only">🖌️</span>`;
   const favoritesChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showFavoritesOnly ? 'active' : ''}" data-nav-filter="${STATE.showFavoritesOnly ? 'home' : 'favorites'}" title="Favorites only">💜</span>`;
   const onDriveChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showOnDriveOnly ? 'active' : ''}" data-nav-filter="${STATE.showOnDriveOnly ? 'home' : 'onDrive'}" title="On HD only">💾</span>`;
@@ -2237,7 +2370,7 @@ function renderHome() {
         <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
         <div class="filter-section-label">Ratings &amp; Flags</div>
-        <div class="rating-pick-row">${formatIcons}${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${lolChips}<span class="rating-pick-divider"></span>${flagChips}</div>
+        <div class="rating-pick-row">${formatIcons}${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${lolChips}${flagChips ? `<span class="rating-pick-divider"></span>${flagChips}` : ''}</div>
       </div>
     </div>
     <main>${body}</main>
@@ -2248,11 +2381,11 @@ function renderHome() {
 function renderBottomNav(active) {
   return `
     <div class="bottom-nav">
-      <button data-nav="home" class="${active === 'home' ? 'active' : ''}"><span class="icon">🏠</span>Journal</button>
+      <button data-nav="home" class="${active === 'home' ? 'active' : ''}"><span class="icon">📔</span>Journal</button>
       <button data-nav="tags" class="${active === 'tags' ? 'active' : ''}"><span class="icon">🏷️</span>Tags</button>
       <button data-nav="reactions" class="${active === 'reactions' ? 'active' : ''}"><span class="icon">🖼️</span>Images</button>
       <button data-nav="meme" class="${active === 'meme' ? 'active' : ''}"><span class="icon">🎭</span>Reactions</button>
-      <button data-nav="h" class="${active === 'h' ? 'active' : ''}"><span class="icon icon-h">H</span>H</button>
+      ${!isSFW() ? `<button data-nav="h" class="${active === 'h' ? 'active' : ''}"><span class="icon">💦</span>NSFW</button>` : ''}
       <button data-nav="database" class="${active === 'database' ? 'active' : ''}"><span class="icon">🗂️</span>Database</button>
     </div>`;
 }
@@ -3215,7 +3348,7 @@ function renderReactionsLibrary() {
           <button class="ref-btn" data-images-attach-selected="1" ${IMAGE_SELECTED.size ? '' : 'disabled'}>📎 Attach to a read…</button>
           <button class="ref-btn" data-images-tag-selected="1" ${IMAGE_SELECTED.size ? '' : 'disabled'}>🏷️ Add to mood…</button>
           <button class="ref-btn" data-images-add-selected-reactions="1" ${IMAGE_SELECTED.size ? '' : 'disabled'}>🎭 Add as reactions</button>
-          <button class="ref-btn" data-images-pull-selected-into-h="1" style="${IMAGE_SELECTED.size ? 'color:#f43f5e;' : ''}" ${IMAGE_SELECTED.size ? '' : 'disabled'}>🔴 Pull into H</button>
+          ${!isSFW() ? `<button class="ref-btn" data-images-pull-selected-into-h="1" style="${IMAGE_SELECTED.size ? 'color:#f43f5e;' : ''}" ${IMAGE_SELECTED.size ? '' : 'disabled'}>🔴 Pull into NSFW</button>` : ''}
         </div>
       ` : ''}
       <div class="tagmgr-tabs" style="margin-bottom:8px;">
@@ -3295,7 +3428,7 @@ function toggleHMembership(dataUrl) {
 function mediaToggleButtonsHtml(dataUrl, inReactions, inH, showReactionsToggle = true) {
   return `
     ${showReactionsToggle ? `<button class="mood-chip ${inReactions ? 'active' : ''}" data-toggle-reaction-membership="${escapeHtml(dataUrl)}">🎭 ${inReactions ? 'In Reactions ✓' : 'Use as reaction'}</button>` : ''}
-    <button class="mood-chip ${inH ? 'active' : ''}" data-toggle-h-membership="${escapeHtml(dataUrl)}" style="${inH ? 'background:#f43f5e;border-color:#f43f5e;color:#fff;' : 'color:#f43f5e;'}">🔴 ${inH ? 'In H ✓' : 'Pull into H'}</button>
+    ${!isSFW() ? `<button class="mood-chip ${inH ? 'active' : ''}" data-toggle-h-membership="${escapeHtml(dataUrl)}" style="${inH ? 'background:#f43f5e;border-color:#f43f5e;color:#fff;' : 'color:#f43f5e;'}">🔴 ${inH ? 'In NSFW ✓' : 'Pull into NSFW'}</button>` : ''}
   `;
 }
 
@@ -3588,7 +3721,7 @@ function renderMemeLibrary() {
       ${MEME_SELECT_MODE ? `
         <div class="export-row" style="margin-bottom:10px;background:var(--card);border:1px solid var(--purple);border-radius:var(--radius-sm);padding:8px;">
           <div style="flex:1;font-size:12.5px;color:var(--text-dim);align-self:center;">${MEME_SELECTED.size} selected</div>
-          <button class="ref-btn" data-meme-pull-selected-into-h="1" style="${MEME_SELECTED.size ? 'color:#f43f5e;' : ''}" ${MEME_SELECTED.size ? '' : 'disabled'}>🔴 Pull into H</button>
+          ${!isSFW() ? `<button class="ref-btn" data-meme-pull-selected-into-h="1" style="${MEME_SELECTED.size ? 'color:#f43f5e;' : ''}" ${MEME_SELECTED.size ? '' : 'disabled'}>🔴 Pull into NSFW</button>` : ''}
           <button class="btn-ghost" data-meme-delete-selected="1" ${MEME_SELECTED.size ? '' : 'disabled'}>🗑️ Delete selected</button>
         </div>
       ` : ''}
@@ -4571,7 +4704,7 @@ function hMainBody() {
   const items = hFilteredItems();
   return items.length
     ? `<div class="image-masonry">${items.map(hMasonryItem).join('')}</div>`
-    : `<div class="empty-state">${H_GROUP_FILTER || H_STATE.search || H_STATE.untaggedOnly ? 'No H images match. Try clearing the filter/search.' : 'No H images yet. Pull some in from Images or Reactions (open one → 🔴 Pull into H), or upload directly above.'}</div>`;
+    : `<div class="empty-state">${H_GROUP_FILTER || H_STATE.search || H_STATE.untaggedOnly ? 'No NSFW images match. Try clearing the filter/search.' : 'No NSFW images yet. Pull some in from Images or Reactions (open one → 🔴 Pull into NSFW), or upload directly above.'}</div>`;
 }
 
 function renderHLibraryInPlace() {
@@ -4588,7 +4721,7 @@ function renderHLibrary() {
   const groupChips = groupList.map((name) => `<button class="mood-chip ${H_GROUP_FILTER === name ? 'active' : ''}" data-h-group-filter="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join('');
   return `
     <div class="app-header">
-      <div class="brand-row"><h1><span class="icon-h" style="font-size:20px;">H</span> Hentai</h1></div>
+      <div class="brand-row"><h1>💦 NSFW</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${allHImages().length} image${allHImages().length === 1 ? '' : 's'} saved${untaggedCount ? ` · ${untaggedCount} untagged` : ''} — kept separate from the rest of the app.</div>
       <label class="upload-btn" style="margin-bottom:10px;">📎 Add image(s)<input type="file" accept="image/*,video/*" multiple id="h-upload-input"></label>
       <div class="search-bar" style="margin-bottom:8px;"><span>🔍</span><input type="search" id="h-search-input" placeholder="Search captions/keywords..." value="${escapeHtml(H_STATE.search)}"></div>
@@ -4620,7 +4753,7 @@ async function openHImageModal(dataUrl) {
   openModal(`
     <div class="modal-close-corner-wrap">
       <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
-      <h3><span class="icon-h">H</span> image</h3>
+      <h3>💦 NSFW image</h3>
       ${dataUrl
         ? (isVideoUrl(dataUrl)
             ? `<video src="${dataUrl}" autoplay loop muted controls playsinline style="width:100%;max-height:60vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
@@ -5025,10 +5158,10 @@ function renderDetail(e) {
           <button class="icon-btn ${e.favorite ? 'fav-active' : ''}" data-toggle-fav="1" title="Favorite">${e.favorite ? '💜' : '🤍'}</button>
           <span class="icon-label">Favorite</span>
         </div>
-        <div class="icon-action">
-          <button class="icon-btn ${isHentai(e) ? 'hentai-active' : ''}" data-toggle-hentai="1" title="${isHentai(e) ? 'Hentai — tap to unmark' : 'Mark as Hentai'}">💦</button>
-          <span class="icon-label">Hentai</span>
-        </div>
+        ${!isSFW() ? `<div class="icon-action">
+          <button class="icon-btn ${isHentai(e) ? 'hentai-active' : ''}" data-toggle-hentai="1" title="${isHentai(e) ? 'NSFW — tap to unmark' : 'Mark as NSFW'}">💦</button>
+          <span class="icon-label">NSFW</span>
+        </div>` : ''}
         <div class="icon-action">
           <button class="icon-btn ${isOnDrive(e) ? 'hd-active' : ''}" data-toggle-hd="1" title="${isOnDrive(e) ? 'On HD — tap to unmark' : 'Mark as On HD'}">💾</button>
           <span class="icon-label">On HD</span>
@@ -5045,7 +5178,7 @@ function renderDetail(e) {
         </div>
         <div class="split-row">
           <div>
-            <div class="cover-slot">${e.coverUrl ? `<img src="${escapeHtml(e.coverUrl)}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='🍆'">` : '🍆'}</div>
+            <div class="cover-slot">${e.coverUrl ? `<img src="${escapeHtml(e.coverUrl)}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='${themeIcon()}'">` : themeIcon()}</div>
             <div class="cover-actions-row">
               <label class="upload-btn small">📷 ${e.coverUrl ? 'Change' : 'Upload'}<input type="file" accept="image/*" style="display:none" id="cover-upload-input"></label>
             </div>
@@ -5080,8 +5213,8 @@ function renderDetail(e) {
       <div class="panel">
         <div class="rating-row">
           <div class="rating-block">
-            <div class="label">Smut Level</div>
-            <div class="rating-icons" data-rating="smutRating">${renderRatingIcons(e.smutRating, '🍆')}</div>
+            <div class="label">${isSFW() ? 'Cute' : 'Smut Level'}</div>
+            <div class="rating-icons" data-rating="smutRating">${renderRatingIcons(e.smutRating, themeIcon())}</div>
           </div>
           <div class="rating-block">
             <div class="label">Overall</div>
@@ -5105,7 +5238,7 @@ function renderDetail(e) {
               ${renderCharPhoto(e.semi.photo)}
               <input type="file" accept="image/*" style="display:none" data-char-photo="semi">
             </label>
-            <div class="flag-picker">${renderFlagPicker(e.semi.flag, 'semi')}</div>
+            ${!isSFW() ? `<div class="flag-picker">${renderFlagPicker(e.semi.flag, 'semi')}</div>` : ''}
             <textarea placeholder="Notes on the semi..." data-char-notes="semi">${escapeHtml(e.semi.notes)}</textarea>
           </div>
           <div class="char-col">
@@ -5116,7 +5249,7 @@ function renderDetail(e) {
               ${renderCharPhoto(e.uke.photo)}
               <input type="file" accept="image/*" style="display:none" data-char-photo="uke">
             </label>
-            <div class="flag-picker">${renderFlagPicker(e.uke.flag, 'uke')}</div>
+            ${!isSFW() ? `<div class="flag-picker">${renderFlagPicker(e.uke.flag, 'uke')}</div>` : ''}
             <textarea placeholder="Notes on the uke..." data-char-notes="uke">${escapeHtml(e.uke.notes)}</textarea>
           </div>
         </div>
@@ -5183,7 +5316,11 @@ function renderDatabase() {
   const rows = ALL_ENTRIES.slice().sort((a, b) => a.title.localeCompare(b.title));
   const reviewCount = ALL_ENTRIES.filter(needsReview).length;
   const dupCount = findDuplicateGroups().length;
-  const cols = ['Title', 'Format', 'Shelf', 'Author', 'Tags', 'Semi Flag', 'Uke Flag', 'Smut', 'Quality', 'Favorite', 'Notes'];
+  // Semi/Uke flag columns drop out entirely for SFW accounts (the feature
+  // itself is hidden on the entry page, so there's never anything to show
+  // here) — the Smut column becomes "SFW" per her back-end-wording call,
+  // still backed by the same smutRating field either way.
+  const cols = ['Title', 'Format', 'Shelf', 'Author', 'Tags', ...(isSFW() ? [] : ['Semi Flag', 'Uke Flag']), isSFW() ? 'SFW' : 'Smut', 'Quality', 'Favorite', 'Notes'];
   const trs = rows.map((e) => `
     <tr>
       <td>${escapeHtml(e.title)}</td>
@@ -5191,8 +5328,7 @@ function renderDatabase() {
       <td>${escapeHtml(e.shelf)}</td>
       <td>${escapeHtml(formatNames(e.author))}</td>
       <td>${escapeHtml((e.tags || []).concat(e.customTags || []).filter((t) => !isHiddenTag(t)).join(', '))}</td>
-      <td>${e.semi.flag || ''}</td>
-      <td>${e.uke.flag || ''}</td>
+      ${isSFW() ? '' : `<td>${e.semi.flag || ''}</td><td>${e.uke.flag || ''}</td>`}
       <td>${e.smutRating || 0}</td>
       <td>${e.qualityRating || 0}</td>
       <td>${e.favorite ? 'Yes' : ''}</td>
@@ -5212,6 +5348,13 @@ function renderDatabase() {
           <div class="account-email">${escapeHtml(CURRENT_USER ? CURRENT_USER.email : '')}</div>
         </div>
         <button class="icon-btn-inline" data-sign-out="1" title="Sign out">Sign Out</button>
+      </div>
+      <div class="account-panel" style="flex-direction:column;align-items:stretch;gap:8px;margin-top:-6px;">
+        <div class="account-label">Theme</div>
+        ${THEME_MODE
+          ? `<div style="font-size:14px;">${THEME_MODE === 'sfw' ? '💕 SFW' : '💦 NSFW'}</div>`
+          : `<button class="ref-btn" data-open-theme-picker="1">🎨 Choose your theme (one-time)</button>`}
+        ${isAdmin() ? `<button class="ref-btn" data-preview-theme-picker="1">🔍 Preview new-user theme screen</button>` : ''}
       </div>
       <div class="panel" style="margin-bottom:14px;">
         <div class="panel-title">Data Cleanup Tools</div>
@@ -5241,16 +5384,6 @@ function renderDatabase() {
             <button class="ref-btn" data-run-image-backfill="1">☁️ Upload local-only images to Drive (${imageBackfillCandidates().length} pending)</button>
           </div>
           <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">Images added before Drive was hooked up (or while it was disconnected) only ever saved on the device that added them. This pushes anything still local-only up to your Drive so other devices can finally pull it down. Requires Google Drive to be connected.</p>
-        `}
-        ${DRIVE_CONSOLIDATE.running ? `
-          <div class="export-row" style="margin-top:8px;">
-            <div style="flex:1;font-size:12.5px;color:var(--text-dim);">🗂️ Consolidating duplicate Drive folders…</div>
-          </div>
-        ` : `
-          <div class="export-row" style="margin-top:8px;">
-            <button class="ref-btn" data-consolidate-drive-folders="1">🗂️ Consolidate duplicate Drive folders</button>
-          </div>
-          <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">A past bug could create more than one "Yaoi Journal Images" folder in your Drive when two images uploaded at nearly the same time. This finds every duplicate, moves its files into one "Yaoi Journal/Images" and "Yaoi Journal/Reactions" folder pair, and deletes the empties — safe to run anytime, and safe to run more than once. Requires Google Drive to be connected.${DRIVE_CONSOLIDATE.summary ? ` Last run: moved ${DRIVE_CONSOLIDATE.summary.movedImages + DRIVE_CONSOLIDATE.summary.movedReactions} file(s), removed ${DRIVE_CONSOLIDATE.summary.foldersRemoved} duplicate folder(s).` : ''}</p>
         `}
       </div>
       ${(() => {
@@ -5321,8 +5454,8 @@ function renderSettingsPanel() {
 function renderReviewCard(e) {
   const sm = e.suggestedMatch;
   const cover = (sm && sm.coverUrl)
-    ? `<img src="${escapeHtml(sm.coverUrl)}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='<div class=\\'cover-placeholder\\'>🍆</div>'">`
-    : `<div class="cover-placeholder">🍆</div>`;
+    ? `<img src="${escapeHtml(sm.coverUrl)}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='<div class=\\'cover-placeholder\\'>${themeIcon()}</div>'">`
+    : `<div class="cover-placeholder">${themeIcon()}</div>`;
   return `
     <div class="panel review-card" data-entry="${e.id}">
       <div class="review-card-row">
@@ -5511,12 +5644,17 @@ function duplicateFieldDiffs(group) {
     { label: 'Shelf', get: (e) => e.shelf || '—' },
     { label: 'Status', get: (e) => e.status || '—' },
     { label: 'Author', get: (e) => formatNames(e.author) || '—' },
-    { label: 'Smut Level', get: (e) => String(e.smutRating || 0) },
+    { label: isSFW() ? 'SFW' : 'Smut Level', get: (e) => String(e.smutRating || 0) },
     { label: 'Overall', get: (e) => String(e.qualityRating || 0) },
     { label: 'Favorite', get: (e) => (e.favorite ? 'Yes' : 'No') },
     { label: 'Tags', get: (e) => (e.tags || []).concat(e.customTags || []).filter((t) => !isHiddenTag(t)).join(', ') || '—' },
-    { label: 'Semi flag', get: (e) => e.semi.flag || '—' },
-    { label: 'Uke flag', get: (e) => e.uke.flag || '—' },
+    // Semi/Uke flags are an SFW-hidden feature (see the detail page) — no
+    // point surfacing them in a duplicate comparison for an account that
+    // can never see or set them.
+    ...(isSFW() ? [] : [
+      { label: 'Semi flag', get: (e) => e.semi.flag || '—' },
+      { label: 'Uke flag', get: (e) => e.uke.flag || '—' },
+    ]),
     { label: 'Cover image', get: (e) => (e.coverUrl ? 'Yes' : 'No') },
     { label: 'Reference link', get: (e) => (e.referenceStatus === 'confirmed' ? (e.referenceSite || 'Linked') : 'Not linked') },
     { label: 'Notes', get: (e) => (e.notes || '').trim() || '—' },
@@ -5530,8 +5668,8 @@ function renderDuplicateGroup(group) {
   const items = group.map((e, i) => {
     const coverSrc = e.coverUrl || (e.suggestedMatch ? e.suggestedMatch.coverUrl : null);
     const cover = coverSrc
-      ? `<img src="${escapeHtml(coverSrc)}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='<div class=\\'cover-placeholder\\'>🍆</div>'">`
-      : `<div class="cover-placeholder">🍆</div>`;
+      ? `<img src="${escapeHtml(coverSrc)}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='<div class=\\'cover-placeholder\\'>${themeIcon()}</div>'">`
+      : `<div class="cover-placeholder">${themeIcon()}</div>`;
     // Within a duplicate comparison there are only ever a couple of items
     // being looked at, so "Merge into" should just pull whichever other
     // item(s) are already in this same comparison — no need to reopen a
@@ -6850,6 +6988,10 @@ function attachRootHandlers() {
   if (stopImageBackfillBtn) stopImageBackfillBtn.onclick = cancelImageBackfill;
   const consolidateDriveBtn = root.querySelector('[data-consolidate-drive-folders]');
   if (consolidateDriveBtn) consolidateDriveBtn.onclick = consolidateDriveFolders;
+  const openThemeBtn = root.querySelector('[data-open-theme-picker]');
+  if (openThemeBtn) openThemeBtn.onclick = () => openThemePickerModal({ autoForced: false });
+  const previewThemeBtn = root.querySelector('[data-preview-theme-picker]');
+  if (previewThemeBtn) previewThemeBtn.onclick = () => openThemePickerModal({ preview: true });
   root.querySelectorAll('[data-retry-failed-upload]').forEach((el) => {
     el.onclick = async () => {
       el.disabled = true;
@@ -7220,7 +7362,7 @@ document.addEventListener('click', async (ev) => {
   if (t.matches('[data-paste-ref]')) pasteReferenceFromClipboard(t.getAttribute('data-paste-ref'));
 });
 document.getElementById('overlay').addEventListener('click', (ev) => {
-  if (ev.target.id === 'overlay') closeModal();
+  if (ev.target.id === 'overlay' && !THEME_PICKER_BLOCKING) closeModal();
 });
 document.getElementById('toast-ok').addEventListener('click', hideToast);
 
@@ -7641,6 +7783,8 @@ async function boot() {
     if (savedHTagMap && savedHTagMap.value && typeof savedHTagMap.value === 'object') H_TAG_MAP = savedHTagMap.value;
     const savedHNoteMap = await idbGet(STORE_META, 'hNoteMap');
     if (savedHNoteMap && savedHNoteMap.value && typeof savedHNoteMap.value === 'object') H_NOTE_MAP = savedHNoteMap.value;
+    const savedThemeMode = await idbGet(STORE_META, 'themeMode');
+    if (savedThemeMode && typeof savedThemeMode.value === 'string') THEME_MODE = savedThemeMode.value;
     if ('serviceWorker' in navigator) {
       setupAutoUpdatingServiceWorker();
     }
@@ -7684,6 +7828,17 @@ async function boot() {
         runFavoriteTagMigrationOnce();
       }
       render();
+      // A genuinely brand-new account (no entries/reactions/H images ever
+      // synced) with no theme chosen yet gets the picker automatically, once
+      // per session — this is the "asked upon new user creation" flow. An
+      // EXISTING account that predates this feature also has no themeMode,
+      // but forcing the modal on someone returning to an app they already
+      // use would be jarring, so those instead just see a one-time button
+      // under Database > Synced Account (see renderDatabase()).
+      if (user && !THEME_MODE && !THEME_PICKER_AUTO_SHOWN && !ALL_ENTRIES.length && !ALL_REACTIONS.length && !ALL_H_IMAGES.length) {
+        THEME_PICKER_AUTO_SHOWN = true;
+        openThemePickerModal({ autoForced: true });
+      }
     });
   } catch (err) {
     const isFileProtocol = location.protocol === 'file:';
