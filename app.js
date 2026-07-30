@@ -246,32 +246,64 @@ function idbGet(storeName, key) {
   });
 }
 
+// Every IndexedDB write goes through this one queue instead of firing its
+// own independent transaction the instant it's called. Right after an edit
+// it's normal for several writers to all want the SAME record within
+// milliseconds of each other — the save itself, the live Firestore
+// listener's echo of that same write coming back down, and that echo's own
+// Drive-hydration follow-up. Each used to open its own separate
+// db.transaction() and race the others; IndexedDB doesn't promise those
+// finish in the order they were called, so whichever one happened to still
+// be mid-flight when an earlier one's transaction actually landed could get
+// silently clobbered — losing an image moments after attaching it, with
+// nothing in any of the individual calls looking wrong. Chaining every
+// write onto one promise means each one now genuinely waits for the
+// previous to fully commit before it even starts, so the write that
+// actually happened last in real call order is the one guaranteed to win.
+let IDB_WRITE_QUEUE = Promise.resolve();
+function queueIdbWrite(fn) {
+  const run = IDB_WRITE_QUEUE.then(fn, fn);
+  IDB_WRITE_QUEUE = run.then(() => {}, () => {});
+  return run;
+}
+// Resolves on the TRANSACTION committing (tx.oncomplete), not just the
+// individual put request succeeding (req.onsuccess). Those aren't the same
+// moment — a request can fire onsuccess and then still have its whole
+// transaction silently abort/roll back afterward, and a caller awaiting
+// only req.onsuccess would believe a write landed when IndexedDB actually
+// discarded it.
 function idbPut(storeName, value) {
-  return new Promise((resolve, reject) => {
+  return queueIdbWrite(() => new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, 'readwrite');
     const req = tx.objectStore(storeName).put(value);
-    req.onsuccess = () => resolve(req.result);
+    let result;
+    req.onsuccess = () => { result = req.result; };
     req.onerror = () => reject(req.error);
-  });
+    tx.oncomplete = () => resolve(result);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction aborted'));
+  }));
 }
 
 function idbBulkPut(storeName, values) {
-  return new Promise((resolve, reject) => {
+  return queueIdbWrite(() => new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, 'readwrite');
     const store = tx.objectStore(storeName);
     values.forEach((v) => store.put(v));
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
-  });
+  }));
 }
 
 function idbDelete(storeName, key) {
-  return new Promise((resolve, reject) => {
+  return queueIdbWrite(() => new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, 'readwrite');
     const req = tx.objectStore(storeName).delete(key);
     req.onsuccess = () => resolve();
     req.onerror = () => reject(req.error);
-  });
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction aborted'));
+  }));
 }
 
 // Used to bulk-load her original manga/anime library from seed_data.json
