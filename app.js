@@ -561,6 +561,14 @@ async function pullMetaState() {
       IMAGE_TAG_MAP = { ...data.imageTagMap, ...IMAGE_TAG_MAP };
       await idbPut(STORE_META, { key: 'imageTagMap', value: IMAGE_TAG_MAP });
     }
+    if (Array.isArray(data.hiddenGroupKeys) && data.hiddenGroupKeys.length) {
+      HIDDEN_GROUP_KEYS = new Set([...HIDDEN_GROUP_KEYS, ...data.hiddenGroupKeys]);
+      await idbPut(STORE_META, { key: 'hiddenGroupKeys', value: Array.from(HIDDEN_GROUP_KEYS) });
+    }
+    if (Array.isArray(data.deletedGroupKeys) && data.deletedGroupKeys.length) {
+      DELETED_GROUP_KEYS = new Set([...DELETED_GROUP_KEYS, ...data.deletedGroupKeys]);
+      await idbPut(STORE_META, { key: 'deletedGroupKeys', value: Array.from(DELETED_GROUP_KEYS) });
+    }
     if (Array.isArray(data.ignoredImageDupGroups) && data.ignoredImageDupGroups.length) {
       IGNORED_IMAGE_DUP_GROUPS = new Set([...IGNORED_IMAGE_DUP_GROUPS, ...data.ignoredImageDupGroups]);
       await idbPut(STORE_META, { key: 'ignoredImageDupGroups', value: Array.from(IGNORED_IMAGE_DUP_GROUPS) });
@@ -584,6 +592,14 @@ async function pullMetaState() {
     if (data.hTagMap && typeof data.hTagMap === 'object') {
       H_TAG_MAP = { ...data.hTagMap, ...H_TAG_MAP };
       await idbPut(STORE_META, { key: 'hTagMap', value: H_TAG_MAP });
+    }
+    if (Array.isArray(data.hHiddenGroupKeys) && data.hHiddenGroupKeys.length) {
+      H_HIDDEN_GROUP_KEYS = new Set([...H_HIDDEN_GROUP_KEYS, ...data.hHiddenGroupKeys]);
+      await idbPut(STORE_META, { key: 'hHiddenGroupKeys', value: Array.from(H_HIDDEN_GROUP_KEYS) });
+    }
+    if (Array.isArray(data.hDeletedGroupKeys) && data.hDeletedGroupKeys.length) {
+      H_DELETED_GROUP_KEYS = new Set([...H_DELETED_GROUP_KEYS, ...data.hDeletedGroupKeys]);
+      await idbPut(STORE_META, { key: 'hDeletedGroupKeys', value: Array.from(H_DELETED_GROUP_KEYS) });
     }
     if (data.hNoteMap && typeof data.hNoteMap === 'object') {
       H_NOTE_MAP = { ...data.hNoteMap, ...H_NOTE_MAP };
@@ -1460,6 +1476,47 @@ function openModal(html, opts) {
 // an <img> and a <video> tag for a given dataUrl.
 function isVideoUrl(dataUrl) {
   return typeof dataUrl === 'string' && dataUrl.startsWith('data:video/');
+}
+
+// The Crop button used to hide for every GIF/WebP unconditionally — the
+// worry being that flattening an animated file down to a single cropped
+// frame via canvas would silently kill the animation. But WebP in
+// particular is a completely normal general-purpose *static* image format
+// now (most "Save Image" downloads from modern sites come out as WebP,
+// animated or not), so that blanket rule was blocking Crop on plain,
+// non-animated pictures too — this is what she was hitting. This actually
+// peeks at the file bytes to tell real animated files apart from static
+// ones saved with a gif/webp extension, so Crop only stays hidden for
+// files that would truly lose something.
+function isAnimatedImageDataUrl(dataUrl) {
+  try {
+    const comma = dataUrl.indexOf(',');
+    const bin = atob(dataUrl.slice(comma + 1));
+    if (dataUrl.startsWith('data:image/gif')) {
+      // Animated GIFs carry one Graphic Control Extension block (0x21 0xF9)
+      // per frame; a static GIF has at most one.
+      let count = 0;
+      for (let i = 0; i < bin.length - 1; i++) {
+        if (bin.charCodeAt(i) === 0x21 && bin.charCodeAt(i + 1) === 0xF9) {
+          count++;
+          if (count > 1) return true;
+        }
+      }
+      return false;
+    }
+    // Animated WebP files are the only ones that contain an 'ANIM'/'ANMF'
+    // RIFF chunk — plain VP8/VP8L/VP8X stills never do.
+    return bin.includes('ANIM');
+  } catch (err) {
+    // Anything that fails to parse falls back to the old conservative
+    // behavior (treat as animated) rather than risk flattening a real one.
+    return true;
+  }
+}
+// Shared gate the Crop button uses everywhere: hide it for videos, and for
+// gif/webp files that are actually animated (see isAnimatedImageDataUrl).
+function isCroppableDataUrl(dataUrl) {
+  return !!dataUrl && !isVideoUrl(dataUrl) && !(/^data:image\/(gif|webp)/.test(dataUrl) && isAnimatedImageDataUrl(dataUrl));
 }
 
 // Lets her save an image/video straight from the individual gallery view to
@@ -3054,9 +3111,47 @@ function deleteSharedGroupEverywhere(key) {
     }
   });
 }
+// Shared helpers for the hide/delete lifecycle above — used by both
+// galleries since it's all backed by the one shared group Set.
+function isHiddenGroup(name) {
+  return HIDDEN_GROUP_KEYS.has(name) || DELETED_GROUP_KEYS.has(name);
+}
+async function setGroupSoftHidden(name, hidden) {
+  if (hidden) HIDDEN_GROUP_KEYS.add(name); else HIDDEN_GROUP_KEYS.delete(name);
+  const arr = Array.from(HIDDEN_GROUP_KEYS);
+  await idbPut(STORE_META, { key: 'hiddenGroupKeys', value: arr });
+  pushMetaField('hiddenGroupKeys', arr);
+}
+async function recordDeletedGroup(name) {
+  DELETED_GROUP_KEYS.add(name);
+  const arr = Array.from(DELETED_GROUP_KEYS);
+  await idbPut(STORE_META, { key: 'deletedGroupKeys', value: arr });
+  pushMetaField('deletedGroupKeys', arr);
+}
+async function restoreDeletedGroup(name) {
+  DELETED_GROUP_KEYS.delete(name);
+  const arr = Array.from(DELETED_GROUP_KEYS);
+  await idbPut(STORE_META, { key: 'deletedGroupKeys', value: arr });
+  pushMetaField('deletedGroupKeys', arr);
+}
+// How many distinct images/reactions currently carry this group — counted
+// by imageKey so the same picture attached in both places only counts once.
+function groupUsageCount(key) {
+  const urls = new Set();
+  Object.keys(IMAGE_TAG_MAP).forEach((imgKey) => { if ((IMAGE_TAG_MAP[imgKey] || []).includes(key)) urls.add(imgKey); });
+  ALL_REACTIONS.forEach((r) => { if ((r.moodTags || []).includes(key)) urls.add(imageKey(r.dataUrl)); });
+  return urls.size;
+}
+// Chip rows (filter bars, tag-toggle lists) only ever show non-hidden
+// groups — same rule Tag Manager already applies to hidden tags.
+function visibleGroupList() {
+  return Array.from(IMAGE_GROUPS).filter((k) => !isHiddenGroup(k)).sort((a, b) => a.localeCompare(b));
+}
 function addImageGroup(rawName) {
   const name = String(rawName || '').trim();
   if (!name) return null;
+  const deleted = Array.from(DELETED_GROUP_KEYS).find((k) => k.toLowerCase() === name.toLowerCase());
+  if (deleted) { showToast(`"${deleted}" was deleted — restore it from Manage > Hidden first`); return null; }
   const existing = Array.from(IMAGE_GROUPS).find((k) => k.toLowerCase() === name.toLowerCase());
   const key = existing || name;
   if (!existing) { IMAGE_GROUPS.add(key); persistSharedGroups(); }
@@ -3078,11 +3173,20 @@ function deleteImageGroup(key) {
   IMAGE_GROUPS.delete(key);
   persistSharedGroups();
   deleteSharedGroupEverywhere(key);
+  recordDeletedGroup(key);
   if (IMAGE_GROUP_FILTER === key) IMAGE_GROUP_FILTER = null;
   if (MEME_STATE.moodFilter === key) MEME_STATE.moodFilter = null;
 }
 function getImageTags(dataUrl) {
-  return IMAGE_TAG_MAP[imageKey(dataUrl)] || [];
+  const own = IMAGE_TAG_MAP[imageKey(dataUrl)] || [];
+  // An image that's ALSO been pulled into the Reactions library and sorted
+  // into a mood there stores that tag on the reaction record's moodTags,
+  // not in IMAGE_TAG_MAP — a completely separate field. Now that the two
+  // galleries' groups are merged, that should count as "tagged" here too
+  // instead of still showing Untagged until it's tagged a second time from
+  // the Images side specifically.
+  const reactionTags = ALL_REACTIONS.filter((r) => r.dataUrl === dataUrl).flatMap((r) => r.moodTags || []);
+  return reactionTags.length ? Array.from(new Set([...own, ...reactionTags])) : own;
 }
 // "Untagged" in the Images gallery means not sorted into ANY of: a mood
 // group, Semi only, or Uke only — being a semi/uke photo already counts as
@@ -3098,20 +3202,67 @@ function toggleImageTag(dataUrl, tag) {
   IMAGE_TAG_MAP[key] = Array.from(tags);
   persistImageTagMap();
 }
-function openManageImageGroupsModal() {
-  const list = Array.from(IMAGE_GROUPS).sort((a, b) => a.localeCompare(b));
+// Shared manage-groups modal — same row layout as Tag Manager (count,
+// hide toggle, merge, rename, delete) since Images/Reactions now share one
+// group list. Both galleries' "Manage" buttons open this; only the title
+// text they pass in differs.
+function renderSharedGroupManagerModal(title) {
+  GROUP_MGR_MODAL_TITLE = title;
+  const allNames = Array.from(IMAGE_GROUPS).sort((a, b) => a.localeCompare(b));
+  const activeNames = allNames.filter((k) => !isHiddenGroup(k));
+  const hiddenActiveNames = allNames.filter((k) => HIDDEN_GROUP_KEYS.has(k) && !DELETED_GROUP_KEYS.has(k));
+  const names = GROUP_MGR_TAB === 'active' ? activeNames : hiddenActiveNames;
+  const rows = GROUP_MGR_TAB === 'active'
+    ? names.map((name) => `
+        <div class="tagmgr-row">
+          <div class="tagmgr-click-area" style="cursor:default;">
+            <div class="tagmgr-name">${escapeHtml(name)}</div>
+            <div class="tagmgr-count">${groupUsageCount(name)} item${groupUsageCount(name) === 1 ? '' : 's'}</div>
+          </div>
+          <div class="tagmgr-actions">
+            <button class="toggle-switch on" data-groupmgr-hide="${escapeHtml(name)}" title="Hide from filters (keeps the data)" role="switch" aria-checked="true"><span class="toggle-knob"></span></button>
+            <button class="icon-btn-inline" data-groupmgr-merge="${escapeHtml(name)}" title="Merge into another group">🔀</button>
+            <button class="icon-btn-inline" data-groupmgr-rename="${escapeHtml(name)}" title="Rename this group everywhere">✏️</button>
+            <button class="icon-btn-inline" data-groupmgr-delete="${escapeHtml(name)}" title="Delete this group everywhere">🗑️</button>
+          </div>
+        </div>`).join('')
+    : names.map((name) => `
+        <div class="tagmgr-row">
+          <div class="tagmgr-click-area" style="cursor:default;">
+            <div class="tagmgr-name">${escapeHtml(name)}</div>
+            <div class="tagmgr-count">${groupUsageCount(name)} item${groupUsageCount(name) === 1 ? '' : 's'}</div>
+          </div>
+          <div class="tagmgr-actions">
+            <button class="toggle-switch" data-groupmgr-hide="${escapeHtml(name)}" title="Show in filters again" role="switch" aria-checked="false"><span class="toggle-knob"></span></button>
+          </div>
+        </div>`).join('');
+  const deletedRows = GROUP_MGR_TAB === 'hidden' && DELETED_GROUP_KEYS.size ? `
+    <div class="panel-title" style="margin:16px 0 8px;">Permanently deleted</div>
+    <div style="color:var(--text-dim);font-size:12px;margin-bottom:8px;">These had their tag removed from every image/reaction — restoring just allows the name to be used again; old items won't get it back.</div>
+    ${Array.from(DELETED_GROUP_KEYS).sort().map((key) => `
+      <div class="tagmgr-row">
+        <div class="tagmgr-name" style="flex:1;">${escapeHtml(key)}</div>
+        <button class="ref-btn" data-restore-group="${escapeHtml(key)}">Allow again</button>
+      </div>`).join('')}
+  ` : '';
+  const tabsHtml = `
+    <div class="tagmgr-tabs" style="margin-bottom:8px;">
+      <button class="tagmgr-tab ${GROUP_MGR_TAB === 'active' ? 'active' : ''}" data-groupmgr-tab="active">Active (${activeNames.length})</button>
+      <button class="tagmgr-tab ${GROUP_MGR_TAB === 'hidden' ? 'active' : ''}" data-groupmgr-tab="hidden">Hidden (${hiddenActiveNames.length + DELETED_GROUP_KEYS.size})</button>
+    </div>`;
   openModal(`
-    <h3>Manage image groups</h3>
-    ${list.length ? `<div style="display:flex;flex-direction:column;gap:8px;">${list.map((name) => `
-      <div style="display:flex;align-items:center;gap:8px;justify-content:space-between;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;">
-        <span>🏷️ ${escapeHtml(name)}</span>
-        <div style="display:flex;gap:6px;">
-          <button class="ref-btn" data-rename-image-group="${escapeHtml(name)}">Rename</button>
-          <button class="btn-ghost" data-delete-image-group="${escapeHtml(name)}">Delete</button>
-        </div>
-      </div>`).join('')}</div>` : `<div class="empty-state">No image groups yet.</div>`}
+    <h3>${escapeHtml(title)}</h3>
+    <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">Shared between Images and Reactions — a group made or renamed in either gallery shows up in both. Hiding keeps a group's tags intact but off the chip rows; deleting removes it everywhere.</div>
+    ${tabsHtml}
+    <div style="max-height:400px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;">
+      ${rows || `<div class="empty-state">${GROUP_MGR_TAB === 'hidden' ? 'No hidden groups.' : 'No groups yet.'}</div>`}
+    </div>
+    ${deletedRows}
     <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Done</button></div>
   `);
+}
+function openManageImageGroupsModal() {
+  renderSharedGroupManagerModal('Manage groups');
 }
 
 // Selecting several images at once, then attaching them all to one entry —
@@ -3129,11 +3280,34 @@ const SEMI_TAG = 'Semi';
 const UKE_TAG = 'Uke';
 let IMAGE_GROUP_FILTER = null;
 let IMAGES_UNTAGGED_ONLY = false;
+// Groups/moods get the same hide + delete lifecycle Tag Manager already has
+// for tags: a soft "hide from chip rows" toggle that keeps every image's/
+// reaction's tag data intact, plus a full delete that strips the tag
+// everywhere and blocks the name from being recreated (by hand or by a
+// future import) until restored from the Hidden tab. Applies to the shared
+// Images/Reactions group set; H keeps its own separate copies below since
+// its groups were deliberately NOT merged into that shared set.
+let HIDDEN_GROUP_KEYS = new Set();
+let DELETED_GROUP_KEYS = new Set();
+let GROUP_MGR_TAB = 'active'; // 'active' | 'hidden'
+let GROUP_MGR_MODAL_TITLE = 'Manage groups';
 
 function openAttachImagesToEntryModal(dataUrls) {
-  const candidates = ALL_ENTRIES.slice().sort((a, b) => a.title.localeCompare(b.title));
+  // Defensive de-dupe by id — IndexedDB itself can't hold two records under
+  // the same id (it's the store's keyPath), so this only ever matters if a
+  // rare sync race briefly duplicates an id in the in-memory ALL_ENTRIES
+  // array; harmless either way, and it's the cheapest way to guarantee this
+  // list never shows the same read twice.
+  const seen = new Set();
+  const candidates = ALL_ENTRIES
+    .filter((e) => (seen.has(e.id) ? false : (seen.add(e.id), true)))
+    .sort((a, b) => a.title.localeCompare(b.title));
+  // A manga/manhwa entry and its anime/TV adaptation can legitimately share
+  // (near-)identical titles — this format emoji is the only thing telling
+  // them apart at a glance in an alphabetical list, same icon scheme as the
+  // Database duplicates review screen.
   const renderList = (list) => list.length
-    ? list.slice(0, 40).map((c) => `<button class="ref-btn" style="width:100%;text-align:left;" data-attach-images-target="${c.id}">${escapeHtml(c.title)}</button>`).join('')
+    ? list.slice(0, 40).map((c) => `<button class="ref-btn" style="width:100%;text-align:left;" data-attach-images-target="${c.id}">${c.format === 'reading' ? '📖' : '📺'} ${escapeHtml(c.title)}</button>`).join('')
     : '<div class="empty-state">No matches.</div>';
   openModal(`
     <h3>Attach ${dataUrls.length} image${dataUrls.length === 1 ? '' : 's'} to…</h3>
@@ -3192,7 +3366,7 @@ function tagImagesWithGroup(dataUrls, tag) {
   persistImageTagMap();
 }
 function openTagSelectedImagesModal(dataUrls) {
-  const groupList = Array.from(IMAGE_GROUPS).sort((a, b) => a.localeCompare(b));
+  const groupList = visibleGroupList();
   openModal(`
     <h3>Add ${dataUrls.length} image${dataUrls.length === 1 ? '' : 's'} to a mood…</h3>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
@@ -3437,7 +3611,7 @@ function renderReactionsLibrary() {
     tabBody = attached.length ? `<div class="image-masonry">${attached.map((img) => masonryItem(img)).join('')}</div>` : `<div class="empty-state">No attached images yet.</div>`;
   }
 
-  const groupList = Array.from(IMAGE_GROUPS).sort((a, b) => a.localeCompare(b));
+  const groupList = visibleGroupList();
   const groupChips = groupList.map((name) => `<button class="mood-chip ${IMAGE_GROUP_FILTER === name ? 'active' : ''}" data-images-group-filter="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join('');
 
   return `
@@ -3541,11 +3715,11 @@ function mediaToggleButtonsHtml(dataUrl, inReactions, inH, showReactionsToggle =
 
 async function openImageAttachmentsModal(dataUrl) {
   const entries = ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(dataUrl));
-  const groupList = Array.from(IMAGE_GROUPS).sort((a, b) => a.localeCompare(b));
+  const groupList = visibleGroupList();
   const currentTags = getImageTags(dataUrl);
   const inReactions = await isDataUrlInReactions(dataUrl);
   const inH = isDataUrlInH(dataUrl);
-  const croppable = !isVideoUrl(dataUrl) && !/^data:image\/(gif|webp)/.test(dataUrl || '');
+  const croppable = isCroppableDataUrl(dataUrl);
   // A standalone Images-tab upload has no entry to fall back to — it only
   // exists as its own ALL_REACTIONS record (source: 'images'), so deleting it
   // has to go through deleteReaction directly rather than the entry-cleanup
@@ -3609,11 +3783,13 @@ const MOOD_OPTIONS = [
 function allMoodOptions() {
   // No emoji prefix on custom moods — they read cleaner as plain labels,
   // and it avoids every custom mood looking visually identical (all 🏷️).
-  return [...MOOD_OPTIONS, ...Array.from(CUSTOM_MOODS).sort((a, b) => a.localeCompare(b)).map((name) => ({ key: name, emoji: '', label: name }))];
+  return [...MOOD_OPTIONS, ...visibleGroupList().map((name) => ({ key: name, emoji: '', label: name }))];
 }
 function addCustomMood(rawName) {
   const name = String(rawName || '').trim();
   if (!name) return null;
+  const deleted = Array.from(DELETED_GROUP_KEYS).find((k) => k.toLowerCase() === name.toLowerCase());
+  if (deleted) { showToast(`"${deleted}" was deleted — restore it from Manage > Hidden first`); return null; }
   const existing = [...MOOD_OPTIONS.map((m) => m.key), ...CUSTOM_MOODS].find((k) => k.toLowerCase() === name.toLowerCase());
   const key = existing || name;
   if (!existing) { CUSTOM_MOODS.add(key); persistSharedGroups(); }
@@ -3644,23 +3820,12 @@ function deleteCustomMood(key) {
   CUSTOM_MOODS.delete(key);
   persistSharedGroups();
   deleteSharedGroupEverywhere(key);
+  recordDeletedGroup(key);
   if (MEME_STATE.moodFilter === key) MEME_STATE.moodFilter = null;
   if (IMAGE_GROUP_FILTER === key) IMAGE_GROUP_FILTER = null;
 }
 function openManageMoodsModal() {
-  const list = Array.from(CUSTOM_MOODS).sort((a, b) => a.localeCompare(b));
-  openModal(`
-    <h3>Manage custom moods</h3>
-    ${list.length ? `<div style="display:flex;flex-direction:column;gap:8px;">${list.map((name) => `
-      <div style="display:flex;align-items:center;gap:8px;justify-content:space-between;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;">
-        <span>🏷️ ${escapeHtml(name)}</span>
-        <div style="display:flex;gap:6px;">
-          <button class="ref-btn" data-rename-mood="${escapeHtml(name)}">Rename</button>
-          <button class="btn-ghost" data-delete-mood="${escapeHtml(name)}">Delete</button>
-        </div>
-      </div>`).join('')}</div>` : `<div class="empty-state">No custom moods yet.</div>`}
-    <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Done</button></div>
-  `);
+  renderSharedGroupManagerModal('Manage groups');
 }
 let MEME_STATE = { moodFilter: null, search: '', untaggedOnly: false };
 
@@ -4006,7 +4171,7 @@ function openMemeEditModal(id) {
     ` : ''}
       <div class="modal-actions">
         <button class="btn-ghost" data-delete-meme="${r.id}">🗑️ Delete</button>
-        ${r.dataUrl && !isVideoUrl(r.dataUrl) && !/^data:image\/(gif|webp)/.test(r.dataUrl) ? `<button class="btn-ghost" data-crop-meme="${r.id}">✂️ Crop</button>` : ''}
+        ${isCroppableDataUrl(r.dataUrl) ? `<button class="btn-ghost" data-crop-meme="${r.id}">✂️ Crop</button>` : ''}
         ${r.dataUrl ? `<button class="btn-ghost" data-save-image="${escapeHtml(r.dataUrl)}">⬇️ Save</button>` : ''}
         <button class="btn-primary" data-close-modal="1">Done</button>
       </div>
@@ -4692,6 +4857,13 @@ async function addHImageFiles(fileList) {
 // Images-tab groups.
 let H_GROUPS = new Set();
 let H_TAG_MAP = {}; // { [imageKey]: string[] group names }
+// Same hide/delete lifecycle as the shared Images/Reactions groups above,
+// but its own separate copy — H's groups were deliberately kept out of that
+// shared set, so hiding/deleting one here has no effect on the other two
+// galleries and vice versa.
+let H_HIDDEN_GROUP_KEYS = new Set();
+let H_DELETED_GROUP_KEYS = new Set();
+let H_GROUP_MGR_TAB = 'active'; // 'active' | 'hidden'
 function persistHGroups() {
   idbPut(STORE_META, { key: 'hGroups', value: Array.from(H_GROUPS) });
   pushMetaField('hGroups', Array.from(H_GROUPS));
@@ -4700,9 +4872,40 @@ function persistHTagMap() {
   idbPut(STORE_META, { key: 'hTagMap', value: H_TAG_MAP });
   pushMetaField('hTagMap', H_TAG_MAP);
 }
+function isHiddenHGroup(name) {
+  return H_HIDDEN_GROUP_KEYS.has(name) || H_DELETED_GROUP_KEYS.has(name);
+}
+async function setHGroupSoftHidden(name, hidden) {
+  if (hidden) H_HIDDEN_GROUP_KEYS.add(name); else H_HIDDEN_GROUP_KEYS.delete(name);
+  const arr = Array.from(H_HIDDEN_GROUP_KEYS);
+  await idbPut(STORE_META, { key: 'hHiddenGroupKeys', value: arr });
+  pushMetaField('hHiddenGroupKeys', arr);
+}
+async function recordDeletedHGroup(name) {
+  H_DELETED_GROUP_KEYS.add(name);
+  const arr = Array.from(H_DELETED_GROUP_KEYS);
+  await idbPut(STORE_META, { key: 'hDeletedGroupKeys', value: arr });
+  pushMetaField('hDeletedGroupKeys', arr);
+}
+async function restoreDeletedHGroup(name) {
+  H_DELETED_GROUP_KEYS.delete(name);
+  const arr = Array.from(H_DELETED_GROUP_KEYS);
+  await idbPut(STORE_META, { key: 'hDeletedGroupKeys', value: arr });
+  pushMetaField('hDeletedGroupKeys', arr);
+}
+function hGroupUsageCount(key) {
+  const urls = new Set();
+  Object.keys(H_TAG_MAP).forEach((imgKey) => { if ((H_TAG_MAP[imgKey] || []).includes(key)) urls.add(imgKey); });
+  return urls.size;
+}
+function visibleHGroupList() {
+  return Array.from(H_GROUPS).filter((k) => !isHiddenHGroup(k)).sort((a, b) => a.localeCompare(b));
+}
 function addHGroup(rawName) {
   const name = String(rawName || '').trim();
   if (!name) return null;
+  const deleted = Array.from(H_DELETED_GROUP_KEYS).find((k) => k.toLowerCase() === name.toLowerCase());
+  if (deleted) { showToast(`"${deleted}" was deleted — restore it from Manage > Hidden first`); return null; }
   const existing = Array.from(H_GROUPS).find((k) => k.toLowerCase() === name.toLowerCase());
   const key = existing || name;
   if (!existing) { H_GROUPS.add(key); persistHGroups(); }
@@ -4733,6 +4936,7 @@ function deleteHGroup(key) {
     if (H_TAG_MAP[k].includes(key)) H_TAG_MAP[k] = H_TAG_MAP[k].filter((t) => t !== key);
   });
   persistHTagMap();
+  recordDeletedHGroup(key);
   if (H_GROUP_FILTER === key) H_GROUP_FILTER = null;
 }
 function getHTags(dataUrl) {
@@ -4762,20 +4966,65 @@ function setHNote(dataUrl, note) {
   H_NOTE_MAP[imageKey(dataUrl)] = note;
   persistHNoteMap();
 }
-function openManageHGroupsModal() {
-  const list = Array.from(H_GROUPS).sort((a, b) => a.localeCompare(b));
+// Same tag-style row layout as renderSharedGroupManagerModal (Images/
+// Reactions) — count, hide toggle, merge, rename, delete — just backed by
+// H's own separate H_GROUPS/H_TAG_MAP instead of the shared set.
+function renderHGroupManagerModal() {
+  const allNames = Array.from(H_GROUPS).sort((a, b) => a.localeCompare(b));
+  const activeNames = allNames.filter((k) => !isHiddenHGroup(k));
+  const hiddenActiveNames = allNames.filter((k) => H_HIDDEN_GROUP_KEYS.has(k) && !H_DELETED_GROUP_KEYS.has(k));
+  const names = H_GROUP_MGR_TAB === 'active' ? activeNames : hiddenActiveNames;
+  const rows = H_GROUP_MGR_TAB === 'active'
+    ? names.map((name) => `
+        <div class="tagmgr-row">
+          <div class="tagmgr-click-area" style="cursor:default;">
+            <div class="tagmgr-name">${escapeHtml(name)}</div>
+            <div class="tagmgr-count">${hGroupUsageCount(name)} item${hGroupUsageCount(name) === 1 ? '' : 's'}</div>
+          </div>
+          <div class="tagmgr-actions">
+            <button class="toggle-switch on" data-hgroupmgr-hide="${escapeHtml(name)}" title="Hide from filters (keeps the data)" role="switch" aria-checked="true"><span class="toggle-knob"></span></button>
+            <button class="icon-btn-inline" data-hgroupmgr-merge="${escapeHtml(name)}" title="Merge into another group">🔀</button>
+            <button class="icon-btn-inline" data-hgroupmgr-rename="${escapeHtml(name)}" title="Rename this group everywhere">✏️</button>
+            <button class="icon-btn-inline" data-hgroupmgr-delete="${escapeHtml(name)}" title="Delete this group everywhere">🗑️</button>
+          </div>
+        </div>`).join('')
+    : names.map((name) => `
+        <div class="tagmgr-row">
+          <div class="tagmgr-click-area" style="cursor:default;">
+            <div class="tagmgr-name">${escapeHtml(name)}</div>
+            <div class="tagmgr-count">${hGroupUsageCount(name)} item${hGroupUsageCount(name) === 1 ? '' : 's'}</div>
+          </div>
+          <div class="tagmgr-actions">
+            <button class="toggle-switch" data-hgroupmgr-hide="${escapeHtml(name)}" title="Show in filters again" role="switch" aria-checked="false"><span class="toggle-knob"></span></button>
+          </div>
+        </div>`).join('');
+  const deletedRows = H_GROUP_MGR_TAB === 'hidden' && H_DELETED_GROUP_KEYS.size ? `
+    <div class="panel-title" style="margin:16px 0 8px;">Permanently deleted</div>
+    <div style="color:var(--text-dim);font-size:12px;margin-bottom:8px;">These had their tag removed from every image — restoring just allows the name to be used again; old images won't get it back.</div>
+    ${Array.from(H_DELETED_GROUP_KEYS).sort().map((key) => `
+      <div class="tagmgr-row">
+        <div class="tagmgr-name" style="flex:1;">${escapeHtml(key)}</div>
+        <button class="ref-btn" data-restore-h-group="${escapeHtml(key)}">Allow again</button>
+      </div>`).join('')}
+  ` : '';
+  const tabsHtml = `
+    <div class="tagmgr-tabs" style="margin-bottom:8px;">
+      <button class="tagmgr-tab ${H_GROUP_MGR_TAB === 'active' ? 'active' : ''}" data-hgroupmgr-tab="active">Active (${activeNames.length})</button>
+      <button class="tagmgr-tab ${H_GROUP_MGR_TAB === 'hidden' ? 'active' : ''}" data-hgroupmgr-tab="hidden">Hidden (${hiddenActiveNames.length + H_DELETED_GROUP_KEYS.size})</button>
+    </div>`;
   openModal(`
-    <h3>Manage H groups</h3>
-    ${list.length ? `<div style="display:flex;flex-direction:column;gap:8px;">${list.map((name) => `
-      <div style="display:flex;align-items:center;gap:8px;justify-content:space-between;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;">
-        <span>🏷️ ${escapeHtml(name)}</span>
-        <div style="display:flex;gap:6px;">
-          <button class="ref-btn" data-rename-h-group="${escapeHtml(name)}">Rename</button>
-          <button class="btn-ghost" data-delete-h-group="${escapeHtml(name)}">Delete</button>
-        </div>
-      </div>`).join('')}</div>` : `<div class="empty-state">No H groups yet.</div>`}
+    <h3>Manage groups</h3>
+    <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">NSFW's own groups — kept separate from Images/Reactions. Hiding keeps a group's tags intact but off the chip rows; deleting removes it everywhere.</div>
+    ${tabsHtml}
+    <div style="max-height:400px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;">
+      ${rows || `<div class="empty-state">${H_GROUP_MGR_TAB === 'hidden' ? 'No hidden groups.' : 'No groups yet.'}</div>`}
+    </div>
+    ${deletedRows}
     <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Done</button></div>
   `);
+}
+function openManageHGroupsModal() {
+  renderHGroupManagerModal();
 }
 
 // Flags/unflags an existing entry-sourced image into H without duplicating
@@ -4956,7 +5205,7 @@ function renderHLibrary() {
   // Excludes uploads still waiting on a Drive download (no dataUrl yet) —
   // see hFilteredItems() for why those can't be counted as untagged.
   const untaggedCount = allHImages().filter((i) => i.dataUrl && !getHTags(i.dataUrl).length).length;
-  const groupList = Array.from(H_GROUPS).sort((a, b) => a.localeCompare(b));
+  const groupList = visibleHGroupList();
   // No 🏷️ prefix here, same as the Reactions mood-chip row — matches how
   // she wanted the top controls of H to read like the Reactions tab's.
   const groupChips = groupList.map((name) => `<button class="mood-chip ${H_GROUP_FILTER === name ? 'active' : ''}" data-h-group-filter="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join('');
@@ -5006,7 +5255,7 @@ function tagHImagesWithGroup(dataUrls, tag) {
   persistHTagMap();
 }
 function openTagSelectedHModal(dataUrls) {
-  const groupList = Array.from(H_GROUPS).sort((a, b) => a.localeCompare(b));
+  const groupList = visibleHGroupList();
   openModal(`
     <h3>Add ${dataUrls.length} image${dataUrls.length === 1 ? '' : 's'} to a group…</h3>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
@@ -5041,11 +5290,11 @@ function openTagSelectedHModal(dataUrls) {
 
 async function openHImageModal(dataUrl) {
   const upload = ALL_H_IMAGES.find((h) => h.dataUrl === dataUrl);
-  const groupList = Array.from(H_GROUPS).sort((a, b) => a.localeCompare(b));
+  const groupList = visibleHGroupList();
   const currentTags = getHTags(dataUrl);
   const entries = upload ? [] : ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(dataUrl));
   const inReactions = await isDataUrlInReactions(dataUrl);
-  const croppable = dataUrl && !isVideoUrl(dataUrl) && !/^data:image\/(gif|webp)/.test(dataUrl);
+  const croppable = isCroppableDataUrl(dataUrl);
   openModal(`
     <div class="modal-close-corner-wrap">
       <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
@@ -7550,39 +7799,54 @@ document.addEventListener('click', async (ev) => {
     }
   }
   if (t.matches('[data-meme-manage-moods]')) openManageMoodsModal();
-  if (t.matches('[data-rename-mood]')) {
-    const oldKey = t.getAttribute('data-rename-mood');
-    const newName = prompt(`Rename "${oldKey}" to:`, oldKey);
-    if (newName && newName.trim() && newName.trim() !== oldKey) {
-      renameCustomMood(oldKey, newName);
+  // Shared group-manager modal actions (Images "Manage" + Reactions
+  // "Manage" both open the same modal now — see renderSharedGroupManagerModal).
+  if (t.matches('[data-groupmgr-tab]')) {
+    GROUP_MGR_TAB = t.getAttribute('data-groupmgr-tab');
+    renderSharedGroupManagerModal(GROUP_MGR_MODAL_TITLE);
+  }
+  if (t.matches('[data-groupmgr-hide]')) {
+    const name = t.getAttribute('data-groupmgr-hide');
+    const nowHidden = !HIDDEN_GROUP_KEYS.has(name);
+    setGroupSoftHidden(name, nowHidden).then(() => {
+      showToast(nowHidden ? 'Hidden from filters' : 'Shown in filters again');
+      renderSharedGroupManagerModal(GROUP_MGR_MODAL_TITLE);
       render();
-      openManageMoodsModal();
+    });
+  }
+  if (t.matches('[data-groupmgr-merge]')) {
+    const name = t.getAttribute('data-groupmgr-merge');
+    const targetRaw = prompt(`Merge "${name}" into which existing group? (its images/reactions will get that group instead, and "${name}" will disappear)`);
+    if (targetRaw && targetRaw.trim() && targetRaw.trim().toLowerCase() !== name.toLowerCase()) {
+      renameImageGroup(name, targetRaw.trim());
+      showToast(`Merged "${name}" into "${targetRaw.trim()}"`);
+      render();
+      renderSharedGroupManagerModal(GROUP_MGR_MODAL_TITLE);
     }
   }
-  if (t.matches('[data-delete-mood]')) {
-    const key = t.getAttribute('data-delete-mood');
-    if (confirm(`Delete the "${key}" mood group? This removes the tag from every reaction — the reactions themselves are kept.`)) {
-      deleteCustomMood(key);
-      render();
-      openManageMoodsModal();
-    }
-  }
-  if (t.matches('[data-rename-image-group]')) {
-    const oldKey = t.getAttribute('data-rename-image-group');
+  if (t.matches('[data-groupmgr-rename]')) {
+    const oldKey = t.getAttribute('data-groupmgr-rename');
     const newName = prompt(`Rename "${oldKey}" to:`, oldKey);
     if (newName && newName.trim() && newName.trim() !== oldKey) {
       renameImageGroup(oldKey, newName);
       render();
-      openManageImageGroupsModal();
+      renderSharedGroupManagerModal(GROUP_MGR_MODAL_TITLE);
     }
   }
-  if (t.matches('[data-delete-image-group]')) {
-    const key = t.getAttribute('data-delete-image-group');
-    if (confirm(`Delete the "${key}" image group? This removes the tag from every image — the images themselves are kept.`)) {
+  if (t.matches('[data-groupmgr-delete]')) {
+    const key = t.getAttribute('data-groupmgr-delete');
+    if (confirm(`Delete the "${key}" group? This removes it from every image/reaction — the items themselves are kept. It won't reappear (by hand or future import) until restored from the Hidden tab.`)) {
       deleteImageGroup(key);
       render();
-      openManageImageGroupsModal();
+      renderSharedGroupManagerModal(GROUP_MGR_MODAL_TITLE);
     }
+  }
+  if (t.matches('[data-restore-group]')) {
+    const key = t.getAttribute('data-restore-group');
+    restoreDeletedGroup(key).then(() => {
+      showToast('Restored — this group can be used again');
+      renderSharedGroupManagerModal(GROUP_MGR_MODAL_TITLE);
+    });
   }
   if (t.matches('[data-toggle-image-tag]')) {
     const tag = t.getAttribute('data-toggle-image-tag');
@@ -7591,22 +7855,52 @@ document.addEventListener('click', async (ev) => {
     render();
     openImageAttachmentsModal(url);
   }
-  if (t.matches('[data-rename-h-group]')) {
-    const oldKey = t.getAttribute('data-rename-h-group');
+  if (t.matches('[data-hgroupmgr-tab]')) {
+    H_GROUP_MGR_TAB = t.getAttribute('data-hgroupmgr-tab');
+    renderHGroupManagerModal();
+  }
+  if (t.matches('[data-hgroupmgr-hide]')) {
+    const name = t.getAttribute('data-hgroupmgr-hide');
+    const nowHidden = !H_HIDDEN_GROUP_KEYS.has(name);
+    setHGroupSoftHidden(name, nowHidden).then(() => {
+      showToast(nowHidden ? 'Hidden from filters' : 'Shown in filters again');
+      renderHGroupManagerModal();
+      render();
+    });
+  }
+  if (t.matches('[data-hgroupmgr-merge]')) {
+    const name = t.getAttribute('data-hgroupmgr-merge');
+    const targetRaw = prompt(`Merge "${name}" into which existing group? (its images will get that group instead, and "${name}" will disappear)`);
+    if (targetRaw && targetRaw.trim() && targetRaw.trim().toLowerCase() !== name.toLowerCase()) {
+      renameHGroup(name, targetRaw.trim());
+      showToast(`Merged "${name}" into "${targetRaw.trim()}"`);
+      render();
+      renderHGroupManagerModal();
+    }
+  }
+  if (t.matches('[data-hgroupmgr-rename]')) {
+    const oldKey = t.getAttribute('data-hgroupmgr-rename');
     const newName = prompt(`Rename "${oldKey}" to:`, oldKey);
     if (newName && newName.trim() && newName.trim() !== oldKey) {
       renameHGroup(oldKey, newName);
       render();
-      openManageHGroupsModal();
+      renderHGroupManagerModal();
     }
   }
-  if (t.matches('[data-delete-h-group]')) {
-    const key = t.getAttribute('data-delete-h-group');
-    if (confirm(`Delete the "${key}" H group? This removes the tag from every image — the images themselves are kept.`)) {
+  if (t.matches('[data-hgroupmgr-delete]')) {
+    const key = t.getAttribute('data-hgroupmgr-delete');
+    if (confirm(`Delete the "${key}" group? This removes it from every image — the images themselves are kept. It won't reappear until restored from the Hidden tab.`)) {
       deleteHGroup(key);
       render();
-      openManageHGroupsModal();
+      renderHGroupManagerModal();
     }
+  }
+  if (t.matches('[data-restore-h-group]')) {
+    const key = t.getAttribute('data-restore-h-group');
+    restoreDeletedHGroup(key).then(() => {
+      showToast('Restored — this group can be used again');
+      renderHGroupManagerModal();
+    });
   }
   if (t.matches('[data-toggle-h-tag]')) {
     const tag = t.getAttribute('data-toggle-h-tag');
@@ -8136,6 +8430,10 @@ async function boot() {
     }
     const savedImageTagMap = await idbGet(STORE_META, 'imageTagMap');
     if (savedImageTagMap && savedImageTagMap.value && typeof savedImageTagMap.value === 'object') IMAGE_TAG_MAP = savedImageTagMap.value;
+    const savedHiddenGroups = await idbGet(STORE_META, 'hiddenGroupKeys');
+    if (savedHiddenGroups && Array.isArray(savedHiddenGroups.value)) HIDDEN_GROUP_KEYS = new Set(savedHiddenGroups.value);
+    const savedDeletedGroups = await idbGet(STORE_META, 'deletedGroupKeys');
+    if (savedDeletedGroups && Array.isArray(savedDeletedGroups.value)) DELETED_GROUP_KEYS = new Set(savedDeletedGroups.value);
     const savedIgnoredImageDup = await idbGet(STORE_META, 'ignoredImageDupGroups');
     if (savedIgnoredImageDup && Array.isArray(savedIgnoredImageDup.value)) IGNORED_IMAGE_DUP_GROUPS = new Set(savedIgnoredImageDup.value);
     const savedIgnoredMemeDup = await idbGet(STORE_META, 'ignoredMemeDupGroups');
@@ -8148,6 +8446,10 @@ async function boot() {
     if (savedHGroups && Array.isArray(savedHGroups.value)) H_GROUPS = new Set(savedHGroups.value);
     const savedHTagMap = await idbGet(STORE_META, 'hTagMap');
     if (savedHTagMap && savedHTagMap.value && typeof savedHTagMap.value === 'object') H_TAG_MAP = savedHTagMap.value;
+    const savedHHiddenGroups = await idbGet(STORE_META, 'hHiddenGroupKeys');
+    if (savedHHiddenGroups && Array.isArray(savedHHiddenGroups.value)) H_HIDDEN_GROUP_KEYS = new Set(savedHHiddenGroups.value);
+    const savedHDeletedGroups = await idbGet(STORE_META, 'hDeletedGroupKeys');
+    if (savedHDeletedGroups && Array.isArray(savedHDeletedGroups.value)) H_DELETED_GROUP_KEYS = new Set(savedHDeletedGroups.value);
     const savedHNoteMap = await idbGet(STORE_META, 'hNoteMap');
     if (savedHNoteMap && savedHNoteMap.value && typeof savedHNoteMap.value === 'object') H_NOTE_MAP = savedHNoteMap.value;
     const savedThemeMode = await idbGet(STORE_META, 'themeMode');
