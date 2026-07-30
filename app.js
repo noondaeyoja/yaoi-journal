@@ -3747,6 +3747,7 @@ function renderMemeLibrary() {
       ${MEME_SELECT_MODE ? `
         <div class="export-row" style="margin-bottom:10px;background:var(--card);border:1px solid var(--purple);border-radius:var(--radius-sm);padding:8px;">
           <div style="flex:1;font-size:12.5px;color:var(--text-dim);align-self:center;">${MEME_SELECTED.size} selected</div>
+          <button class="ref-btn" data-meme-tag-selected="1" ${MEME_SELECTED.size ? '' : 'disabled'}>🏷️ Add to mood…</button>
           ${!isSFW() ? `<button class="ref-btn" data-meme-pull-selected-into-h="1" style="${MEME_SELECTED.size ? 'color:#f43f5e;' : ''}" ${MEME_SELECTED.size ? '' : 'disabled'}>🔴 Pull into NSFW</button>` : ''}
           <button class="btn-ghost" data-meme-delete-selected="1" ${MEME_SELECTED.size ? '' : 'disabled'}>🗑️ Delete selected</button>
         </div>
@@ -3807,6 +3808,10 @@ function attachMemeGridHandlers() {
   });
   const toggleMemeSelectBtn = document.querySelector('[data-meme-toggle-select]');
   if (toggleMemeSelectBtn) toggleMemeSelectBtn.onclick = () => { MEME_SELECT_MODE = !MEME_SELECT_MODE; MEME_SELECTED = new Set(); render(); };
+  const tagSelectedMemesBtn = document.querySelector('[data-meme-tag-selected]');
+  if (tagSelectedMemesBtn) tagSelectedMemesBtn.onclick = () => {
+    if (MEME_SELECTED.size) openTagSelectedMemesModal(Array.from(MEME_SELECTED));
+  };
   const pullSelectedIntoHBtn = document.querySelector('[data-meme-pull-selected-into-h]');
   if (pullSelectedIntoHBtn) pullSelectedIntoHBtn.onclick = () => {
     if (!MEME_SELECTED.size) return;
@@ -3838,6 +3843,53 @@ function attachMemeGridHandlers() {
     MEME_SELECT_MODE = false;
     MEME_SELECTED = new Set();
     showToast('Deleted');
+    render();
+  };
+}
+
+// Bulk mood tagging for multi-selected Reactions — same gap Images already
+// had closed (see tagImagesWithGroup/openTagSelectedImagesModal): before
+// this, adding several reactions to a mood at once meant opening each one
+// individually. Always adds, never toggles off, same reasoning as Images'
+// version — with multiple selected some may already carry the mood.
+function tagMemesWithMood(ids, mood) {
+  ids.forEach((id) => {
+    const r = ALL_REACTIONS.find((x) => x.id === id);
+    if (!r) return;
+    r.moodTags = r.moodTags || [];
+    if (!r.moodTags.includes(mood)) r.moodTags.push(mood);
+    saveReaction(r);
+  });
+}
+function openTagSelectedMemesModal(ids) {
+  openModal(`
+    <h3>Add ${ids.length} reaction${ids.length === 1 ? '' : 's'} to a mood…</h3>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
+      ${allMoodOptions().map((m) => `<button class="mood-chip" data-tag-selected-memes-with="${escapeHtml(m.key)}">${m.emoji ? m.emoji + ' ' : ''}${escapeHtml(m.label)}</button>`).join('')}
+      <button class="mood-chip" data-tag-selected-memes-new-mood="1">➕ New mood</button>
+    </div>
+    <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Cancel</button></div>
+  `);
+  document.querySelectorAll('[data-tag-selected-memes-with]').forEach((el) => {
+    el.onclick = () => {
+      const mood = el.getAttribute('data-tag-selected-memes-with');
+      tagMemesWithMood(ids, mood);
+      closeModal();
+      MEME_SELECT_MODE = false;
+      MEME_SELECTED = new Set();
+      showToast(`Added ${ids.length} reaction${ids.length === 1 ? '' : 's'} to "${mood}"`);
+      render();
+    };
+  });
+  const newMoodBtn = document.querySelector('[data-tag-selected-memes-new-mood]');
+  if (newMoodBtn) newMoodBtn.onclick = () => {
+    const key = addCustomMood(prompt('Name this new mood group (e.g. "creepy", "cute"):'));
+    if (!key) return;
+    tagMemesWithMood(ids, key);
+    closeModal();
+    MEME_SELECT_MODE = false;
+    MEME_SELECTED = new Set();
+    showToast(`Added ${ids.length} reaction${ids.length === 1 ? '' : 's'} to "${key}"`);
     render();
   };
 }
@@ -4786,6 +4838,7 @@ function renderHLibrary() {
       ${H_SELECT_MODE ? `
         <div class="export-row" style="margin-bottom:10px;background:var(--card);border:1px solid var(--purple);border-radius:var(--radius-sm);padding:8px;">
           <div style="flex:1;font-size:12.5px;color:var(--text-dim);align-self:center;">${H_SELECTED.size} selected</div>
+          <button class="ref-btn" data-h-tag-selected="1" ${H_SELECTED.size ? '' : 'disabled'}>🏷️ Add to group…</button>
           <button class="btn-ghost" data-h-delete-selected="1" ${H_SELECTED.size ? '' : 'disabled'}>🗑️ Delete selected</button>
         </div>
       ` : ''}
@@ -4805,6 +4858,52 @@ function renderHLibrary() {
     <main class="gallery-dropzone">${hMainBody()}</main>
     ${renderBottomNav('h')}
   `;
+}
+
+// Bulk group tagging for multi-selected NSFW images — same gap Images
+// already had closed, now closed for NSFW too. Always adds, never toggles
+// off (see tagImagesWithGroup/tagMemesWithMood for the same reasoning).
+function tagHImagesWithGroup(dataUrls, tag) {
+  dataUrls.forEach((dataUrl) => {
+    const key = imageKey(dataUrl);
+    const tags = new Set(H_TAG_MAP[key] || []);
+    tags.add(tag);
+    H_TAG_MAP[key] = Array.from(tags);
+  });
+  persistHTagMap();
+}
+function openTagSelectedHModal(dataUrls) {
+  const groupList = Array.from(H_GROUPS).sort((a, b) => a.localeCompare(b));
+  openModal(`
+    <h3>Add ${dataUrls.length} image${dataUrls.length === 1 ? '' : 's'} to a group…</h3>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
+      ${groupList.map((name) => `<button class="mood-chip" data-tag-selected-h-with="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join('')}
+      <button class="mood-chip" data-tag-selected-h-new-group="1">➕ New group</button>
+    </div>
+    <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Cancel</button></div>
+  `);
+  document.querySelectorAll('[data-tag-selected-h-with]').forEach((el) => {
+    el.onclick = () => {
+      const tag = el.getAttribute('data-tag-selected-h-with');
+      tagHImagesWithGroup(dataUrls, tag);
+      closeModal();
+      H_SELECT_MODE = false;
+      H_SELECTED = new Set();
+      showToast(`Added ${dataUrls.length} image${dataUrls.length === 1 ? '' : 's'} to "${tag}"`);
+      render();
+    };
+  });
+  const newGroupBtn = document.querySelector('[data-tag-selected-h-new-group]');
+  if (newGroupBtn) newGroupBtn.onclick = () => {
+    const key = addHGroup(prompt('Name this new group:'));
+    if (!key) return;
+    tagHImagesWithGroup(dataUrls, key);
+    closeModal();
+    H_SELECT_MODE = false;
+    H_SELECTED = new Set();
+    showToast(`Added ${dataUrls.length} image${dataUrls.length === 1 ? '' : 's'} to "${key}"`);
+    render();
+  };
 }
 
 async function openHImageModal(dataUrl) {
@@ -4876,6 +4975,10 @@ function attachHGridHandlers() {
   });
   const toggleHSelectBtn = document.querySelector('[data-h-toggle-select]');
   if (toggleHSelectBtn) toggleHSelectBtn.onclick = () => { H_SELECT_MODE = !H_SELECT_MODE; H_SELECTED = new Set(); render(); };
+  const tagSelectedHBtn = document.querySelector('[data-h-tag-selected]');
+  if (tagSelectedHBtn) tagSelectedHBtn.onclick = () => {
+    if (H_SELECTED.size) openTagSelectedHModal(Array.from(H_SELECTED));
+  };
   const deleteSelectedHBtn = document.querySelector('[data-h-delete-selected]');
   if (deleteSelectedHBtn) deleteSelectedHBtn.onclick = async () => {
     const urls = Array.from(H_SELECTED);
