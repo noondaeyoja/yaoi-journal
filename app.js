@@ -638,17 +638,31 @@ function firestoreSafeEntry(entry) {
   // base64 in Firestore at all anymore — drop them unconditionally (not
   // just when oversized) so entries stay small no matter how many photos
   // get added over time, instead of only trimming once already too big.
+  // Each drop here sets the same *TooLargeForSync flag the size-based
+  // trimming below uses (without adding to trimmedFields — this isn't an
+  // actual size problem, so no "too large to sync" toast should fire).
+  // That flag is what tells restoreLocallyKeptImages() to patch this
+  // device's local copy back in when the echo of this exact write comes
+  // back down. Without it, an entry that already has some Drive-backed
+  // screencaps and then gets ONE brand-new, not-yet-uploaded local image
+  // (e.g. via "Attach to a read") would have this write go out with
+  // screencaps: [] (correct, since the old ones are Drive-backed and don't
+  // need to ride along) — but the live listener's echo of that same write
+  // would then win with screencaps: [] and, with no flag telling it
+  // otherwise, wipe the brand-new local-only image right back out within
+  // seconds of attaching it. This was the actual cause of "attach to a
+  // read" never sticking in the Unattached count.
   if (candidate.coverDriveId && candidate.coverUrl && candidate.coverUrl.startsWith('data:')) {
-    candidate = { ...candidate, coverUrl: null };
+    candidate = { ...candidate, coverUrl: null, coverTooLargeForSync: true };
   }
   if (candidate.screencapDriveIds && candidate.screencapDriveIds.length && candidate.screencaps && candidate.screencaps.length) {
-    candidate = { ...candidate, screencaps: [] };
+    candidate = { ...candidate, screencaps: [], screencapsTooLargeForSync: true };
   }
   if (candidate.semi && candidate.semi.photoDriveId && candidate.semi.photo) {
-    candidate = { ...candidate, semi: { ...candidate.semi, photo: null } };
+    candidate = { ...candidate, semi: { ...candidate.semi, photo: null }, semiPhotoTooLargeForSync: true };
   }
   if (candidate.uke && candidate.uke.photoDriveId && candidate.uke.photo) {
-    candidate = { ...candidate, uke: { ...candidate.uke, photo: null } };
+    candidate = { ...candidate, uke: { ...candidate.uke, photo: null }, ukePhotoTooLargeForSync: true };
   }
   const trimmedFields = [];
   if (JSON.stringify(candidate).length <= FIRESTORE_DOC_SAFE_BYTES) {
@@ -3366,12 +3380,14 @@ function tagImagesWithGroup(dataUrls, tag) {
   persistImageTagMap();
 }
 function openTagSelectedImagesModal(dataUrls) {
-  const groupList = visibleGroupList();
+  // Built-ins-plus-custom, same list Reactions uses — the 4 built-in moods
+  // should be assignable from Images' bulk-tag modal too.
+  const moodOptions = allMoodOptions();
   openModal(`
     <h3>Add ${dataUrls.length} image${dataUrls.length === 1 ? '' : 's'} to a mood…</h3>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
       ${[SEMI_TAG, UKE_TAG].map((name) => `<button class="mood-chip" data-tag-selected-images-with="${escapeHtml(name)}">${escapeHtml(name)} only</button>`).join('')}
-      ${groupList.map((name) => `<button class="mood-chip" data-tag-selected-images-with="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join('')}
+      ${moodOptions.map((m) => `<button class="mood-chip" data-tag-selected-images-with="${escapeHtml(m.key)}" title="${escapeHtml(m.label)}">${m.emoji ? m.emoji + ' ' : ''}${escapeHtml(m.label)}</button>`).join('')}
       <button class="mood-chip" data-tag-selected-images-new-group="1">➕ New group</button>
     </div>
     <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Cancel</button></div>
@@ -3611,8 +3627,10 @@ function renderReactionsLibrary() {
     tabBody = attached.length ? `<div class="image-masonry">${attached.map((img) => masonryItem(img)).join('')}</div>` : `<div class="empty-state">No attached images yet.</div>`;
   }
 
-  const groupList = visibleGroupList();
-  const groupChips = groupList.map((name) => `<button class="mood-chip ${IMAGE_GROUP_FILTER === name ? 'active' : ''}" data-images-group-filter="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join('');
+  // Same built-ins-plus-custom list Reactions uses (allMoodOptions()) —
+  // she wants the 4 built-in moods selectable/filterable from Images too,
+  // not just custom groups, since the two galleries' groups are merged.
+  const groupChips = allMoodOptions().map((m) => `<button class="mood-chip ${IMAGE_GROUP_FILTER === m.key ? 'active' : ''}" data-images-group-filter="${escapeHtml(m.key)}" title="${escapeHtml(m.label)}">${m.emoji ? m.emoji + ' ' : ''}${escapeHtml(m.label)}</button>`).join('');
 
   return `
     <div class="app-header">
@@ -3715,7 +3733,9 @@ function mediaToggleButtonsHtml(dataUrl, inReactions, inH, showReactionsToggle =
 
 async function openImageAttachmentsModal(dataUrl) {
   const entries = ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(dataUrl));
-  const groupList = visibleGroupList();
+  // Built-ins-plus-custom, same list Reactions uses — the 4 built-in moods
+  // should be toggleable from Images too, not just custom groups.
+  const moodOptions = allMoodOptions();
   const currentTags = getImageTags(dataUrl);
   const inReactions = await isDataUrlInReactions(dataUrl);
   const inH = isDataUrlInH(dataUrl);
@@ -3742,7 +3762,7 @@ async function openImageAttachmentsModal(dataUrl) {
       <label>Groups</label>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
         ${[SEMI_TAG, UKE_TAG].map((name) => `<button class="mood-chip ${currentTags.includes(name) ? 'active' : ''}" data-toggle-image-tag="${escapeHtml(name)}" data-image-url="${escapeHtml(dataUrl)}">${escapeHtml(name)} only</button>`).join('')}
-        ${groupList.map((name) => `<button class="mood-chip ${currentTags.includes(name) ? 'active' : ''}" data-toggle-image-tag="${escapeHtml(name)}" data-image-url="${escapeHtml(dataUrl)}">${escapeHtml(name)}</button>`).join('')}
+        ${moodOptions.map((m) => `<button class="mood-chip ${currentTags.includes(m.key) ? 'active' : ''}" data-toggle-image-tag="${escapeHtml(m.key)}" data-image-url="${escapeHtml(dataUrl)}" title="${escapeHtml(m.label)}">${m.emoji ? m.emoji + ' ' : ''}${escapeHtml(m.label)}</button>`).join('')}
       </div>
     </div>
     <div class="field-row">
