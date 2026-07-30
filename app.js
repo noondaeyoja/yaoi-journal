@@ -3261,6 +3261,18 @@ async function scanForImageDuplicates() {
   IMAGE_DUP_SCANNING = true;
   render();
   const items = allAppImages();
+  // A group of 3+ can be held together by one "hub" image that's close to
+  // both of the others without those two being close to each other. Once
+  // she deletes the hub, a fresh hash-only comparison of the two survivors
+  // can legitimately fall outside the similarity threshold, which used to
+  // make the whole group silently vanish on "Scan again" even though she'd
+  // already confirmed those two were duplicates. Carry forward whatever's
+  // left of any group we already knew about this session (minus whatever's
+  // been deleted) and merge it into the fresh results below.
+  const validUrls = new Set(items.map((i) => i.dataUrl));
+  const carriedGroups = (IMAGE_DUP_GROUPS || [])
+    .map((g) => g.filter((img) => img.dataUrl && validUrls.has(img.dataUrl)))
+    .filter((g) => g.length > 1);
   const withHashes = [];
   for (const img of items) {
     const hash = await perceptualHash(img.dataUrl);
@@ -3284,6 +3296,12 @@ async function scanForImageDuplicates() {
     // ~40 groups forever.
     if (group.length > 1 && !IGNORED_IMAGE_DUP_GROUPS.has(imageDupSignature(group))) groups.push(group);
   }
+  const coveredSets = groups.map((g) => new Set(g.map((img) => img.dataUrl)));
+  carriedGroups.forEach((cg) => {
+    if (IGNORED_IMAGE_DUP_GROUPS.has(imageDupSignature(cg))) return;
+    const urls = cg.map((img) => img.dataUrl);
+    if (!coveredSets.some((s) => urls.every((u) => s.has(u)))) groups.push(cg);
+  });
   IMAGE_DUP_GROUPS = groups;
   IMAGE_DUP_SCANNING = false;
   render();
@@ -3673,6 +3691,14 @@ async function scanForMemeDuplicates() {
   // has no dataUrl yet to hash — skip those for now rather than block the
   // whole scan on them; re-running the scan later will pick them up.
   const items = reactionsPoolItems().filter((r) => r.dataUrl);
+  // Same carry-forward as Images (see scanForImageDuplicates) — a group of
+  // 3+ can be held together by one "hub" reaction that's close to both of
+  // the others without those two being close to each other, so deleting the
+  // hub used to make a fresh rescan silently drop the still-valid pair.
+  const validIds = new Set(items.map((i) => i.id));
+  const carriedGroups = (MEME_DUP_GROUPS || [])
+    .map((g) => g.filter((r) => r.id && validIds.has(r.id)))
+    .filter((g) => g.length > 1);
   const withHashes = [];
   for (const r of items) {
     const hash = await perceptualHash(r.dataUrl);
@@ -3695,6 +3721,12 @@ async function scanForMemeDuplicates() {
     // scanning again doesn't just re-show the same groups forever.
     if (group.length > 1 && !IGNORED_MEME_DUP_GROUPS.has(reactionDupSignature(group))) groups.push(group);
   }
+  const coveredSets = groups.map((g) => new Set(g.map((r) => r.id)));
+  carriedGroups.forEach((cg) => {
+    if (IGNORED_MEME_DUP_GROUPS.has(reactionDupSignature(cg))) return;
+    const ids = cg.map((r) => r.id);
+    if (!coveredSets.some((s) => ids.every((id) => s.has(id)))) groups.push(cg);
+  });
   MEME_DUP_GROUPS = groups;
   MEME_DUP_SCANNING = false;
   render();
@@ -4769,6 +4801,14 @@ async function scanForHDuplicates() {
   H_DUP_SCANNING = true;
   render();
   const items = allHImages().filter((i) => i.dataUrl);
+  // Same carry-forward as Images/Reactions (see scanForImageDuplicates) — a
+  // group of 3+ can be held together by one "hub" image that's close to
+  // both of the others without those two being close to each other, so
+  // deleting the hub used to make a fresh rescan silently drop the pair.
+  const validKeys = new Set(items.map((i) => i.id || i.dataUrl));
+  const carriedGroups = (H_DUP_GROUPS || [])
+    .map((g) => g.filter((i) => (i.id || i.dataUrl) && validKeys.has(i.id || i.dataUrl)))
+    .filter((g) => g.length > 1);
   const withHashes = [];
   for (const i of items) {
     const hash = await perceptualHash(i.dataUrl);
@@ -4789,6 +4829,12 @@ async function scanForHDuplicates() {
     }
     if (group.length > 1 && !IGNORED_H_DUP_GROUPS.has(hDupSignature(group))) groups.push(group);
   }
+  const coveredSets = groups.map((g) => new Set(g.map((i) => i.id || i.dataUrl)));
+  carriedGroups.forEach((cg) => {
+    if (IGNORED_H_DUP_GROUPS.has(hDupSignature(cg))) return;
+    const keys = cg.map((i) => i.id || i.dataUrl);
+    if (!coveredSets.some((s) => keys.every((k) => s.has(k)))) groups.push(cg);
+  });
   H_DUP_GROUPS = groups;
   H_DUP_SCANNING = false;
   render();
