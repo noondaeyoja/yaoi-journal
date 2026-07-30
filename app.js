@@ -266,6 +266,20 @@ function queueIdbWrite(fn) {
   IDB_WRITE_QUEUE = run.then(() => {}, () => {});
   return run;
 }
+// Snapshots a value with structuredClone before it goes on the write queue
+// above. Queuing means the actual put() doesn't run until every write ahead
+// of it has committed, which can be a real (if small) delay — and several
+// call sites hand idbPut the SAME live object they keep mutating in place
+// afterward (e.g. the Firestore listener immediately hands that exact
+// object to hydrateDriveImages next). Without cloning here, a deferred
+// write would serialize whatever that shared object happens to look like
+// at the moment its turn finally comes up, not what it looked like when it
+// was actually queued — silently persisting a stale/wrong snapshot even
+// though IndexedDB itself clones synchronously on put(). Cloning up front
+// pins down the correct data before anything else gets a chance to touch it.
+function idbSnapshot(value) {
+  try { return structuredClone(value); } catch (err) { return value; }
+}
 // Resolves on the TRANSACTION committing (tx.oncomplete), not just the
 // individual put request succeeding (req.onsuccess). Those aren't the same
 // moment — a request can fire onsuccess and then still have its whole
@@ -273,9 +287,10 @@ function queueIdbWrite(fn) {
 // only req.onsuccess would believe a write landed when IndexedDB actually
 // discarded it.
 function idbPut(storeName, value) {
+  const snapshot = idbSnapshot(value);
   return queueIdbWrite(() => new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, 'readwrite');
-    const req = tx.objectStore(storeName).put(value);
+    const req = tx.objectStore(storeName).put(snapshot);
     let result;
     req.onsuccess = () => { result = req.result; };
     req.onerror = () => reject(req.error);
@@ -286,10 +301,11 @@ function idbPut(storeName, value) {
 }
 
 function idbBulkPut(storeName, values) {
+  const snapshot = values.map(idbSnapshot);
   return queueIdbWrite(() => new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, 'readwrite');
     const store = tx.objectStore(storeName);
-    values.forEach((v) => store.put(v));
+    snapshot.forEach((v) => store.put(v));
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   }));
