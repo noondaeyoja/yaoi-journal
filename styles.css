@@ -347,6 +347,19 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
   color: #fff; display: flex; align-items: center; justify-content: center;
   font-size: 22px; line-height: 1; pointer-events: none; z-index: 2;
 }
+/* "Untagged" needs to actually grab the eye while scanning a big grid — the
+   old version reused .reaction-count (the same small corner pill used for
+   attachment-count numbers), which was easy to miss. This is a distinct,
+   larger banner across the middle of the thumbnail instead. Never rendered
+   at the same time as .dup-del-hint (see masonryItem/hMasonryItem — forceDel
+   takes priority), so there's no risk of the two overlapping in Possible
+   Duplicates. */
+.untagged-badge {
+  position: absolute; top: 50%; left: 6px; right: 6px; transform: translateY(-50%);
+  padding: 7px 6px; border-radius: 8px; background: rgba(200,60,60,.88);
+  color: #fff; font-size: 13px; font-weight: 800; text-transform: uppercase;
+  letter-spacing: .4px; text-align: center; pointer-events: none; z-index: 2;
+}
 
 .mood-chip {
   padding: 7px 14px; border-radius: 999px; font-size: 13px; font-weight: 600;

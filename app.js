@@ -117,6 +117,17 @@ let H_IMAGE_KEYS = new Set();
 // User-created custom mood groups for the Reactions library (e.g. "creepy",
 // "cute") on top of the 4 built-in moods — synced across devices the same
 // way as the sets above (Firestore meta doc + local IDB mirror).
+// Images and Reactions used to keep two completely separate group lists
+// (IMAGE_GROUPS here, CUSTOM_MOODS in Reactions) — creating "Foodie" in one
+// gallery never made it available in the other, so anything worth grouping
+// had to be organized twice. Per her request, they now share one
+// vocabulary: IMAGE_GROUPS (declared further down, near the Images tab
+// code) is set to this SAME Set object rather than a new one, so adding a
+// group from either gallery is instantly visible in both — see
+// addImageGroup/addCustomMood and their rename/delete counterparts, which
+// now persist to both legacy meta keys and clean up tags in both
+// IMAGE_TAG_MAP and every reaction's moodTags. NSFW's H_GROUPS stays its
+// own separate, private list, unaffected by this merge.
 let CUSTOM_MOODS = new Set();
 
 let db = null;
@@ -535,13 +546,16 @@ async function pullMetaState() {
         if (!cached || !cached.value) await idbPut(STORE_META, { key, value: data[key] });
       }
     }
-    if (Array.isArray(data.customMoods) && data.customMoods.length) {
-      CUSTOM_MOODS = new Set([...CUSTOM_MOODS, ...data.customMoods]);
-      await idbPut(STORE_META, { key: 'customMoods', value: Array.from(CUSTOM_MOODS) });
-    }
-    if (Array.isArray(data.imageGroups) && data.imageGroups.length) {
-      IMAGE_GROUPS = new Set([...IMAGE_GROUPS, ...data.imageGroups]);
-      await idbPut(STORE_META, { key: 'imageGroups', value: Array.from(IMAGE_GROUPS) });
+    // CUSTOM_MOODS and IMAGE_GROUPS are the same shared Set (see its
+    // declaration) — merge incoming updates from EITHER legacy meta field
+    // into it and reassign both variables together, so they can't drift
+    // back apart into two separate objects as sync events come in.
+    if ((Array.isArray(data.customMoods) && data.customMoods.length) || (Array.isArray(data.imageGroups) && data.imageGroups.length)) {
+      const merged = new Set([...CUSTOM_MOODS, ...(data.customMoods || []), ...(data.imageGroups || [])]);
+      CUSTOM_MOODS = merged;
+      IMAGE_GROUPS = merged;
+      await idbPut(STORE_META, { key: 'customMoods', value: Array.from(merged) });
+      await idbPut(STORE_META, { key: 'imageGroups', value: Array.from(merged) });
     }
     if (data.imageTagMap && typeof data.imageTagMap === 'object') {
       IMAGE_TAG_MAP = { ...data.imageTagMap, ...IMAGE_TAG_MAP };
@@ -2986,7 +3000,11 @@ function imageKey(dataUrl) {
   }
   return len.toString(36) + '-' + (h1 >>> 0).toString(36) + (h2 >>> 0).toString(36);
 }
-let IMAGE_GROUPS = new Set();
+// Same Set object as CUSTOM_MOODS (see the comment on that declaration) —
+// this is what actually makes the two galleries' groups shared rather than
+// just coincidentally-named. Kept as its own variable since the rest of
+// the Images tab code already refers to it by this name throughout.
+let IMAGE_GROUPS = CUSTOM_MOODS;
 let IMAGE_TAG_MAP = {}; // { [imageKey]: string[] group names }
 function persistImageGroups() {
   idbPut(STORE_META, { key: 'imageGroups', value: Array.from(IMAGE_GROUPS) });
@@ -2996,12 +3014,52 @@ function persistImageTagMap() {
   idbPut(STORE_META, { key: 'imageTagMap', value: IMAGE_TAG_MAP });
   pushMetaField('imageTagMap', IMAGE_TAG_MAP);
 }
+// Shared by both galleries' add/rename/delete group functions below —
+// persists under both legacy meta keys (a device that's only ever synced
+// one of the two fields still ends up with the full merged list) and
+// cleans up the group name everywhere it might be tagged: per-image
+// (IMAGE_TAG_MAP) and per-reaction (moodTags), regardless of which
+// gallery the rename/delete was triggered from.
+function persistSharedGroups() {
+  persistImageGroups();
+  persistCustomMoods();
+}
+function renameSharedGroupEverywhere(oldKey, finalKey) {
+  Object.keys(IMAGE_TAG_MAP).forEach((k) => {
+    if (IMAGE_TAG_MAP[k].includes(oldKey)) {
+      const tags = new Set(IMAGE_TAG_MAP[k].filter((t) => t !== oldKey));
+      tags.add(finalKey);
+      IMAGE_TAG_MAP[k] = Array.from(tags);
+    }
+  });
+  persistImageTagMap();
+  ALL_REACTIONS.forEach((r) => {
+    if ((r.moodTags || []).includes(oldKey)) {
+      const tags = new Set(r.moodTags.filter((t) => t !== oldKey));
+      tags.add(finalKey);
+      r.moodTags = Array.from(tags);
+      saveReaction(r);
+    }
+  });
+}
+function deleteSharedGroupEverywhere(key) {
+  Object.keys(IMAGE_TAG_MAP).forEach((k) => {
+    if (IMAGE_TAG_MAP[k].includes(key)) IMAGE_TAG_MAP[k] = IMAGE_TAG_MAP[k].filter((t) => t !== key);
+  });
+  persistImageTagMap();
+  ALL_REACTIONS.forEach((r) => {
+    if ((r.moodTags || []).includes(key)) {
+      r.moodTags = r.moodTags.filter((t) => t !== key);
+      saveReaction(r);
+    }
+  });
+}
 function addImageGroup(rawName) {
   const name = String(rawName || '').trim();
   if (!name) return null;
   const existing = Array.from(IMAGE_GROUPS).find((k) => k.toLowerCase() === name.toLowerCase());
   const key = existing || name;
-  if (!existing) { IMAGE_GROUPS.add(key); persistImageGroups(); }
+  if (!existing) { IMAGE_GROUPS.add(key); persistSharedGroups(); }
   return key;
 }
 function renameImageGroup(oldKey, rawNewName) {
@@ -3011,25 +3069,17 @@ function renameImageGroup(oldKey, rawNewName) {
   const mergedInto = Array.from(IMAGE_GROUPS).find((k) => k.toLowerCase() === newName.toLowerCase());
   const finalKey = mergedInto || newName;
   if (!mergedInto) IMAGE_GROUPS.add(finalKey);
-  persistImageGroups();
-  Object.keys(IMAGE_TAG_MAP).forEach((k) => {
-    if (IMAGE_TAG_MAP[k].includes(oldKey)) {
-      const tags = new Set(IMAGE_TAG_MAP[k].filter((t) => t !== oldKey));
-      tags.add(finalKey);
-      IMAGE_TAG_MAP[k] = Array.from(tags);
-    }
-  });
-  persistImageTagMap();
+  persistSharedGroups();
+  renameSharedGroupEverywhere(oldKey, finalKey);
   if (IMAGE_GROUP_FILTER === oldKey) IMAGE_GROUP_FILTER = finalKey;
+  if (MEME_STATE.moodFilter === oldKey) MEME_STATE.moodFilter = finalKey;
 }
 function deleteImageGroup(key) {
   IMAGE_GROUPS.delete(key);
-  persistImageGroups();
-  Object.keys(IMAGE_TAG_MAP).forEach((k) => {
-    if (IMAGE_TAG_MAP[k].includes(key)) IMAGE_TAG_MAP[k] = IMAGE_TAG_MAP[k].filter((t) => t !== key);
-  });
-  persistImageTagMap();
+  persistSharedGroups();
+  deleteSharedGroupEverywhere(key);
   if (IMAGE_GROUP_FILTER === key) IMAGE_GROUP_FILTER = null;
+  if (MEME_STATE.moodFilter === key) MEME_STATE.moodFilter = null;
 }
 function getImageTags(dataUrl) {
   return IMAGE_TAG_MAP[imageKey(dataUrl)] || [];
@@ -3353,8 +3403,13 @@ function renderReactionsLibrary() {
     : `<div class="masonry-item ${IMAGE_SELECT_MODE ? 'selectable' : ''} ${IMAGE_SELECTED.has(img.dataUrl) ? 'selected' : ''}" data-images-item="${escapeHtml(img.dataUrl)}">
       ${isVideoUrl(img.dataUrl) ? `<video src="${img.dataUrl}" autoplay loop muted playsinline></video>` : `<img src="${img.dataUrl}" alt="" loading="lazy">`}
       ${IMAGE_SELECT_MODE ? `<span class="select-check">${IMAGE_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : ''}
-      ${!IMAGE_SELECT_MODE && isImageUntagged(img) ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : (!IMAGE_SELECT_MODE && img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : '')}
-      ${!IMAGE_SELECT_MODE && forceDel ? `<span class="dup-del-hint" title="Tap to delete">✕</span>` : ''}
+      ${!IMAGE_SELECT_MODE
+        ? (forceDel
+            ? `<span class="dup-del-hint" title="Tap to delete">✕</span>`
+            : (isImageUntagged(img)
+                ? `<span class="untagged-badge">Untagged</span>`
+                : (img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : '')))
+        : ''}
     </div>`;
 
   let tabBody;
@@ -3526,7 +3581,7 @@ async function openImageAttachmentsModal(dataUrl) {
       <button class="btn-ghost" data-delete-image-attachment="${escapeHtml(dataUrl)}" data-delete-image-reaction-id="${standaloneReaction ? escapeHtml(standaloneReaction.id) : ''}">🗑️ Delete</button>
       ${croppable ? `<button class="btn-ghost" data-crop-image="${escapeHtml(dataUrl)}">✂️ Crop</button>` : ''}
       <button class="btn-ghost" data-save-image="${escapeHtml(dataUrl)}">⬇️ Save</button>
-      <button class="btn-primary" data-close-modal="1">Close</button>
+      <button class="btn-primary" data-close-modal="1">Done</button>
     </div>
     </div>
   `, { centered: true });
@@ -3561,21 +3616,18 @@ function addCustomMood(rawName) {
   if (!name) return null;
   const existing = [...MOOD_OPTIONS.map((m) => m.key), ...CUSTOM_MOODS].find((k) => k.toLowerCase() === name.toLowerCase());
   const key = existing || name;
-  if (!existing) {
-    CUSTOM_MOODS.add(key);
-    idbPut(STORE_META, { key: 'customMoods', value: Array.from(CUSTOM_MOODS) });
-    pushMetaField('customMoods', Array.from(CUSTOM_MOODS));
-  }
+  if (!existing) { CUSTOM_MOODS.add(key); persistSharedGroups(); }
   return key;
 }
 function persistCustomMoods() {
   idbPut(STORE_META, { key: 'customMoods', value: Array.from(CUSTOM_MOODS) });
   pushMetaField('customMoods', Array.from(CUSTOM_MOODS));
 }
-// Renaming/deleting a custom mood has to touch every reaction that's
-// actually tagged with it, not just the CUSTOM_MOODS list — otherwise the
-// group would disappear from the filter row but reactions would still be
-// carrying around the old (or a now-orphaned) tag string invisibly.
+// Renaming/deleting a shared group has to touch every reaction AND every
+// image that's actually tagged with it (see renameSharedGroupEverywhere/
+// deleteSharedGroupEverywhere near IMAGE_GROUPS) — otherwise it'd disappear
+// from the filter row in one gallery but linger as an invisible orphaned
+// tag on items in the other.
 function renameCustomMood(oldKey, rawNewName) {
   const newName = String(rawNewName || '').trim();
   if (!newName || newName === oldKey) return;
@@ -3583,27 +3635,17 @@ function renameCustomMood(oldKey, rawNewName) {
   const mergedInto = [...MOOD_OPTIONS.map((m) => m.key), ...CUSTOM_MOODS].find((k) => k.toLowerCase() === newName.toLowerCase());
   const finalKey = mergedInto || newName;
   if (!mergedInto) CUSTOM_MOODS.add(finalKey);
-  persistCustomMoods();
-  ALL_REACTIONS.forEach((r) => {
-    if ((r.moodTags || []).includes(oldKey)) {
-      const tags = new Set(r.moodTags.filter((t) => t !== oldKey));
-      tags.add(finalKey);
-      r.moodTags = Array.from(tags);
-      saveReaction(r);
-    }
-  });
+  persistSharedGroups();
+  renameSharedGroupEverywhere(oldKey, finalKey);
   if (MEME_STATE.moodFilter === oldKey) MEME_STATE.moodFilter = finalKey;
+  if (IMAGE_GROUP_FILTER === oldKey) IMAGE_GROUP_FILTER = finalKey;
 }
 function deleteCustomMood(key) {
   CUSTOM_MOODS.delete(key);
-  persistCustomMoods();
-  ALL_REACTIONS.forEach((r) => {
-    if ((r.moodTags || []).includes(key)) {
-      r.moodTags = r.moodTags.filter((t) => t !== key);
-      saveReaction(r);
-    }
-  });
+  persistSharedGroups();
+  deleteSharedGroupEverywhere(key);
   if (MEME_STATE.moodFilter === key) MEME_STATE.moodFilter = null;
+  if (IMAGE_GROUP_FILTER === key) IMAGE_GROUP_FILTER = null;
 }
 function openManageMoodsModal() {
   const list = Array.from(CUSTOM_MOODS).sort((a, b) => a.localeCompare(b));
@@ -3665,7 +3707,7 @@ function renderMemeGrid() {
             ? (isVideoUrl(r.dataUrl) ? `<video src="${r.dataUrl}" autoplay loop muted playsinline></video>` : `<img src="${r.dataUrl}" alt="" loading="lazy">`)
             : `<div class="cover-placeholder" title="Still downloading from Drive…">⏳</div>`}
           ${MEME_SELECT_MODE ? `<span class="select-check">${MEME_SELECTED.has(r.id) ? '✅' : '⬜'}</span>` : ''}
-          ${!MEME_SELECT_MODE && !(r.moodTags || []).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
+          ${!MEME_SELECT_MODE && !(r.moodTags || []).length ? `<span class="untagged-badge">Untagged</span>` : ''}
         </div>`).join('')}</div>`
     : `<div class="empty-state">No reactions match. ${MEME_STATE.moodFilter || MEME_STATE.search ? 'Try clearing the filter/search.' : 'Tap "Add" to upload your first meme.'}</div>`;
 }
@@ -4377,7 +4419,15 @@ function openReactionPickerModal(entryId) {
   const uploadInput = document.getElementById('reaction-picker-upload');
   if (uploadInput) uploadInput.onchange = async () => {
     if (!uploadInput.files.length) return;
-    const added = await addReactionFiles(uploadInput.files);
+    // Bug fix: this used to fall through to addReactionFiles' default
+    // source ('images'), which is wrong here — this upload happens inside
+    // the Reactions picker, not the Images tab. An 'images'-sourced record
+    // stays permanently miscategorized into Images > Unattached unless she
+    // happens to click "Add Selected" for it (which attaches it to the
+    // entry and only then removes it from that bucket). Tagging it
+    // 'reactions' up front, same as every other path into this pool, keeps
+    // it out of Images entirely unless/until it's actually attached.
+    const added = await addReactionFiles(uploadInput.files, 'reactions');
     added.forEach((r) => selected.add(r.id));
     openReactionPickerModal(entryId); // re-render with the new uploads visible
     added.forEach((r) => {
@@ -4809,7 +4859,7 @@ function hMasonryItem(img, forceDel) {
   return `
     <div class="masonry-item ${H_SELECT_MODE ? 'selectable' : ''} ${H_SELECTED.has(img.dataUrl) ? 'selected' : ''}" data-h-item="${escapeHtml(img.dataUrl)}">
       ${isVideoUrl(img.dataUrl) ? `<video src="${img.dataUrl}" autoplay loop muted playsinline></video>` : `<img src="${img.dataUrl}" alt="" loading="lazy">`}
-      ${H_SELECT_MODE ? `<span class="select-check">${H_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : (forceDel ? `<span class="dup-del-hint" title="Tap to delete">✕</span>` : (!getHTags(img.dataUrl).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''))}
+      ${H_SELECT_MODE ? `<span class="select-check">${H_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : (forceDel ? `<span class="dup-del-hint" title="Tap to delete">✕</span>` : (!getHTags(img.dataUrl).length ? `<span class="untagged-badge">Untagged</span>` : ''))}
     </div>`;
 }
 
@@ -8071,13 +8121,19 @@ async function boot() {
     const savedIgnoredSugg = await idbGet(STORE_META, 'ignoredTagSuggestions');
     if (savedIgnoredSugg && Array.isArray(savedIgnoredSugg.value)) IGNORED_TAG_SUGGESTIONS = new Set(savedIgnoredSugg.value);
     const savedCustomMoods = await idbGet(STORE_META, 'customMoods');
-    if (savedCustomMoods && Array.isArray(savedCustomMoods.value)) CUSTOM_MOODS = new Set(savedCustomMoods.value);
     const savedSuggCollapsed = await idbGet(STORE_META, 'tagSuggestionsCollapsed');
     if (savedSuggCollapsed && typeof savedSuggCollapsed.value === 'boolean') TAG_SUGGESTIONS_COLLAPSED = savedSuggCollapsed.value;
     const savedHomeCollapsed = await idbGet(STORE_META, 'homeCollapsedSections');
     if (savedHomeCollapsed && Array.isArray(savedHomeCollapsed.value)) HOME_COLLAPSED_SECTIONS = new Set(savedHomeCollapsed.value);
     const savedImageGroups = await idbGet(STORE_META, 'imageGroups');
-    if (savedImageGroups && Array.isArray(savedImageGroups.value)) IMAGE_GROUPS = new Set(savedImageGroups.value);
+    // CUSTOM_MOODS and IMAGE_GROUPS are the same shared Set (see its
+    // declaration) — merge both legacy meta keys into one Set on load and
+    // assign it to both variables so they start out unified.
+    if ((savedCustomMoods && Array.isArray(savedCustomMoods.value)) || (savedImageGroups && Array.isArray(savedImageGroups.value))) {
+      const mergedGroups = new Set([...(savedCustomMoods && savedCustomMoods.value || []), ...(savedImageGroups && savedImageGroups.value || [])]);
+      CUSTOM_MOODS = mergedGroups;
+      IMAGE_GROUPS = mergedGroups;
+    }
     const savedImageTagMap = await idbGet(STORE_META, 'imageTagMap');
     if (savedImageTagMap && savedImageTagMap.value && typeof savedImageTagMap.value === 'object') IMAGE_TAG_MAP = savedImageTagMap.value;
     const savedIgnoredImageDup = await idbGet(STORE_META, 'ignoredImageDupGroups');
