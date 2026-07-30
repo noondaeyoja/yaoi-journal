@@ -6704,7 +6704,17 @@ function attachRootHandlers() {
         // deletes it outright (still behind a confirm as the safety net)
         // instead of opening the full edit modal.
         if (!confirm('Delete this image? It will be removed from any read it\'s attached to.')) return;
-        await deleteImageFromGalleryEverywhere({ dataUrl: url, reactionId: null });
+        // Bug fix: this used to always pass reactionId: null, so a
+        // standalone Images-tab upload (which is actually backed by an
+        // ALL_REACTIONS record, source: 'images') never got deleted at
+        // all — deleteImageFromGalleryEverywhere only knows how to strip a
+        // dataUrl off an entry's semi/uke/screencaps, so with no matching
+        // entry it silently did nothing. Rescanning then found the same
+        // "deleted" image again since it was never actually gone. Look up
+        // the real record so reaction-backed images route through
+        // deleteReaction like they're supposed to.
+        const match = allAppImages().find((i) => i.dataUrl === url);
+        await deleteImageFromGalleryEverywhere({ dataUrl: url, reactionId: match ? match.reactionId : null });
         if (IMAGE_DUP_GROUPS) {
           IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS
             .map((g) => g.filter((x) => x.dataUrl !== url))
@@ -6765,7 +6775,12 @@ function attachRootHandlers() {
     const urls = Array.from(IMAGE_SELECTED);
     if (!urls.length) return;
     if (!confirm(`Delete ${urls.length} image${urls.length === 1 ? '' : 's'}? They'll be removed from any read they're attached to. This can't be undone.`)) return;
-    for (const url of urls) await deleteImageFromGalleryEverywhere({ dataUrl: url, reactionId: null });
+    // Same reactionId lookup fix as the single-tap duplicates delete above.
+    const allImgs = allAppImages();
+    for (const url of urls) {
+      const match = allImgs.find((i) => i.dataUrl === url);
+      await deleteImageFromGalleryEverywhere({ dataUrl: url, reactionId: match ? match.reactionId : null });
+    }
     if (IMAGE_DUP_GROUPS) {
       IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS
         .map((g) => g.filter((x) => !urls.includes(x.dataUrl)))
