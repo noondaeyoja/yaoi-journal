@@ -852,6 +852,15 @@ async function uploadToDrive(dataUrl, filename, kind) {
 // every existing render function already expects for images.
 async function downloadFromDrive(fileId) {
   const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+  // fetch() only rejects on a network failure, not on a 4xx/5xx response —
+  // without this check, a "file not found" (e.g. an orphaned reference from
+  // before the account migration) would let the JSON error body through as
+  // if it were the actual image, get base64-encoded, and get saved as a
+  // permanently "successful" dataUrl full of garbage — exactly what
+  // happened to 21 NSFW uploads (see repairCorruptedHDataUrls()). Throwing
+  // here instead lets every caller's existing try/catch treat it as the
+  // failed download it actually is.
+  if (!resp.ok) throw new Error(`Drive download failed (${resp.status}) for file ${fileId}`);
   const blob = await resp.blob();
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -4417,6 +4426,29 @@ async function saveHImage(hImage) {
   const idx = ALL_H_IMAGES.findIndex((h) => h.id === hImage.id);
   if (idx > -1) ALL_H_IMAGES[idx] = hImage; else ALL_H_IMAGES.push(hImage);
   pushHImageToFirestore(hImage);
+}
+// One-time repair for the downloadFromDrive bug (see the comment on that
+// function): before the fix, a Drive file that 404'd (most likely an H
+// upload orphaned by the still-pending account migration, see task
+// "Migrate existing data to new Google-auth account") got its JSON error
+// body base64-encoded and saved as a "successful" dataUrl — permanently,
+// since a truthy dataUrl meant hydrateMissingHImages() never retried it.
+// That's what made 21 NSFW uploads render as blank/broken tiles while
+// still counting as "untagged" (they have *a* dataUrl, just not a real
+// image). Clearing it back to null here lets them fall back into the
+// normal pending-hydration path — where they'll either recover once Drive
+// is reconnected and the file is found, or stay a clearly-pending "⏳"
+// placeholder instead of a silent miscount.
+async function repairCorruptedHDataUrls() {
+  const marker = 'data:application/json;base64,';
+  const bad = ALL_H_IMAGES.filter((h) => h.dataUrl && h.dataUrl.indexOf(marker) === 0);
+  if (!bad.length) return;
+  for (const h of bad) {
+    h.dataUrl = null;
+    await saveHImage(h);
+  }
+  console.warn(`Repaired ${bad.length} NSFW image(s) with a corrupted (failed-download) dataUrl.`);
+  if (STATE.view === 'h') render();
 }
 async function deleteHImage(id) {
   const h = ALL_H_IMAGES.find((x) => x.id === id);
@@ -8027,6 +8059,7 @@ async function boot() {
     await loadAllEntries();
     await loadAllReactions();
     await loadAllHImages();
+    repairCorruptedHDataUrls().catch((err) => console.error('H dataUrl repair failed:', err));
     const savedDeleted = await idbGet(STORE_META, 'deletedTagKeys');
     if (savedDeleted && Array.isArray(savedDeleted.value)) DELETED_TAG_KEYS = new Set(savedDeleted.value);
     const savedResolved = await idbGet(STORE_META, 'hdResolvedRaw');
