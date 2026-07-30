@@ -325,6 +325,28 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
   background: rgba(18,22,46,0.85); display: flex; align-items: center; justify-content: center;
   font-size: 14px; line-height: 1; z-index: 2; pointer-events: none;
 }
+/* Possible-Duplicates per-item delete "X" — was previously unstyled/
+   unpositioned, so it fell into normal document flow right under the image,
+   landing on top of the "Untagged" badge that sits at the image's own
+   bottom-left corner. Pinning it to the top-right (same spot as the
+   Reactions gallery's .reaction-thumb .del) keeps it clear of that badge. */
+.masonry-item .del {
+  position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 50%;
+  background: rgba(0,0,0,.6); color: #fff; border: none; font-size: 12px; z-index: 2;
+}
+/* Possible Duplicates screens (Images/Reactions/NSFW) are a fast triage
+   flow — tap a copy, it's gone. The whole card is the delete target (see
+   the click handlers on data-images-item/data-open-meme/data-h-item, which
+   branch on which tab is showing), so this is purely a big, unmissable
+   visual cue rather than its own separate hit target — no button, no
+   pointer-events, just a large centered ✕ instead of the old tiny corner
+   icon that was easy to miss/mis-tap. */
+.dup-del-hint {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 46px; height: 46px; border-radius: 50%; background: rgba(0,0,0,.55);
+  color: #fff; display: flex; align-items: center; justify-content: center;
+  font-size: 22px; line-height: 1; pointer-events: none; z-index: 2;
+}
 
 .mood-chip {
   padding: 7px 14px; border-radius: 999px; font-size: 13px; font-weight: 600;

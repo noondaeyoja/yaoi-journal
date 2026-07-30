@@ -1439,6 +1439,30 @@ function isVideoUrl(dataUrl) {
   return typeof dataUrl === 'string' && dataUrl.startsWith('data:video/');
 }
 
+// Lets her save an image/video straight from the individual gallery view to
+// her phone's library — she wants the Images/Reactions/NSFW galleries to
+// work as an actual browsable photo library on mobile, not just something
+// she can look at inside the app. A plain <a download> click is the most
+// reliable cross-browser way to do this from a data: URL: on Android Chrome
+// it saves straight to Downloads; on iOS Safari it hands the file to the
+// share sheet / Files app, from which "Save Image" / long-press works same
+// as any other downloaded photo.
+function downloadDataUrl(dataUrl, filename) {
+  if (!dataUrl) return;
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = filename || 'yaoi-journal-image';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+// "data:image/jpeg;base64,..." -> "jpeg" — used to give downloaded files a
+// real extension instead of a bare "yaoi-journal-image" with none.
+function dataUrlExt(dataUrl) {
+  const m = /^data:(?:image|video)\/([a-z0-9]+)/i.exec(String(dataUrl || ''));
+  return m ? m[1].replace('jpeg', 'jpg') : 'jpg';
+}
+
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -3303,7 +3327,7 @@ function renderReactionsLibrary() {
       ${isVideoUrl(img.dataUrl) ? `<video src="${img.dataUrl}" autoplay loop muted playsinline></video>` : `<img src="${img.dataUrl}" alt="" loading="lazy">`}
       ${IMAGE_SELECT_MODE ? `<span class="select-check">${IMAGE_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : ''}
       ${!IMAGE_SELECT_MODE && isImageUntagged(img) ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : (!IMAGE_SELECT_MODE && img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : '')}
-      ${!IMAGE_SELECT_MODE && forceDel ? `<button class="del" data-del-dup-image="${escapeHtml(img.dataUrl)}" title="Delete this image">✕</button>` : ''}
+      ${!IMAGE_SELECT_MODE && forceDel ? `<span class="dup-del-hint" title="Tap to delete">✕</span>` : ''}
     </div>`;
 
   let tabBody;
@@ -3349,6 +3373,7 @@ function renderReactionsLibrary() {
           <button class="ref-btn" data-images-tag-selected="1" ${IMAGE_SELECTED.size ? '' : 'disabled'}>🏷️ Add to mood…</button>
           <button class="ref-btn" data-images-add-selected-reactions="1" ${IMAGE_SELECTED.size ? '' : 'disabled'}>🎭 Add as reactions</button>
           ${!isSFW() ? `<button class="ref-btn" data-images-pull-selected-into-h="1" style="${IMAGE_SELECTED.size ? 'color:#f43f5e;' : ''}" ${IMAGE_SELECTED.size ? '' : 'disabled'}>🔴 Pull into NSFW</button>` : ''}
+          <button class="btn-ghost" data-images-delete-selected="1" ${IMAGE_SELECTED.size ? '' : 'disabled'}>🗑️ Delete selected</button>
         </div>
       ` : ''}
       <div class="tagmgr-tabs" style="margin-bottom:8px;">
@@ -3473,6 +3498,7 @@ async function openImageAttachmentsModal(dataUrl) {
     <div class="modal-actions">
       <button class="btn-ghost" data-delete-image-attachment="${escapeHtml(dataUrl)}" data-delete-image-reaction-id="${standaloneReaction ? escapeHtml(standaloneReaction.id) : ''}">🗑️ Delete</button>
       ${croppable ? `<button class="btn-ghost" data-crop-image="${escapeHtml(dataUrl)}">✂️ Crop</button>` : ''}
+      <button class="btn-ghost" data-save-image="${escapeHtml(dataUrl)}">⬇️ Save</button>
       <button class="btn-primary" data-close-modal="1">Close</button>
     </div>
     </div>
@@ -3687,9 +3713,9 @@ function memeMainBody() {
           <button class="ref-btn" style="flex:0 0 auto;padding:4px 10px;font-size:12px;" data-dismiss-meme-dup-group="${idx}">Not duplicates</button>
         </div>
         <div class="image-masonry">${group.map((r) => `
-          <div class="masonry-item" data-open-meme="${r.id}">
+          <div class="masonry-item ${MEME_SELECT_MODE ? 'selectable' : ''} ${MEME_SELECTED.has(r.id) ? 'selected' : ''}" data-open-meme="${r.id}">
             ${isVideoUrl(r.dataUrl) ? `<video src="${r.dataUrl}" autoplay loop muted playsinline></video>` : `<img src="${r.dataUrl}" alt="" loading="lazy">`}
-            <button class="del" data-del-reaction="${r.id}">✕</button>
+            ${MEME_SELECT_MODE ? `<span class="select-check">${MEME_SELECTED.has(r.id) ? '✅' : '⬜'}</span>` : `<span class="dup-del-hint" title="Tap to delete">✕</span>`}
           </div>`).join('')}</div>
       </div>`).join('');
 }
@@ -3745,10 +3771,24 @@ function renderMemeLibrary() {
 
 function attachMemeGridHandlers() {
   document.querySelectorAll('[data-open-meme]').forEach((el) => {
-    el.onclick = () => {
+    el.onclick = async () => {
       const id = el.getAttribute('data-open-meme');
       if (MEME_SELECT_MODE) {
         if (MEME_SELECTED.has(id)) MEME_SELECTED.delete(id); else MEME_SELECTED.add(id);
+        render();
+      } else if (MEME_SHOWING_DUPLICATES) {
+        // Same fast-triage tap-to-delete flow as the Images duplicates tab.
+        if (!confirm('Delete this image from your library? Any entries it\'s already attached to keep their own copy.')) return;
+        await deleteReaction(id);
+        if (MEME_DUP_GROUPS) {
+          MEME_DUP_GROUPS = MEME_DUP_GROUPS
+            .map((g) => g.filter((r) => r.id !== id))
+            .filter((g) => g.length > 1);
+        }
+        // A reaction can also show up in the Images tab's own duplicate
+        // scan (via img.reactionId) — drop it from there too.
+        if (IMAGE_DUP_GROUPS) IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS.filter((g) => !g.some((img) => img.reactionId === id));
+        showToast('Deleted');
         render();
       } else {
         openMemeEditModal(id);
@@ -3786,6 +3826,15 @@ function attachMemeGridHandlers() {
     if (!confirm(`Delete ${MEME_SELECTED.size} reaction(s)? This can't be undone.`)) return;
     const ids = Array.from(MEME_SELECTED);
     for (const id of ids) await deleteReaction(id);
+    // Same as the single-item delete — drop the deleted ones from whichever
+    // duplicate group is currently showing so it updates immediately instead
+    // of leaving ghost thumbnails until the next rescan.
+    if (MEME_DUP_GROUPS) {
+      MEME_DUP_GROUPS = MEME_DUP_GROUPS
+        .map((g) => g.filter((r) => !ids.includes(r.id)))
+        .filter((g) => g.length > 1);
+    }
+    if (IMAGE_DUP_GROUPS) IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS.filter((g) => !g.some((img) => ids.includes(img.reactionId)));
     MEME_SELECT_MODE = false;
     MEME_SELECTED = new Set();
     showToast('Deleted');
@@ -3823,6 +3872,7 @@ function openMemeEditModal(id) {
       <div class="modal-actions">
         <button class="btn-ghost" data-delete-meme="${r.id}">🗑️ Delete</button>
         ${r.dataUrl && !isVideoUrl(r.dataUrl) && !/^data:image\/(gif|webp)/.test(r.dataUrl) ? `<button class="btn-ghost" data-crop-meme="${r.id}">✂️ Crop</button>` : ''}
+        ${r.dataUrl ? `<button class="btn-ghost" data-save-image="${escapeHtml(r.dataUrl)}">⬇️ Save</button>` : ''}
         <button class="btn-primary" data-close-modal="1">Done</button>
       </div>
     </div>
@@ -4612,6 +4662,8 @@ let H_GROUP_FILTER = null;
 // Same shape/behavior as MEME_STATE, so the H gallery's search/untagged
 // filtering works exactly like the Reactions gallery's.
 let H_STATE = { search: '', untaggedOnly: false };
+let H_SELECT_MODE = false;
+let H_SELECTED = new Set();
 
 function hFilteredItems() {
   const q = H_STATE.search.trim().toLowerCase();
@@ -4630,11 +4682,15 @@ function hFilteredItems() {
   return items;
 }
 
-function hMasonryItem(img) {
+// `forceDel` mirrors the Images/Reactions masonryItem — only passed true
+// from the Possible Duplicates tab, where tapping the whole card deletes it
+// (see attachHGridHandlers' data-h-item handler) and this big centered ✕ is
+// just the visual cue, same pattern as the other two galleries now use.
+function hMasonryItem(img, forceDel) {
   return `
-    <div class="masonry-item" data-h-item="${escapeHtml(img.dataUrl)}">
+    <div class="masonry-item ${H_SELECT_MODE ? 'selectable' : ''} ${H_SELECTED.has(img.dataUrl) ? 'selected' : ''}" data-h-item="${escapeHtml(img.dataUrl)}">
       ${isVideoUrl(img.dataUrl) ? `<video src="${img.dataUrl}" autoplay loop muted playsinline></video>` : `<img src="${img.dataUrl}" alt="" loading="lazy">`}
-      ${!getHTags(img.dataUrl).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''}
+      ${H_SELECT_MODE ? `<span class="select-check">${H_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : (forceDel ? `<span class="dup-del-hint" title="Tap to delete">✕</span>` : (!getHTags(img.dataUrl).length ? `<span class="reaction-count" style="background:rgba(200,60,60,.85);">Untagged</span>` : ''))}
     </div>`;
 }
 
@@ -4698,12 +4754,12 @@ function hMainBody() {
             <span>Possible duplicate (${group.length} images)</span>
             <button class="ref-btn" style="flex:0 0 auto;padding:4px 10px;font-size:12px;" data-dismiss-h-dup-group="${idx}">Not duplicates</button>
           </div>
-          <div class="image-masonry">${group.map(hMasonryItem).join('')}</div>
+          <div class="image-masonry">${group.map((img) => hMasonryItem(img, true)).join('')}</div>
         </div>`).join('');
   }
   const items = hFilteredItems();
   return items.length
-    ? `<div class="image-masonry">${items.map(hMasonryItem).join('')}</div>`
+    ? `<div class="image-masonry">${items.map((img) => hMasonryItem(img)).join('')}</div>`
     : `<div class="empty-state">${H_GROUP_FILTER || H_STATE.search || H_STATE.untaggedOnly ? 'No NSFW images match. Try clearing the filter/search.' : 'No NSFW images yet. Pull some in from Images or Reactions (open one → 🔴 Pull into NSFW), or upload directly above.'}</div>`;
 }
 
@@ -4723,8 +4779,16 @@ function renderHLibrary() {
     <div class="app-header">
       <div class="brand-row"><h1>💦 NSFW</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${allHImages().length} image${allHImages().length === 1 ? '' : 's'} saved${untaggedCount ? ` · ${untaggedCount} untagged` : ''} — kept separate from the rest of the app.</div>
-      <label class="upload-btn" style="margin-bottom:10px;">📎 Add image(s)<input type="file" accept="image/*,video/*" multiple id="h-upload-input"></label>
-      <div class="search-bar" style="margin-bottom:8px;"><span>🔍</span><input type="search" id="h-search-input" placeholder="Search captions/keywords..." value="${escapeHtml(H_STATE.search)}"></div>
+      <div class="export-row" style="margin-bottom:10px;">
+        <label class="upload-btn" style="flex:1;">📎 Add image(s)<input type="file" accept="image/*,video/*" multiple id="h-upload-input"></label>
+        <button class="ref-btn" data-h-toggle-select="1">${H_SELECT_MODE ? '✕ Cancel select' : '☑️ Select'}</button>
+      </div>
+      ${H_SELECT_MODE ? `
+        <div class="export-row" style="margin-bottom:10px;background:var(--card);border:1px solid var(--purple);border-radius:var(--radius-sm);padding:8px;">
+          <div style="flex:1;font-size:12.5px;color:var(--text-dim);align-self:center;">${H_SELECTED.size} selected</div>
+          <button class="btn-ghost" data-h-delete-selected="1" ${H_SELECTED.size ? '' : 'disabled'}>🗑️ Delete selected</button>
+        </div>
+      ` : ''}
       <div class="tagmgr-tabs" style="margin-bottom:8px;">
         <button class="tagmgr-tab ${!H_SHOWING_DUPLICATES ? 'active' : ''}" data-h-tab="grid">Gallery</button>
         <button class="tagmgr-tab ${H_SHOWING_DUPLICATES ? 'active' : ''}" data-h-tab="duplicates">Possible Duplicates</button>
@@ -4777,6 +4841,7 @@ async function openHImageModal(dataUrl) {
       <div class="modal-actions">
         <button class="btn-ghost" data-delete-h-image="${escapeHtml(dataUrl)}">🗑️ Delete</button>
         ${croppable ? `<button class="btn-ghost" data-crop-h="${escapeHtml(dataUrl)}">✂️ Crop</button>` : ''}
+        ${dataUrl ? `<button class="btn-ghost" data-save-image="${escapeHtml(dataUrl)}">⬇️ Save</button>` : ''}
         <button class="btn-primary" data-close-modal="1">Done</button>
       </div>
     </div>
@@ -4785,11 +4850,48 @@ async function openHImageModal(dataUrl) {
 
 function attachHGridHandlers() {
   document.querySelectorAll('[data-h-item]').forEach((el) => {
-    el.onclick = () => openHImageModal(el.getAttribute('data-h-item'));
+    el.onclick = async () => {
+      const url = el.getAttribute('data-h-item');
+      if (H_SELECT_MODE) {
+        if (H_SELECTED.has(url)) H_SELECTED.delete(url); else H_SELECTED.add(url);
+        render();
+      } else if (H_SHOWING_DUPLICATES) {
+        // Same fast tap-to-delete triage flow as Images/Reactions duplicates.
+        if (!confirm('Delete this image?')) return;
+        await removeFromH(url);
+        if (H_DUP_GROUPS) {
+          H_DUP_GROUPS = H_DUP_GROUPS
+            .map((g) => g.filter((i) => i.dataUrl !== url))
+            .filter((g) => g.length > 1);
+        }
+        showToast('Deleted');
+        render();
+      } else {
+        openHImageModal(url);
+      }
+    };
   });
   document.querySelectorAll('[data-h-tab]').forEach((el) => {
     el.onclick = () => { H_SHOWING_DUPLICATES = el.getAttribute('data-h-tab') === 'duplicates'; render(); };
   });
+  const toggleHSelectBtn = document.querySelector('[data-h-toggle-select]');
+  if (toggleHSelectBtn) toggleHSelectBtn.onclick = () => { H_SELECT_MODE = !H_SELECT_MODE; H_SELECTED = new Set(); render(); };
+  const deleteSelectedHBtn = document.querySelector('[data-h-delete-selected]');
+  if (deleteSelectedHBtn) deleteSelectedHBtn.onclick = async () => {
+    const urls = Array.from(H_SELECTED);
+    if (!urls.length) return;
+    if (!confirm(`Delete ${urls.length} image${urls.length === 1 ? '' : 's'}? This can't be undone.`)) return;
+    for (const url of urls) await removeFromH(url);
+    if (H_DUP_GROUPS) {
+      H_DUP_GROUPS = H_DUP_GROUPS
+        .map((g) => g.filter((i) => !urls.includes(i.dataUrl)))
+        .filter((g) => g.length > 1);
+    }
+    H_SELECT_MODE = false;
+    H_SELECTED = new Set();
+    showToast('Deleted');
+    render();
+  };
   const scanHDupBtn = document.querySelector('[data-scan-h-duplicates]');
   if (scanHDupBtn) scanHDupBtn.onclick = () => scanForHDuplicates();
   document.querySelectorAll('[data-dismiss-h-dup-group]').forEach((el) => {
@@ -4815,11 +4917,6 @@ function attachHGridHandlers() {
   // so Delete silently did nothing. It's wired via the global document click
   // delegation instead (see [data-delete-h-image] below), same as every
   // other modal-only button (crop, tag toggles, etc).
-  const hSearchInput = document.querySelector('#h-search-input');
-  if (hSearchInput) {
-    hSearchInput.oninput = (ev) => { H_STATE.search = ev.target.value; renderHLibraryInPlace(); };
-    hSearchInput.onkeydown = (ev) => { if (ev.key === 'Enter') hSearchInput.blur(); };
-  }
   const uploadInput = document.querySelector('#h-upload-input');
   if (uploadInput) uploadInput.onchange = async () => {
     if (!uploadInput.files.length) return;
@@ -6592,26 +6689,28 @@ function attachRootHandlers() {
     await addReactionFiles(reactionUploadInput.files);
     render();
   };
-  root.querySelectorAll('[data-del-reaction]').forEach((el) => {
-    el.onclick = async (ev) => {
-      ev.stopPropagation();
-      const id = el.getAttribute('data-del-reaction');
-      if (!confirm('Delete this image from your library? Any entries it\'s already attached to keep their own copy.')) return;
-      await deleteReaction(id);
-      // Once you've decided which copy to keep, that possible-duplicate
-      // group is resolved — drop it from whichever duplicate list is
-      // showing right now instead of leaving it there until a rescan.
-      if (MEME_DUP_GROUPS) MEME_DUP_GROUPS = MEME_DUP_GROUPS.filter((g) => !g.some((r) => r.id === id));
-      if (IMAGE_DUP_GROUPS) IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS.filter((g) => !g.some((img) => img.reactionId === id));
-      showToast('Deleted');
-      render();
-    };
-  });
+  // (the old per-item [data-del-reaction] corner button in the Reactions
+  // duplicates view is gone — deleting there now happens via the
+  // [data-open-meme] click handler in attachMemeGridHandlers, which
+  // branches on MEME_SHOWING_DUPLICATES)
   root.querySelectorAll('[data-images-item]').forEach((el) => {
-    el.onclick = () => {
+    el.onclick = async () => {
       const url = el.getAttribute('data-images-item');
       if (IMAGE_SELECT_MODE) {
         if (IMAGE_SELECTED.has(url)) IMAGE_SELECTED.delete(url); else IMAGE_SELECTED.add(url);
+        render();
+      } else if (IMAGES_TAB === 'duplicates') {
+        // Possible Duplicates is a fast triage screen — tapping a copy
+        // deletes it outright (still behind a confirm as the safety net)
+        // instead of opening the full edit modal.
+        if (!confirm('Delete this image? It will be removed from any read it\'s attached to.')) return;
+        await deleteImageFromGalleryEverywhere({ dataUrl: url, reactionId: null });
+        if (IMAGE_DUP_GROUPS) {
+          IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS
+            .map((g) => g.filter((x) => x.dataUrl !== url))
+            .filter((g) => g.length > 1);
+        }
+        showToast('Deleted');
         render();
       } else {
         openImageAttachmentsModal(url);
@@ -6657,6 +6756,26 @@ function attachRootHandlers() {
     showToast(`Pulled ${urls.length} image${urls.length === 1 ? '' : 's'} into H`);
     render();
   };
+  // Mainly here for the Possible Duplicates tab — select mode already worked
+  // there (the shared masonry item honors IMAGE_SELECT_MODE regardless of
+  // tab), it just had no bulk delete option, only one-at-a-time via each
+  // item's own "✕". This lets her clear out a whole group of dupes at once.
+  const deleteSelectedImagesBtn = root.querySelector('[data-images-delete-selected]');
+  if (deleteSelectedImagesBtn) deleteSelectedImagesBtn.onclick = async () => {
+    const urls = Array.from(IMAGE_SELECTED);
+    if (!urls.length) return;
+    if (!confirm(`Delete ${urls.length} image${urls.length === 1 ? '' : 's'}? They'll be removed from any read they're attached to. This can't be undone.`)) return;
+    for (const url of urls) await deleteImageFromGalleryEverywhere({ dataUrl: url, reactionId: null });
+    if (IMAGE_DUP_GROUPS) {
+      IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS
+        .map((g) => g.filter((x) => !urls.includes(x.dataUrl)))
+        .filter((g) => g.length > 1);
+    }
+    IMAGE_SELECT_MODE = false;
+    IMAGE_SELECTED = new Set();
+    showToast('Deleted');
+    render();
+  };
   root.querySelectorAll('[data-images-tab]').forEach((el) => {
     el.onclick = () => { IMAGES_TAB = el.getAttribute('data-images-tab'); render(); };
   });
@@ -6688,24 +6807,9 @@ function attachRootHandlers() {
   root.querySelectorAll('[data-dismiss-image-dup-group]').forEach((el) => {
     el.onclick = (ev) => { ev.stopPropagation(); dismissImageDupGroup(Number(el.getAttribute('data-dismiss-image-dup-group'))); };
   });
-  root.querySelectorAll('[data-del-dup-image]').forEach((el) => {
-    el.onclick = async (ev) => {
-      ev.stopPropagation();
-      const dataUrl = el.getAttribute('data-del-dup-image');
-      if (!confirm('Delete this image? It will be removed from any read it\'s attached to.')) return;
-      await deleteImageFromGalleryEverywhere({ dataUrl, reactionId: null });
-      // Same idea as the reaction delete above — once she's picked which
-      // copy to keep, drop the deleted one from this group immediately so
-      // the comparison updates without a full rescan.
-      if (IMAGE_DUP_GROUPS) {
-        IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS
-          .map((g) => g.filter((x) => x.dataUrl !== dataUrl))
-          .filter((g) => g.length > 1);
-      }
-      showToast('Deleted');
-      render();
-    };
-  });
+  // (the old per-item [data-del-dup-image] corner button is gone — deleting
+  // from Possible Duplicates now happens via the [data-images-item] click
+  // handler above, which branches on IMAGES_TAB itself)
 
   // Meme/reaction library
   attachMemeGridHandlers();
@@ -7283,6 +7387,11 @@ document.addEventListener('click', async (ev) => {
   if (t.matches('[data-crop-meme]')) openCropReactionModal(t.getAttribute('data-crop-meme'));
   if (t.matches('[data-crop-image]')) openCropImageModal(t.getAttribute('data-crop-image'));
   if (t.matches('[data-crop-h]')) openCropHModal(t.getAttribute('data-crop-h'));
+  if (t.matches('[data-save-image]')) {
+    const url = t.getAttribute('data-save-image');
+    downloadDataUrl(url, `yaoi-journal-${Date.now()}.${dataUrlExt(url)}`);
+    showToast('Saved to your device');
+  }
   if (t.matches('[data-delete-h-image]')) {
     const url = t.getAttribute('data-delete-h-image');
     if (confirm('Delete this H image?')) {
