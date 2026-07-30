@@ -3397,7 +3397,7 @@ function renderReactionsLibrary() {
       <div class="tagmgr-tabs" style="margin-bottom:8px;">
         <button class="tagmgr-tab ${IMAGES_TAB === 'attached' ? 'active' : ''}" data-images-tab="attached">Attached (${attached.length})</button>
         <button class="tagmgr-tab ${IMAGES_TAB === 'unattached' ? 'active' : ''}" data-images-tab="unattached">Unattached (${unattached.length})</button>
-        <button class="tagmgr-tab ${IMAGES_TAB === 'duplicates' ? 'active' : ''}" data-images-tab="duplicates">Possible Duplicates</button>
+        <button class="tagmgr-tab ${IMAGES_TAB === 'duplicates' ? 'active' : ''}" data-images-tab="duplicates">Possible Duplicates${IMAGE_DUP_GROUPS !== null ? ` (${IMAGE_DUP_GROUPS.length})` : ''}</button>
         ${IMAGES_TAB !== 'duplicates' ? `<button class="ref-btn ${IMAGES_UNTAGGED_ONLY ? 'active' : ''}" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;${IMAGES_UNTAGGED_ONLY ? 'background:var(--purple);color:#fff;' : ''}" data-images-untagged-only="1" title="Show images not yet grouped into a mood">${untaggedCount} untagged</button>` : ''}
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-images-manage-groups="1" title="Manage image groups (rename/delete)">✏️ Manage</button>
       </div>
@@ -3786,7 +3786,7 @@ function renderMemeLibrary() {
       ` : ''}
       <div class="tagmgr-tabs" style="margin-bottom:8px;">
         <button class="tagmgr-tab ${!MEME_SHOWING_DUPLICATES ? 'active' : ''}" data-meme-tab="grid">Gallery</button>
-        <button class="tagmgr-tab ${MEME_SHOWING_DUPLICATES ? 'active' : ''}" data-meme-tab="duplicates">Possible Duplicates</button>
+        <button class="tagmgr-tab ${MEME_SHOWING_DUPLICATES ? 'active' : ''}" data-meme-tab="duplicates">Possible Duplicates${MEME_DUP_GROUPS !== null ? ` (${MEME_DUP_GROUPS.length})` : ''}</button>
         <button class="ref-btn ${MEME_STATE.untaggedOnly ? 'active' : ''}" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;${MEME_STATE.untaggedOnly ? 'background:var(--purple);color:#fff;' : ''}" data-meme-untagged-only="1" title="Show only untagged reactions">${untaggedCount} untagged</button>
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-meme-manage-moods="1" title="Manage mood groups (rename/delete)">✏️ Manage</button>
       </div>
@@ -4751,10 +4751,13 @@ let H_SELECTED = new Set();
 
 function hFilteredItems() {
   const q = H_STATE.search.trim().toLowerCase();
-  // Untagged-first, same rule as the Reactions gallery (memeFilteredItems)
-  // — images still needing a group sort to the top, and drop out of that
-  // top spot as soon as they're assigned one.
-  let items = allHImages().slice().sort((a, b) => {
+  // Uploads still waiting on a Drive download (see hydrateMissingHImages())
+  // have no dataUrl locally yet — there's no image to show and no way to
+  // know their real tag status until they hydrate, so they'd otherwise all
+  // collapse into imageKey('') and get miscounted as "untagged" together.
+  // Drop them here rather than let them pollute the count/filter/gallery
+  // with broken tiles; they'll reappear on their own once hydrated.
+  let items = allHImages().filter((i) => i.dataUrl).slice().sort((a, b) => {
     const aUntagged = !getHTags(a.dataUrl).length;
     const bUntagged = !getHTags(b.dataUrl).length;
     if (aUntagged !== bUntagged) return aUntagged ? -1 : 1;
@@ -4868,7 +4871,9 @@ function renderHLibraryInPlace() {
 }
 
 function renderHLibrary() {
-  const untaggedCount = allHImages().filter((i) => !getHTags(i.dataUrl).length).length;
+  // Excludes uploads still waiting on a Drive download (no dataUrl yet) —
+  // see hFilteredItems() for why those can't be counted as untagged.
+  const untaggedCount = allHImages().filter((i) => i.dataUrl && !getHTags(i.dataUrl).length).length;
   const groupList = Array.from(H_GROUPS).sort((a, b) => a.localeCompare(b));
   // No 🏷️ prefix here, same as the Reactions mood-chip row — matches how
   // she wanted the top controls of H to read like the Reactions tab's.
@@ -4890,7 +4895,7 @@ function renderHLibrary() {
       ` : ''}
       <div class="tagmgr-tabs" style="margin-bottom:8px;">
         <button class="tagmgr-tab ${!H_SHOWING_DUPLICATES ? 'active' : ''}" data-h-tab="grid">Gallery</button>
-        <button class="tagmgr-tab ${H_SHOWING_DUPLICATES ? 'active' : ''}" data-h-tab="duplicates">Possible Duplicates</button>
+        <button class="tagmgr-tab ${H_SHOWING_DUPLICATES ? 'active' : ''}" data-h-tab="duplicates">Possible Duplicates${H_DUP_GROUPS !== null ? ` (${H_DUP_GROUPS.length})` : ''}</button>
         <button class="ref-btn ${H_STATE.untaggedOnly ? 'active' : ''}" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;${H_STATE.untaggedOnly ? 'background:var(--purple);color:#fff;' : ''}" data-h-untagged-only="1" title="Show only untagged H images">${untaggedCount} untagged</button>
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-h-manage-groups="1" title="Manage H groups (rename/delete)">✏️ Manage</button>
       </div>
