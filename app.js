@@ -1345,6 +1345,30 @@ function fileToCompressedDataUrl(file, maxDim = 900, quality = 0.82) {
   });
 }
 
+// Same downscale as fileToCompressedDataUrl above, but starting from an
+// already-stored data: URL instead of a fresh File — used by the Failed
+// Uploads "Compress & Retry" flow to shrink a photo that was too big for
+// Drive/Firestore the first time, without asking the user to re-pick the
+// file from disk. Static images only; GIF/WebP/video call sites skip this
+// entirely (see isVideoUrl/animated checks at each call site) since canvas
+// re-encoding would flatten any animation.
+function compressDataUrlHarder(dataUrl, maxDim = 800, quality = 0.7) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > height && width > maxDim) { height = Math.round(height * maxDim / width); width = maxDim; }
+      else if (height > maxDim) { width = Math.round(width * maxDim / height); height = maxDim; }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
 // Shared by both the tap-to-pick file inputs AND the drag-and-drop zones
 // below, so cover/semi/uke photo uploads only have one code path to keep in
 // sync (compress → save locally → Drive upload in the background).
@@ -5229,6 +5253,19 @@ function renderDatabase() {
           <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">A past bug could create more than one "Yaoi Journal Images" folder in your Drive when two images uploaded at nearly the same time. This finds every duplicate, moves its files into one "Yaoi Journal/Images" and "Yaoi Journal/Reactions" folder pair, and deletes the empties — safe to run anytime, and safe to run more than once. Requires Google Drive to be connected.${DRIVE_CONSOLIDATE.summary ? ` Last run: moved ${DRIVE_CONSOLIDATE.summary.movedImages + DRIVE_CONSOLIDATE.summary.movedReactions} file(s), removed ${DRIVE_CONSOLIDATE.summary.foldersRemoved} duplicate folder(s).` : ''}</p>
         `}
       </div>
+      ${(() => {
+        const failedUploads = imageBackfillCandidates();
+        if (!failedUploads.length) return '';
+        return `
+      <div class="panel" style="margin-bottom:14px;">
+        <div class="panel-title">📤 Failed Uploads (${failedUploads.length})</div>
+        <p style="font-size:11px;color:var(--text-dim);margin:0 0 8px;">These are only saved on this device — usually because the file was too large to back up to Google Drive/the cloud on the first try. Compress & Retry shrinks it down and tries again.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;">
+          ${failedUploads.map(renderFailedUploadCard).join('')}
+        </div>
+      </div>
+        `;
+      })()}
       ${renderSettingsPanel()}
       <div class="export-row">
         <button class="ref-btn" data-export-csv="1">⬇ Export CSV</button>
@@ -6813,6 +6850,13 @@ function attachRootHandlers() {
   if (stopImageBackfillBtn) stopImageBackfillBtn.onclick = cancelImageBackfill;
   const consolidateDriveBtn = root.querySelector('[data-consolidate-drive-folders]');
   if (consolidateDriveBtn) consolidateDriveBtn.onclick = consolidateDriveFolders;
+  root.querySelectorAll('[data-retry-failed-upload]').forEach((el) => {
+    el.onclick = async () => {
+      el.disabled = true;
+      el.textContent = '⏳ Retrying…';
+      await retryFailedUpload(el.getAttribute('data-retry-failed-upload'));
+    };
+  });
   const dbSearch = root.querySelector('#db-search');
   if (dbSearch) dbSearch.oninput = () => {
     const q = dbSearch.value.toLowerCase();
@@ -7318,6 +7362,14 @@ function imageBackfillCandidates() {
   ALL_REACTIONS.forEach((r) => {
     if (isLocalDataUrl(r.dataUrl) && !r.driveId) tasks.push({ kind: 'reaction', reaction: r });
   });
+  // H images were missing from this list entirely until now — they have the
+  // exact same local-only-until-uploaded shape (dataUrl + driveId) as
+  // reactions, they just live in a separate array/store. Without this, a
+  // stuck H upload would never show up in the pending count or get picked up
+  // by either the bulk sweep below or the Failed Uploads panel.
+  ALL_H_IMAGES.forEach((h) => {
+    if (isLocalDataUrl(h.dataUrl) && !h.driveId) tasks.push({ kind: 'himage', hImage: h });
+  });
   return tasks;
 }
 async function runImageBackfill() {
@@ -7363,6 +7415,9 @@ async function runImageBackfill() {
       } else if (t.kind === 'reaction') {
         const id = await tryUploadImageToDrive(t.reaction.dataUrl, `reaction-${t.reaction.id}.jpg`, 'reaction');
         if (id) { t.reaction.driveId = id; await saveReaction(t.reaction); IMAGE_BACKFILL.uploaded++; }
+      } else if (t.kind === 'himage') {
+        const id = await tryUploadImageToDrive(t.hImage.dataUrl, `h-${t.hImage.id}.jpg`, 'h');
+        if (id) { t.hImage.driveId = id; await saveHImage(t.hImage); IMAGE_BACKFILL.uploaded++; }
       }
     } catch (err) {
       console.error('Image backfill item failed:', err);
@@ -7380,6 +7435,134 @@ async function runImageBackfill() {
 }
 function cancelImageBackfill() {
   IMAGE_BACKFILL.cancel = true;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Failed Uploads panel (Database view)                                    */
+/* Same underlying "local-only, no Drive id" candidates as the bulk        */
+/* backfill sweep above, but surfaced one item at a time with a preview so */
+/* she can actually see what's stuck, plus a per-item retry that shrinks   */
+/* the file first — the bulk sweep re-uploads the ORIGINAL bytes, which is */
+/* exactly what already failed once (usually for being too large), so on  */
+/* its own it just fails the same way again for the true oversized cases. */
+/* ---------------------------------------------------------------------- */
+
+// Runs the original through compressDataUrlHarder first (skipped for
+// video/gif/webp, where re-encoding would destroy the animation — those
+// just get retried as-is), uploads whatever came out of that, and only on
+// success patches the record's driveId (and, if it was actually shrunk,
+// swaps in the smaller dataUrl too so it stays smaller going forward).
+async function compressAndUploadField(getUrl, setUrl, setDriveId, filename, kind) {
+  const original = getUrl();
+  if (!original) return false;
+  const skipCompression = isVideoUrl(original) || /^data:image\/(gif|webp)/.test(original);
+  let toUpload = original;
+  if (!skipCompression) {
+    try { toUpload = await compressDataUrlHarder(original, 800, 0.7); } catch (err) { console.error('Compress-before-retry failed, uploading original instead:', err); toUpload = original; }
+  }
+  const fileId = await tryUploadImageToDrive(toUpload, filename, kind);
+  if (!fileId) return false;
+  setDriveId(fileId);
+  if (toUpload !== original) setUrl(toUpload);
+  return true;
+}
+
+async function retryFailedUpload(key) {
+  const sep = key.indexOf('|');
+  const kind = key.slice(0, sep);
+  const id = key.slice(sep + 1);
+  let ok = false;
+  try {
+    if (kind === 'cover') {
+      const e = ALL_ENTRIES.find((x) => x.id === id);
+      if (!e) return;
+      ok = await compressAndUploadField(() => e.coverUrl, (v) => { e.coverUrl = v; }, (v) => { e.coverDriveId = v; }, `${e.id}-cover.jpg`, 'entry');
+      if (ok) await saveEntry(e);
+    } else if (kind === 'semi') {
+      const e = ALL_ENTRIES.find((x) => x.id === id);
+      if (!e || !e.semi) return;
+      ok = await compressAndUploadField(() => e.semi.photo, (v) => { e.semi.photo = v; }, (v) => { e.semi.photoDriveId = v; }, `${e.id}-semi-photo.jpg`, 'entry');
+      if (ok) await saveEntry(e);
+    } else if (kind === 'uke') {
+      const e = ALL_ENTRIES.find((x) => x.id === id);
+      if (!e || !e.uke) return;
+      ok = await compressAndUploadField(() => e.uke.photo, (v) => { e.uke.photo = v; }, (v) => { e.uke.photoDriveId = v; }, `${e.id}-uke-photo.jpg`, 'entry');
+      if (ok) await saveEntry(e);
+    } else if (kind === 'screencaps') {
+      const e = ALL_ENTRIES.find((x) => x.id === id);
+      if (!e) return;
+      e.screencapDriveIds = e.screencapDriveIds || [];
+      let anyOk = false;
+      for (let i = e.screencapDriveIds.length; i < e.screencaps.length; i++) {
+        const original = e.screencaps[i];
+        if (!isLocalDataUrl(original)) continue;
+        const skipCompression = isVideoUrl(original) || /^data:image\/(gif|webp)/.test(original);
+        let toUpload = original;
+        if (!skipCompression) {
+          try { toUpload = await compressDataUrlHarder(original, 800, 0.7); } catch (err) { toUpload = original; }
+        }
+        const fileId = await tryUploadImageToDrive(toUpload, `${e.id}-screencap-${Date.now()}-${i}.jpg`, 'entry');
+        if (!fileId) break; // still failing — stop here rather than skip ahead out of order
+        e.screencapDriveIds.push(fileId);
+        if (toUpload !== original) e.screencaps[i] = toUpload;
+        anyOk = true;
+      }
+      ok = anyOk;
+      await saveEntry(e);
+    } else if (kind === 'reaction') {
+      const r = ALL_REACTIONS.find((x) => x.id === id);
+      if (!r) return;
+      ok = await compressAndUploadField(() => r.dataUrl, (v) => { r.dataUrl = v; }, (v) => { r.driveId = v; }, `reaction-${r.id}.jpg`, 'reaction');
+      if (ok) await saveReaction(r);
+    } else if (kind === 'himage') {
+      const h = ALL_H_IMAGES.find((x) => x.id === id);
+      if (!h) return;
+      ok = await compressAndUploadField(() => h.dataUrl, (v) => { h.dataUrl = v; }, (v) => { h.driveId = v; }, `h-${h.id}.jpg`, 'h');
+      if (ok) await saveHImage(h);
+    }
+  } catch (err) {
+    console.error('Failed-upload retry errored:', err);
+  }
+  showToast(ok ? '☁️ Uploaded to Drive' : "Still couldn't upload — check your connection and try again.");
+  if (STATE.view === 'database') render();
+}
+
+// One card per pending item — a thumbnail plus a Compress & Retry (or, for
+// video/gif/webp, a plain Retry) button. Built from the exact same task
+// shape imageBackfillCandidates() already produces for the bulk sweep, just
+// rendered individually instead of only shown as a single aggregate count.
+function renderFailedUploadCard(t) {
+  let preview, key, label, sub = '';
+  if (t.kind === 'cover') { preview = t.entry.coverUrl; key = `cover|${t.entry.id}`; label = t.entry.title || 'Untitled'; sub = 'Cover image'; }
+  else if (t.kind === 'semi') { preview = t.entry.semi.photo; key = `semi|${t.entry.id}`; label = t.entry.title || 'Untitled'; sub = 'Semi photo'; }
+  else if (t.kind === 'uke') { preview = t.entry.uke.photo; key = `uke|${t.entry.id}`; label = t.entry.title || 'Untitled'; sub = 'Uke photo'; }
+  else if (t.kind === 'screencaps') {
+    const doneCount = (t.entry.screencapDriveIds || []).length;
+    const pendingCount = t.entry.screencaps.filter(isLocalDataUrl).length - doneCount;
+    preview = t.entry.screencaps[doneCount];
+    key = `screencaps|${t.entry.id}`;
+    label = t.entry.title || 'Untitled';
+    sub = `${pendingCount} screencap${pendingCount === 1 ? '' : 's'}`;
+  } else if (t.kind === 'reaction') {
+    preview = t.reaction.dataUrl;
+    key = `reaction|${t.reaction.id}`;
+    label = t.reaction.source === 'images' ? 'Image' : t.reaction.source === 'reactions' ? 'Reaction' : 'Image/Reaction';
+  } else if (t.kind === 'himage') {
+    preview = t.hImage.dataUrl;
+    key = `himage|${t.hImage.id}`;
+    label = 'H image';
+  }
+  if (!preview) return '';
+  const skipCompression = isVideoUrl(preview) || /^data:image\/(gif|webp)/.test(preview);
+  const media = isVideoUrl(preview)
+    ? `<video src="${preview}" muted playsinline style="width:100%;height:110px;object-fit:cover;border-radius:8px;background:#000;"></video>`
+    : `<img src="${preview}" alt="" style="width:100%;height:110px;object-fit:cover;border-radius:8px;background:#000;">`;
+  return `
+    <div class="failed-upload-card" style="width:128px;">
+      ${media}
+      <div style="font-size:11px;margin-top:4px;line-height:1.3;">${escapeHtml(label)}${sub ? `<br><span style="color:var(--text-dim);">${escapeHtml(sub)}</span>` : ''}</div>
+      <button class="ref-btn" style="width:100%;margin-top:4px;font-size:11px;padding:4px;" data-retry-failed-upload="${escapeHtml(key)}">${skipCompression ? '🔄 Retry' : '🗜️ Compress & Retry'}</button>
+    </div>`;
 }
 
 // A stale service worker used to be able to get permanently stuck in the
