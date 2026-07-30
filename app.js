@@ -3332,7 +3332,7 @@ function renderReactionsLibrary() {
 
   let tabBody;
   if (IMAGES_TAB === 'unattached') {
-    tabBody = unattached.length ? `<div class="image-masonry">${unattached.map(masonryItem).join('')}</div>` : `<div class="empty-state">Everything's attached to a read. 🎉</div>`;
+    tabBody = unattached.length ? `<div class="image-masonry">${unattached.map((img) => masonryItem(img)).join('')}</div>` : `<div class="empty-state">Everything's attached to a read. 🎉</div>`;
   } else if (IMAGES_TAB === 'duplicates') {
     if (IMAGE_DUP_SCANNING) {
       tabBody = `<div class="empty-state">Scanning ${items.length} images for duplicates…</div>`;
@@ -3352,7 +3352,7 @@ function renderReactionsLibrary() {
           </div>`).join('');
     }
   } else {
-    tabBody = attached.length ? `<div class="image-masonry">${attached.map(masonryItem).join('')}</div>` : `<div class="empty-state">No attached images yet.</div>`;
+    tabBody = attached.length ? `<div class="image-masonry">${attached.map((img) => masonryItem(img)).join('')}</div>` : `<div class="empty-state">No attached images yet.</div>`;
   }
 
   const groupList = Array.from(IMAGE_GROUPS).sort((a, b) => a.localeCompare(b));
