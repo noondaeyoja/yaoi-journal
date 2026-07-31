@@ -3393,6 +3393,11 @@ let IMAGE_SELECTED = new Set();
 // logic a second time. Stays empty while on the Duplicates tab, since
 // stepping through a per-group comparison isn't the same kind of "browse".
 let IMAGES_NAV_LIST = [];
+// Same hide/show mechanic as the homepage's "Hide Filters" toggle (see
+// FILTERS_COLLAPSED/.filters-collapsible) — the Semi/Uke + mood-group chip
+// row can be tucked away on demand instead of always taking up header space.
+// Session-only, like its homepage counterpart (resets on reload).
+let IMAGES_FILTERS_COLLAPSED = false;
 let IMAGE_KIND_FILTER = null; // null | 'semi' | 'uke'
 // Manual Semi/Uke tags — she can flag ANY image in the Images gallery as
 // "Semi only"/"Uke only" from its individual view, same chip-toggle
@@ -3611,6 +3616,16 @@ function dismissImageDupGroup(idx) {
   IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS.filter((_, i) => i !== idx);
   render();
 }
+// Clears every "Not duplicates" dismissal so the next scan re-judges
+// everything from scratch — the only way back once a group's been dismissed.
+function resetDismissedImageDupGroups() {
+  if (!IGNORED_IMAGE_DUP_GROUPS.size) return;
+  if (!confirm(`Forget ${IGNORED_IMAGE_DUP_GROUPS.size} dismissed duplicate pair(s)? They'll be re-checked (and may reappear) the next time you scan.`)) return;
+  IGNORED_IMAGE_DUP_GROUPS = new Set();
+  persistIgnoredImageDupGroups();
+  showToast('Dismissed duplicates forgotten — scan again to re-check them.');
+  render();
+}
 
 let IMAGES_TAB = 'attached'; // 'attached' | 'unattached' | 'duplicates'
 let IMAGE_DUP_GROUPS = null; // null = not scanned yet this session
@@ -3716,14 +3731,23 @@ function renderReactionsLibrary() {
   if (IMAGES_TAB === 'unattached') {
     tabBody = unattached.length ? `<div class="image-masonry">${unattached.map((img) => masonryItem(img)).join('')}</div>` : `<div class="empty-state">Everything's attached to a read. 🎉</div>`;
   } else if (IMAGES_TAB === 'duplicates') {
+    // A pair dismissed via "Not duplicates" is skipped by every future scan
+    // forever (see IGNORED_IMAGE_DUP_GROUPS/imageDupSignature) — with no way
+    // back, an accidental dismissal (or two images that only later turned
+    // out to actually be copies of each other) would just silently never
+    // surface again. This link clears that memory so the next scan
+    // re-judges everything fresh.
+    const resetDismissedLink = IGNORED_IMAGE_DUP_GROUPS.size
+      ? `<button class="ref-btn" style="width:100%;margin-bottom:10px;font-size:11.5px;color:var(--text-dim);" data-reset-dismissed-image-dups="1">🔄 Forget ${IGNORED_IMAGE_DUP_GROUPS.size} dismissed pair${IGNORED_IMAGE_DUP_GROUPS.size === 1 ? '' : 's'} (re-check them on next scan)</button>`
+      : '';
     if (IMAGE_DUP_SCANNING) {
       tabBody = `<div class="empty-state">Scanning ${items.length} images for duplicates…</div>`;
     } else if (IMAGE_DUP_GROUPS === null) {
-      tabBody = `<div style="padding:8px 0;"><button class="btn-primary" style="width:100%;" data-scan-duplicates="1">🔍 Scan for possible duplicates</button></div>`;
+      tabBody = `<div style="padding:8px 0;"><button class="btn-primary" style="width:100%;margin-bottom:8px;" data-scan-duplicates="1">🔍 Scan for possible duplicates</button>${resetDismissedLink}</div>`;
     } else if (!IMAGE_DUP_GROUPS.length) {
-      tabBody = `<div class="empty-state">No possible duplicates found. 🎉</div><button class="ref-btn" style="width:100%;" data-scan-duplicates="1">Scan again</button>`;
+      tabBody = `<div class="empty-state">No possible duplicates found. 🎉</div><button class="ref-btn" style="width:100%;margin-bottom:8px;" data-scan-duplicates="1">Scan again</button>${resetDismissedLink}`;
     } else {
-      tabBody = `<button class="ref-btn" style="width:100%;margin-bottom:10px;" data-scan-duplicates="1">Scan again</button>` +
+      tabBody = `<button class="ref-btn" style="width:100%;margin-bottom:10px;" data-scan-duplicates="1">Scan again</button>` + resetDismissedLink +
         IMAGE_DUP_GROUPS.map((group, idx) => `
           <div class="panel">
             <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
@@ -3768,11 +3792,14 @@ function renderReactionsLibrary() {
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-images-manage-groups="1" title="Manage image groups (rename/delete)">✏️ Manage</button>
       </div>
       ${IMAGES_TAB !== 'duplicates' ? `
-        <div class="group-chip-row" style="margin-bottom:10px;">
-          <button class="mood-chip ${IMAGE_KIND_FILTER === 'semi' ? 'active' : ''}" data-images-kind-filter="semi">Semi only</button>
-          <button class="mood-chip ${IMAGE_KIND_FILTER === 'uke' ? 'active' : ''}" data-images-kind-filter="uke">Uke only</button>
-          ${groupChips}
-          <button class="mood-chip" data-images-add-group="1">➕ New group</button>
+        <button class="filters-toggle-btn" data-images-toggle-filters="1">${IMAGES_FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
+        <div class="filters-collapsible ${IMAGES_FILTERS_COLLAPSED ? 'collapsed' : ''}" id="images-filters-collapsible">
+          <div class="group-chip-row" style="margin-bottom:10px;">
+            <button class="mood-chip ${IMAGE_KIND_FILTER === 'semi' ? 'active' : ''}" data-images-kind-filter="semi">Semi only</button>
+            <button class="mood-chip ${IMAGE_KIND_FILTER === 'uke' ? 'active' : ''}" data-images-kind-filter="uke">Uke only</button>
+            ${groupChips}
+            <button class="mood-chip" data-images-add-group="1">➕ New group</button>
+          </div>
         </div>
       ` : ''}
     </div>
@@ -3826,6 +3853,59 @@ function toggleHMembership(dataUrl) {
   pullImageIntoH(dataUrl);
   return true;
 }
+// Before a duplicate copy is permanently deleted from any of the three
+// Possible Duplicates tabs (Images/Reactions/H), carry over anything the
+// OTHER copies still in that same comparison group are missing — mood/group
+// tags, and Reactions/NSFW membership — onto every surviving copy. Without
+// this, whichever copy happened to get tapped for deletion could just as
+// easily have been the one that had already been sorted into a mood,
+// silently erasing that categorization work instead of preserving it on
+// whichever copy is left. `survivorDataUrls` is every OTHER item's dataUrl
+// from that same duplicate group (there can be more than one in a 3+ group —
+// all of them get the merge, not just one "primary" survivor).
+async function transferDuplicateTagsOnDelete(deletedDataUrl, survivorDataUrls) {
+  const survivors = (survivorDataUrls || []).filter((u) => u && u !== deletedDataUrl);
+  if (!survivors.length) return;
+  // getImageTags() already unions IMAGE_TAG_MAP with any reaction moodTags
+  // for this exact dataUrl, so this alone captures Semi/Uke/every mood group
+  // the deleted copy had, from either storage location.
+  const deletedTags = getImageTags(deletedDataUrl);
+  const deletedHTags = getHTags(deletedDataUrl);
+  const deletedInReactions = await isDataUrlInReactions(deletedDataUrl);
+  const deletedInH = isDataUrlInH(deletedDataUrl);
+  let imageTagMapChanged = false;
+  let hTagMapChanged = false;
+  for (const survivorUrl of survivors) {
+    if (deletedTags.length) {
+      const key = imageKey(survivorUrl);
+      const existing = IMAGE_TAG_MAP[key] || [];
+      const merged = new Set([...existing, ...deletedTags]);
+      if (merged.size !== existing.length) { IMAGE_TAG_MAP[key] = Array.from(merged); imageTagMapChanged = true; }
+      // Also merge onto the survivor's own reaction record, if it has one —
+      // otherwise the Reactions gallery's own untagged badge/sort wouldn't
+      // notice tags that only landed in IMAGE_TAG_MAP.
+      const survivorReaction = ALL_REACTIONS.find((r) => r.dataUrl === survivorUrl);
+      if (survivorReaction) {
+        const existingR = survivorReaction.moodTags || [];
+        const mergedR = new Set([...existingR, ...deletedTags]);
+        if (mergedR.size !== existingR.length) {
+          survivorReaction.moodTags = Array.from(mergedR);
+          await saveReaction(survivorReaction);
+        }
+      }
+    }
+    if (deletedHTags.length) {
+      const key = imageKey(survivorUrl);
+      const existing = H_TAG_MAP[key] || [];
+      const merged = new Set([...existing, ...deletedHTags]);
+      if (merged.size !== existing.length) { H_TAG_MAP[key] = Array.from(merged); hTagMapChanged = true; }
+    }
+    if (deletedInReactions && !(await isDataUrlInReactions(survivorUrl))) await addImageAsReaction(survivorUrl);
+    if (deletedInH && !isDataUrlInH(survivorUrl)) pullImageIntoH(survivorUrl);
+  }
+  if (imageTagMapChanged) persistImageTagMap();
+  if (hTagMapChanged) persistHTagMap();
+}
 // Shared button pair rendered at the bottom of every individual-item modal.
 // The "Use as reaction"/"In Reactions" toggle only makes sense from the
 // Images gallery's own item view — it answers "does this Images item ALSO
@@ -3834,10 +3914,18 @@ function toggleHMembership(dataUrl) {
 // ✓" trivially, and from inside H it doesn't apply at all (H items aren't
 // meant to shuttle back into Reactions from there) — so both of those pass
 // showReactionsToggle = false to hide it, keeping only "Pull into H".
-function mediaToggleButtonsHtml(dataUrl, inReactions, inH, showReactionsToggle = true) {
+// `reopen` tells the click handler which modal (and which item id) to
+// reopen after toggling, so the window stays open in place instead of
+// closing — she has to be able to tap this then immediately go tag a mood,
+// not get bounced back to the grid and have to re-find the item. Defaults to
+// the Images modal since that's the only caller that doesn't need to
+// override it (Reactions/H pass their own type + identifier explicitly,
+// since Reactions keys off an id rather than the dataUrl itself).
+function mediaToggleButtonsHtml(dataUrl, inReactions, inH, showReactionsToggle = true, reopen) {
+  reopen = reopen || { type: 'images', id: dataUrl };
   return `
     ${showReactionsToggle ? `<button class="mood-chip ${inReactions ? 'active' : ''}" data-toggle-reaction-membership="${escapeHtml(dataUrl)}">🎭 ${inReactions ? 'In Reactions ✓' : 'Use as reaction'}</button>` : ''}
-    ${!isSFW() ? `<button class="mood-chip ${inH ? 'active' : ''}" data-toggle-h-membership="${escapeHtml(dataUrl)}" style="${inH ? 'background:#f43f5e;border-color:#f43f5e;color:#fff;' : 'color:#f43f5e;'}">🔴 ${inH ? 'In NSFW ✓' : 'Pull into NSFW'}</button>` : ''}
+    ${!isSFW() ? `<button class="mood-chip ${inH ? 'active' : ''}" data-toggle-h-membership="${escapeHtml(dataUrl)}" data-h-toggle-modal-type="${reopen.type}" data-h-toggle-modal-id="${escapeHtml(String(reopen.id))}" style="${inH ? 'background:#f43f5e;border-color:#f43f5e;color:#fff;' : 'color:#f43f5e;'}">🔴 ${inH ? 'In NSFW ✓' : 'Pull into NSFW'}</button>` : ''}
   `;
 }
 
@@ -3966,6 +4054,9 @@ let MEME_STATE = { moodFilter: null, search: '', untaggedOnly: false };
 // Same purpose as IMAGES_NAV_LIST above, for the Reactions grid — updated on
 // every renderMemeGrid() call.
 let MEME_NAV_LIST = [];
+// Same purpose as IMAGES_FILTERS_COLLAPSED above, for the Reactions mood
+// chip row.
+let MEME_FILTERS_COLLAPSED = false;
 
 // Mirror of the Images gallery's own source filter — the Reactions pool
 // should only ever hold direct Reactions-tab uploads (source: 'reactions')
@@ -4039,6 +4130,14 @@ function dismissMemeDupGroup(idx) {
   MEME_DUP_GROUPS = MEME_DUP_GROUPS.filter((_, i) => i !== idx);
   render();
 }
+function resetDismissedMemeDupGroups() {
+  if (!IGNORED_MEME_DUP_GROUPS.size) return;
+  if (!confirm(`Forget ${IGNORED_MEME_DUP_GROUPS.size} dismissed duplicate pair(s)? They'll be re-checked (and may reappear) the next time you scan.`)) return;
+  IGNORED_MEME_DUP_GROUPS = new Set();
+  persistIgnoredMemeDupGroups();
+  showToast('Dismissed duplicates forgotten — scan again to re-check them.');
+  render();
+}
 async function scanForMemeDuplicates() {
   MEME_DUP_SCANNING = true;
   render();
@@ -4090,9 +4189,12 @@ async function scanForMemeDuplicates() {
 function memeMainBody() {
   if (!MEME_SHOWING_DUPLICATES) return renderMemeGrid();
   if (MEME_DUP_SCANNING) return `<div class="empty-state">Scanning ${reactionsPoolItems().length} reactions for duplicates…</div>`;
-  if (MEME_DUP_GROUPS === null) return `<div style="padding:8px 0;"><button class="btn-primary" style="width:100%;" data-scan-meme-duplicates="1">🔍 Scan for possible duplicates</button></div>`;
-  if (!MEME_DUP_GROUPS.length) return `<div class="empty-state">No possible duplicates found. 🎉</div><button class="ref-btn" style="width:100%;" data-scan-meme-duplicates="1">Scan again</button>`;
-  return `<button class="ref-btn" style="width:100%;margin-bottom:10px;" data-scan-meme-duplicates="1">Scan again</button>` +
+  const resetDismissedMemeLink = IGNORED_MEME_DUP_GROUPS.size
+    ? `<button class="ref-btn" style="width:100%;margin-bottom:10px;font-size:11.5px;color:var(--text-dim);" data-reset-dismissed-meme-dups="1">🔄 Forget ${IGNORED_MEME_DUP_GROUPS.size} dismissed pair${IGNORED_MEME_DUP_GROUPS.size === 1 ? '' : 's'} (re-check them on next scan)</button>`
+    : '';
+  if (MEME_DUP_GROUPS === null) return `<div style="padding:8px 0;"><button class="btn-primary" style="width:100%;margin-bottom:8px;" data-scan-meme-duplicates="1">🔍 Scan for possible duplicates</button>${resetDismissedMemeLink}</div>`;
+  if (!MEME_DUP_GROUPS.length) return `<div class="empty-state">No possible duplicates found. 🎉</div><button class="ref-btn" style="width:100%;margin-bottom:8px;" data-scan-meme-duplicates="1">Scan again</button>${resetDismissedMemeLink}`;
+  return `<button class="ref-btn" style="width:100%;margin-bottom:10px;" data-scan-meme-duplicates="1">Scan again</button>` + resetDismissedMemeLink +
     MEME_DUP_GROUPS.map((group, idx) => `
       <div class="panel">
         <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
@@ -4146,9 +4248,12 @@ function renderMemeLibrary() {
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-meme-manage-moods="1" title="Manage mood groups (rename/delete)">✏️ Manage</button>
       </div>
       ${!MEME_SHOWING_DUPLICATES ? `
-        <div class="group-chip-row">
-          ${moodChips}
-          <button class="mood-chip" data-meme-add-mood="1">➕ New mood</button>
+        <button class="filters-toggle-btn" data-meme-toggle-filters="1">${MEME_FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
+        <div class="filters-collapsible ${MEME_FILTERS_COLLAPSED ? 'collapsed' : ''}" id="meme-filters-collapsible">
+          <div class="group-chip-row">
+            ${moodChips}
+            <button class="mood-chip" data-meme-add-mood="1">➕ New mood</button>
+          </div>
         </div>
       ` : ''}
     </div>
@@ -4167,6 +4272,9 @@ function attachMemeGridHandlers() {
       } else if (MEME_SHOWING_DUPLICATES) {
         // Same fast-triage tap-to-delete flow as the Images duplicates tab.
         if (!confirm('Delete this image from your library? Any entries it\'s already attached to keep their own copy.')) return;
+        const deletedRec = ALL_REACTIONS.find((r) => r.id === id);
+        const memeDupGroup = (MEME_DUP_GROUPS || []).find((g) => g.some((r) => r.id === id));
+        if (deletedRec && memeDupGroup) await transferDuplicateTagsOnDelete(deletedRec.dataUrl, memeDupGroup.filter((r) => r.id !== id).map((r) => r.dataUrl));
         await deleteReaction(id);
         if (MEME_DUP_GROUPS) {
           MEME_DUP_GROUPS = MEME_DUP_GROUPS
@@ -4190,11 +4298,20 @@ function attachMemeGridHandlers() {
   if (untaggedOnlyBtn) untaggedOnlyBtn.onclick = () => { MEME_STATE.untaggedOnly = !MEME_STATE.untaggedOnly; render(); };
   const scanMemeDupBtn = document.querySelector('[data-scan-meme-duplicates]');
   if (scanMemeDupBtn) scanMemeDupBtn.onclick = () => scanForMemeDuplicates();
+  const resetDismissedMemeDupsBtn = document.querySelector('[data-reset-dismissed-meme-dups]');
+  if (resetDismissedMemeDupsBtn) resetDismissedMemeDupsBtn.onclick = () => resetDismissedMemeDupGroups();
   document.querySelectorAll('[data-dismiss-meme-dup-group]').forEach((el) => {
     el.onclick = (ev) => { ev.stopPropagation(); dismissMemeDupGroup(Number(el.getAttribute('data-dismiss-meme-dup-group'))); };
   });
   const toggleMemeSelectBtn = document.querySelector('[data-meme-toggle-select]');
   if (toggleMemeSelectBtn) toggleMemeSelectBtn.onclick = () => { MEME_SELECT_MODE = !MEME_SELECT_MODE; MEME_SELECTED = new Set(); render(); };
+  const memeFiltersToggleBtn = document.querySelector('[data-meme-toggle-filters]');
+  if (memeFiltersToggleBtn) memeFiltersToggleBtn.onclick = () => {
+    MEME_FILTERS_COLLAPSED = !MEME_FILTERS_COLLAPSED;
+    const el = document.getElementById('meme-filters-collapsible');
+    if (el) el.classList.toggle('collapsed', MEME_FILTERS_COLLAPSED);
+    memeFiltersToggleBtn.textContent = MEME_FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters';
+  };
   const tagSelectedMemesBtn = document.querySelector('[data-meme-tag-selected]');
   if (tagSelectedMemesBtn) tagSelectedMemesBtn.onclick = () => {
     if (MEME_SELECTED.size) openTagSelectedMemesModal(Array.from(MEME_SELECTED));
@@ -4308,7 +4425,7 @@ function openMemeEditModal(id) {
     <div class="field-row">
       <label>Also in</label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">
-        ${mediaToggleButtonsHtml(r.dataUrl, true, isDataUrlInH(r.dataUrl), false)}
+        ${mediaToggleButtonsHtml(r.dataUrl, true, isDataUrlInH(r.dataUrl), false, { type: 'meme', id: r.id })}
       </div>
     </div>
     ` : ''}
@@ -5226,6 +5343,8 @@ let H_SELECTED = new Set();
 // Same purpose as IMAGES_NAV_LIST/MEME_NAV_LIST above, for the NSFW grid —
 // updated on every hMainBody() call.
 let H_NAV_LIST = [];
+// Same purpose as IMAGES_FILTERS_COLLAPSED above, for the NSFW group chip row.
+let H_FILTERS_COLLAPSED = false;
 
 function hFilteredItems() {
   const q = H_STATE.search.trim().toLowerCase();
@@ -5278,6 +5397,14 @@ function dismissHDupGroup(idx) {
   H_DUP_GROUPS = H_DUP_GROUPS.filter((_, i) => i !== idx);
   render();
 }
+function resetDismissedHDupGroups() {
+  if (!IGNORED_H_DUP_GROUPS.size) return;
+  if (!confirm(`Forget ${IGNORED_H_DUP_GROUPS.size} dismissed duplicate pair(s)? They'll be re-checked (and may reappear) the next time you scan.`)) return;
+  IGNORED_H_DUP_GROUPS = new Set();
+  persistIgnoredHDupGroups();
+  showToast('Dismissed duplicates forgotten — scan again to re-check them.');
+  render();
+}
 async function scanForHDuplicates() {
   H_DUP_SCANNING = true;
   render();
@@ -5325,9 +5452,12 @@ function hMainBody() {
   if (H_SHOWING_DUPLICATES) {
     H_NAV_LIST = []; // no coherent "browse order" while comparing duplicate groups
     if (H_DUP_SCANNING) return `<div class="empty-state">Scanning ${allHImages().length} H images for duplicates…</div>`;
-    if (H_DUP_GROUPS === null) return `<div style="padding:8px 0;"><button class="btn-primary" style="width:100%;" data-scan-h-duplicates="1">🔍 Scan for possible duplicates</button></div>`;
-    if (!H_DUP_GROUPS.length) return `<div class="empty-state">No possible duplicates found. 🎉</div><button class="ref-btn" style="width:100%;" data-scan-h-duplicates="1">Scan again</button>`;
-    return `<button class="ref-btn" style="width:100%;margin-bottom:10px;" data-scan-h-duplicates="1">Scan again</button>` +
+    const resetDismissedHLink = IGNORED_H_DUP_GROUPS.size
+      ? `<button class="ref-btn" style="width:100%;margin-bottom:10px;font-size:11.5px;color:var(--text-dim);" data-reset-dismissed-h-dups="1">🔄 Forget ${IGNORED_H_DUP_GROUPS.size} dismissed pair${IGNORED_H_DUP_GROUPS.size === 1 ? '' : 's'} (re-check them on next scan)</button>`
+      : '';
+    if (H_DUP_GROUPS === null) return `<div style="padding:8px 0;"><button class="btn-primary" style="width:100%;margin-bottom:8px;" data-scan-h-duplicates="1">🔍 Scan for possible duplicates</button>${resetDismissedHLink}</div>`;
+    if (!H_DUP_GROUPS.length) return `<div class="empty-state">No possible duplicates found. 🎉</div><button class="ref-btn" style="width:100%;margin-bottom:8px;" data-scan-h-duplicates="1">Scan again</button>${resetDismissedHLink}`;
+    return `<button class="ref-btn" style="width:100%;margin-bottom:10px;" data-scan-h-duplicates="1">Scan again</button>` + resetDismissedHLink +
       H_DUP_GROUPS.map((group, idx) => `
         <div class="panel">
           <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
@@ -5380,9 +5510,12 @@ function renderHLibrary() {
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-h-manage-groups="1" title="Manage H groups (rename/delete)">✏️ Manage</button>
       </div>
       ${!H_SHOWING_DUPLICATES ? `
-        <div class="group-chip-row">
-          ${groupChips}
-          <button class="mood-chip" data-h-add-group="1">➕ New group</button>
+        <button class="filters-toggle-btn" data-h-toggle-filters="1">${H_FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
+        <div class="filters-collapsible ${H_FILTERS_COLLAPSED ? 'collapsed' : ''}" id="h-filters-collapsible">
+          <div class="group-chip-row">
+            ${groupChips}
+            <button class="mood-chip" data-h-add-group="1">➕ New group</button>
+          </div>
         </div>
       ` : ''}
     </div>
@@ -5468,7 +5601,7 @@ async function openHImageModal(dataUrl) {
       <div class="field-row">
         <label>Also in</label>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
-          ${mediaToggleButtonsHtml(dataUrl, inReactions, true, false)}
+          ${mediaToggleButtonsHtml(dataUrl, inReactions, true, false, { type: 'h', id: dataUrl })}
         </div>
         ${upload ? `<div style="font-size:11px;color:var(--text-dim);margin-top:6px;">Deleting removes this image entirely — it has no entry or other library to fall back to.</div>` : `<div style="font-size:11px;color:var(--text-dim);margin-top:6px;">Deleting removes it from H only — the entry it came from keeps its photo.</div>`}
       </div>
@@ -5493,6 +5626,8 @@ function attachHGridHandlers() {
       } else if (H_SHOWING_DUPLICATES) {
         // Same fast tap-to-delete triage flow as Images/Reactions duplicates.
         if (!confirm('Delete this image?')) return;
+        const hDupGroup = (H_DUP_GROUPS || []).find((g) => g.some((i) => i.dataUrl === url));
+        if (hDupGroup) await transferDuplicateTagsOnDelete(url, hDupGroup.filter((i) => i.dataUrl !== url).map((i) => i.dataUrl));
         await removeFromH(url);
         if (H_DUP_GROUPS) {
           H_DUP_GROUPS = H_DUP_GROUPS
@@ -5511,6 +5646,13 @@ function attachHGridHandlers() {
   });
   const toggleHSelectBtn = document.querySelector('[data-h-toggle-select]');
   if (toggleHSelectBtn) toggleHSelectBtn.onclick = () => { H_SELECT_MODE = !H_SELECT_MODE; H_SELECTED = new Set(); render(); };
+  const hFiltersToggleBtn = document.querySelector('[data-h-toggle-filters]');
+  if (hFiltersToggleBtn) hFiltersToggleBtn.onclick = () => {
+    H_FILTERS_COLLAPSED = !H_FILTERS_COLLAPSED;
+    const el = document.getElementById('h-filters-collapsible');
+    if (el) el.classList.toggle('collapsed', H_FILTERS_COLLAPSED);
+    hFiltersToggleBtn.textContent = H_FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters';
+  };
   const tagSelectedHBtn = document.querySelector('[data-h-tag-selected]');
   if (tagSelectedHBtn) tagSelectedHBtn.onclick = () => {
     if (H_SELECTED.size) openTagSelectedHModal(Array.from(H_SELECTED));
@@ -5533,6 +5675,8 @@ function attachHGridHandlers() {
   };
   const scanHDupBtn = document.querySelector('[data-scan-h-duplicates]');
   if (scanHDupBtn) scanHDupBtn.onclick = () => scanForHDuplicates();
+  const resetDismissedHDupsBtn = document.querySelector('[data-reset-dismissed-h-dups]');
+  if (resetDismissedHDupsBtn) resetDismissedHDupsBtn.onclick = () => resetDismissedHDupGroups();
   document.querySelectorAll('[data-dismiss-h-dup-group]').forEach((el) => {
     el.onclick = (ev) => { ev.stopPropagation(); dismissHDupGroup(Number(el.getAttribute('data-dismiss-h-dup-group'))); };
   });
@@ -7376,6 +7520,12 @@ function attachRootHandlers() {
         // the real record so reaction-backed images route through
         // deleteReaction like they're supposed to.
         const match = allAppImages().find((i) => i.dataUrl === url);
+        // Before it's gone for good, hand off anything this copy had —
+        // mood/group tags, Reactions/NSFW membership — to whichever other
+        // copy(ies) remain in this same comparison, so tapping the "wrong"
+        // one to delete never costs already-done sorting work.
+        const dupGroup = (IMAGE_DUP_GROUPS || []).find((g) => g.some((img) => img.dataUrl === url));
+        if (dupGroup) await transferDuplicateTagsOnDelete(url, dupGroup.filter((img) => img.dataUrl !== url).map((img) => img.dataUrl));
         await deleteImageFromGalleryEverywhere({ dataUrl: url, reactionId: match ? match.reactionId : null });
         if (IMAGE_DUP_GROUPS) {
           IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS
@@ -7397,6 +7547,15 @@ function attachRootHandlers() {
     IMAGE_SELECT_MODE = !IMAGE_SELECT_MODE;
     IMAGE_SELECTED = new Set();
     render();
+  };
+  // Same in-place DOM toggle the homepage's Hide/Show Filters button uses —
+  // no full render() needed, just flip the class and button label.
+  const imagesFiltersToggleBtn = root.querySelector('[data-images-toggle-filters]');
+  if (imagesFiltersToggleBtn) imagesFiltersToggleBtn.onclick = () => {
+    IMAGES_FILTERS_COLLAPSED = !IMAGES_FILTERS_COLLAPSED;
+    const el = document.getElementById('images-filters-collapsible');
+    if (el) el.classList.toggle('collapsed', IMAGES_FILTERS_COLLAPSED);
+    imagesFiltersToggleBtn.textContent = IMAGES_FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters';
   };
   const attachSelectedBtn = root.querySelector('[data-images-attach-selected]');
   if (attachSelectedBtn) attachSelectedBtn.onclick = () => {
@@ -7481,6 +7640,8 @@ function attachRootHandlers() {
   if (manageImageGroupsBtn) manageImageGroupsBtn.onclick = openManageImageGroupsModal;
   const scanDupBtn = root.querySelector('[data-scan-duplicates]');
   if (scanDupBtn) scanDupBtn.onclick = () => scanForImageDuplicates();
+  const resetDismissedImageDupsBtn = root.querySelector('[data-reset-dismissed-image-dups]');
+  if (resetDismissedImageDupsBtn) resetDismissedImageDupsBtn.onclick = () => resetDismissedImageDupGroups();
   root.querySelectorAll('[data-dismiss-image-dup-group]').forEach((el) => {
     el.onclick = (ev) => { ev.stopPropagation(); dismissImageDupGroup(Number(el.getAttribute('data-dismiss-image-dup-group'))); };
   });
@@ -8100,19 +8261,30 @@ document.addEventListener('click', async (ev) => {
     if (key) { toggleHTag(url, key); render(); openHImageModal(url); }
   }
   if (t.matches('[data-toggle-reaction-membership]')) {
+    // Only ever rendered from the Images modal (see mediaToggleButtonsHtml's
+    // showReactionsToggle comment) — reopening that same modal in place
+    // instead of closing it means she can immediately tag a mood on it from
+    // the Reactions tab without having to re-find and reopen the item.
     const url = t.getAttribute('data-toggle-reaction-membership');
     toggleReactionMembership(url).then((nowIn) => {
       showToast(nowIn ? 'Added to Reactions — tag it with a mood from the Reactions tab' : 'Removed from Reactions');
-      closeModal();
       render();
+      openImageAttachmentsModal(url);
     });
   }
   if (t.matches('[data-toggle-h-membership]')) {
+    // Reopen whichever modal this button was actually rendered from (see
+    // the `reopen` param on mediaToggleButtonsHtml) instead of closing —
+    // same reasoning as the Reactions toggle above.
     const url = t.getAttribute('data-toggle-h-membership');
+    const modalType = t.getAttribute('data-h-toggle-modal-type') || 'images';
+    const modalId = t.getAttribute('data-h-toggle-modal-id') || url;
     const nowIn = toggleHMembership(url);
     showToast(nowIn ? 'Pulled into H — hidden elsewhere in the app from now on.' : 'Removed from H');
-    closeModal();
     render();
+    if (modalType === 'meme') openMemeEditModal(modalId);
+    else if (modalType === 'h') openHImageModal(modalId);
+    else openImageAttachmentsModal(modalId);
   }
   if (t.matches('[data-crop-meme]')) openCropReactionModal(t.getAttribute('data-crop-meme'));
   if (t.matches('[data-crop-image]')) openCropImageModal(t.getAttribute('data-crop-image'));
