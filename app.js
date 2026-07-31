@@ -1535,6 +1535,56 @@ function openModal(html, opts) {
   document.getElementById('overlay').classList.add('open');
 }
 
+// Prev/next arrows for the individual Images/Reactions/H item modals — lets
+// her step through the same set of items she was just browsing in the grid
+// without closing the modal and tapping back in. `list` is the exact order
+// the gallery grid was last rendered in (see IMAGES_NAV_LIST/MEME_NAV_LIST/
+// H_NAV_LIST); `current` is this item's own id/dataUrl. Wraps around at
+// either end so swiping/tapping never dead-ends. Returns nulls (no arrows)
+// when there's nothing to step through — a single item, or a list this item
+// isn't even part of (e.g. opened from the Possible Duplicates tab, which
+// doesn't populate a nav list at all).
+function mediaModalNavNeighbors(list, current) {
+  if (!list || list.length < 2) return { prev: null, next: null };
+  const idx = list.indexOf(current);
+  if (idx === -1) return { prev: null, next: null };
+  return {
+    prev: list[(idx - 1 + list.length) % list.length],
+    next: list[(idx + 1) % list.length],
+  };
+}
+// Builds the actual prev/next chevron buttons, keyed to whichever gallery's
+// data-*-nav-prev/next attribute the global click handler listens for.
+function mediaModalNavArrowsHtml(attrPrefix, prev, next) {
+  return `
+    ${prev ? `<button class="modal-nav-arrow modal-nav-prev" data-${attrPrefix}-nav-prev="${escapeHtml(prev)}" title="Previous">‹</button>` : ''}
+    ${next ? `<button class="modal-nav-arrow modal-nav-next" data-${attrPrefix}-nav-next="${escapeHtml(next)}" title="Next">›</button>` : ''}
+  `;
+}
+// Swipe-to-navigate on mobile, on top of the tap-target chevrons above —
+// wired onto the media wrapper right after the modal's HTML lands in the
+// DOM. A horizontal drag that's clearly more horizontal than vertical (so it
+// doesn't fight a vertical scroll inside the modal) triggers prev/next.
+function wireModalSwipeNav(onPrev, onNext) {
+  const wrap = document.getElementById('modal-media-nav');
+  if (!wrap) return;
+  let startX = null, startY = null;
+  wrap.addEventListener('touchstart', (ev) => {
+    if (ev.touches.length !== 1) { startX = null; return; }
+    startX = ev.touches[0].clientX; startY = ev.touches[0].clientY;
+  }, { passive: true });
+  wrap.addEventListener('touchend', (ev) => {
+    if (startX === null) return;
+    const t = ev.changedTouches && ev.changedTouches[0];
+    const dx = t ? t.clientX - startX : 0;
+    const dy = t ? t.clientY - startY : 0;
+    startX = null;
+    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      if (dx < 0 && onNext) onNext(); else if (dx > 0 && onPrev) onPrev();
+    }
+  });
+}
+
 // Images/Reactions/H all accept short video clips now, not just stills — this
 // is the one check every thumbnail/modal render site uses to decide between
 // an <img> and a <video> tag for a given dataUrl.
@@ -3336,6 +3386,13 @@ function openManageImageGroupsModal() {
 // from inside that entry's own page.
 let IMAGE_SELECT_MODE = false;
 let IMAGE_SELECTED = new Set();
+// The exact dataUrl order the Attached/Unattached masonry grid was last
+// rendered in — kept up to date every render so the individual item modal
+// can offer prev/next arrows through the same set the user was actually
+// browsing, without recomputing (and risking drifting from) the filter
+// logic a second time. Stays empty while on the Duplicates tab, since
+// stepping through a per-group comparison isn't the same kind of "browse".
+let IMAGES_NAV_LIST = [];
 let IMAGE_KIND_FILTER = null; // null | 'semi' | 'uke'
 // Manual Semi/Uke tags — she can flag ANY image in the Images gallery as
 // "Semi only"/"Uke only" from its individual view, same chip-toggle
@@ -3629,6 +3686,7 @@ function renderReactionsLibrary() {
   if (IMAGES_UNTAGGED_ONLY) items = items.filter((i) => isImageUntagged(i));
   const attached = items.filter((i) => i.attachedEntries.length > 0);
   const unattached = items.filter((i) => i.attachedEntries.length === 0);
+  IMAGES_NAV_LIST = (IMAGES_TAB === 'unattached' ? unattached : IMAGES_TAB === 'attached' ? attached : []).map((i) => i.dataUrl);
 
   // `forceDel` is only passed true from the Possible Duplicates tab — it
   // makes every image in a duplicate comparison deletable (not just
@@ -3710,7 +3768,7 @@ function renderReactionsLibrary() {
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-images-manage-groups="1" title="Manage image groups (rename/delete)">✏️ Manage</button>
       </div>
       ${IMAGES_TAB !== 'duplicates' ? `
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center;">
+        <div class="group-chip-row" style="margin-bottom:10px;">
           <button class="mood-chip ${IMAGE_KIND_FILTER === 'semi' ? 'active' : ''}" data-images-kind-filter="semi">Semi only</button>
           <button class="mood-chip ${IMAGE_KIND_FILTER === 'uke' ? 'active' : ''}" data-images-kind-filter="uke">Uke only</button>
           ${groupChips}
@@ -3798,13 +3856,17 @@ async function openImageAttachmentsModal(dataUrl) {
   // loop in deleteImageFromGalleryEverywhere (which has nothing to find for
   // it if it's not attached anywhere).
   const standaloneReaction = entries.length === 0 ? ALL_REACTIONS.find((r) => r.dataUrl === dataUrl && r.source === 'images') : null;
+  const { prev, next } = mediaModalNavNeighbors(IMAGES_NAV_LIST, dataUrl);
   openModal(`
     <div class="modal-close-corner-wrap">
       <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
       <h3>Attached to</h3>
-    ${isVideoUrl(dataUrl)
-      ? `<video src="${dataUrl}" autoplay loop muted controls playsinline style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
-      : `<img src="${dataUrl}" alt="" style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`}
+    <div class="modal-media-nav" id="modal-media-nav" style="margin-bottom:10px;">
+      ${mediaModalNavArrowsHtml('images', prev, next)}
+      ${isVideoUrl(dataUrl)
+        ? `<video src="${dataUrl}" autoplay loop muted controls playsinline style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;background:#000;"></video>`
+        : `<img src="${dataUrl}" alt="" style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;background:#000;">`}
+    </div>
     ${entries.length
       ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;">${entries.map((e) => `
           <button class="ref-btn" style="text-align:left;" data-goto-entry-from-modal="${e.id}">${escapeHtml(e.title)}</button>`).join('')}</div>`
@@ -3831,6 +3893,7 @@ async function openImageAttachmentsModal(dataUrl) {
     </div>
     </div>
   `, { centered: true });
+  wireModalSwipeNav(prev ? () => openImageAttachmentsModal(prev) : null, next ? () => openImageAttachmentsModal(next) : null);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -3900,6 +3963,9 @@ function openManageMoodsModal() {
   renderSharedGroupManagerModal('Manage groups');
 }
 let MEME_STATE = { moodFilter: null, search: '', untaggedOnly: false };
+// Same purpose as IMAGES_NAV_LIST above, for the Reactions grid — updated on
+// every renderMemeGrid() call.
+let MEME_NAV_LIST = [];
 
 // Mirror of the Images gallery's own source filter — the Reactions pool
 // should only ever hold direct Reactions-tab uploads (source: 'reactions')
@@ -3937,6 +4003,7 @@ let MEME_SELECTED = new Set();
 
 function renderMemeGrid() {
   const items = memeFilteredItems();
+  MEME_NAV_LIST = items.map((r) => r.id);
   return items.length
     ? `<div class="image-masonry">${items.map((r) => `
         <div class="masonry-item ${MEME_SELECT_MODE ? 'selectable' : ''} ${MEME_SELECTED.has(r.id) ? 'selected' : ''}" data-open-meme="${r.id}">
@@ -4079,7 +4146,7 @@ function renderMemeLibrary() {
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-meme-manage-moods="1" title="Manage mood groups (rename/delete)">✏️ Manage</button>
       </div>
       ${!MEME_SHOWING_DUPLICATES ? `
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+        <div class="group-chip-row">
           ${moodChips}
           <button class="mood-chip" data-meme-add-mood="1">➕ New mood</button>
         </div>
@@ -4217,15 +4284,19 @@ function openTagSelectedMemesModal(ids) {
 function openMemeEditModal(id) {
   const r = ALL_REACTIONS.find((x) => x.id === id);
   if (!r) return;
+  const { prev, next } = mediaModalNavNeighbors(MEME_NAV_LIST, id);
   openModal(`
     <div class="modal-close-corner-wrap">
       <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
       <h3>Edit reaction</h3>
+    <div class="modal-media-nav" id="modal-media-nav" style="margin-bottom:10px;">
+      ${mediaModalNavArrowsHtml('meme', prev, next)}
       ${r.dataUrl
         ? (isVideoUrl(r.dataUrl)
-            ? `<video src="${r.dataUrl}" autoplay loop muted controls playsinline style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
-            : `<img src="${r.dataUrl}" alt="" style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`)
-        : `<div class="cover-placeholder" style="height:180px;margin-bottom:10px;">⏳ Still downloading from Drive…</div>`}
+            ? `<video src="${r.dataUrl}" autoplay loop muted controls playsinline style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;background:#000;"></video>`
+            : `<img src="${r.dataUrl}" alt="" style="width:100%;max-height:65vh;object-fit:contain;border-radius:10px;background:#000;">`)
+        : `<div class="cover-placeholder" style="height:180px;">⏳ Still downloading from Drive…</div>`}
+    </div>
     <div class="field-row">
       <label>Mood ${!(r.moodTags || []).length ? '<span style="color:var(--red-flag);">— pick at least one</span>' : ''}</label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">
@@ -4249,6 +4320,7 @@ function openMemeEditModal(id) {
       </div>
     </div>
   `, { centered: true });
+  wireModalSwipeNav(prev ? () => openMemeEditModal(prev) : null, next ? () => openMemeEditModal(next) : null);
 }
 
 // Simple drag-to-move, drag-corner-to-resize crop box over the reaction
@@ -5151,6 +5223,9 @@ let H_GROUP_FILTER = null;
 let H_STATE = { search: '', untaggedOnly: false };
 let H_SELECT_MODE = false;
 let H_SELECTED = new Set();
+// Same purpose as IMAGES_NAV_LIST/MEME_NAV_LIST above, for the NSFW grid —
+// updated on every hMainBody() call.
+let H_NAV_LIST = [];
 
 function hFilteredItems() {
   const q = H_STATE.search.trim().toLowerCase();
@@ -5248,6 +5323,7 @@ async function scanForHDuplicates() {
 
 function hMainBody() {
   if (H_SHOWING_DUPLICATES) {
+    H_NAV_LIST = []; // no coherent "browse order" while comparing duplicate groups
     if (H_DUP_SCANNING) return `<div class="empty-state">Scanning ${allHImages().length} H images for duplicates…</div>`;
     if (H_DUP_GROUPS === null) return `<div style="padding:8px 0;"><button class="btn-primary" style="width:100%;" data-scan-h-duplicates="1">🔍 Scan for possible duplicates</button></div>`;
     if (!H_DUP_GROUPS.length) return `<div class="empty-state">No possible duplicates found. 🎉</div><button class="ref-btn" style="width:100%;" data-scan-h-duplicates="1">Scan again</button>`;
@@ -5262,6 +5338,7 @@ function hMainBody() {
         </div>`).join('');
   }
   const items = hFilteredItems();
+  H_NAV_LIST = items.map((img) => img.dataUrl);
   return items.length
     ? `<div class="image-masonry">${items.map((img) => hMasonryItem(img)).join('')}</div>`
     : `<div class="empty-state">${H_GROUP_FILTER || H_STATE.search || H_STATE.untaggedOnly ? 'No NSFW images match. Try clearing the filter/search.' : 'No NSFW images yet. Pull some in from Images or Reactions (open one → 🔴 Pull into NSFW), or upload directly above.'}</div>`;
@@ -5303,7 +5380,7 @@ function renderHLibrary() {
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-h-manage-groups="1" title="Manage H groups (rename/delete)">✏️ Manage</button>
       </div>
       ${!H_SHOWING_DUPLICATES ? `
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+        <div class="group-chip-row">
           ${groupChips}
           <button class="mood-chip" data-h-add-group="1">➕ New group</button>
         </div>
@@ -5367,15 +5444,19 @@ async function openHImageModal(dataUrl) {
   const entries = upload ? [] : ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(dataUrl));
   const inReactions = await isDataUrlInReactions(dataUrl);
   const croppable = isCroppableDataUrl(dataUrl);
+  const { prev, next } = mediaModalNavNeighbors(H_NAV_LIST, dataUrl);
   openModal(`
     <div class="modal-close-corner-wrap">
       <button class="modal-close-x" data-close-modal="1" title="Close">✕</button>
       <h3>💦 NSFW image</h3>
-      ${dataUrl
-        ? (isVideoUrl(dataUrl)
-            ? `<video src="${dataUrl}" autoplay loop muted controls playsinline style="width:100%;max-height:60vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;"></video>`
-            : `<img src="${dataUrl}" alt="" style="width:100%;max-height:60vh;object-fit:contain;border-radius:10px;margin-bottom:10px;background:#000;">`)
-        : `<div class="cover-placeholder" style="height:180px;margin-bottom:10px;">⏳ Still downloading from Drive…</div>`}
+      <div class="modal-media-nav" id="modal-media-nav" style="margin-bottom:10px;">
+        ${mediaModalNavArrowsHtml('h', prev, next)}
+        ${dataUrl
+          ? (isVideoUrl(dataUrl)
+              ? `<video src="${dataUrl}" autoplay loop muted controls playsinline style="width:100%;max-height:60vh;object-fit:contain;border-radius:10px;background:#000;"></video>`
+              : `<img src="${dataUrl}" alt="" style="width:100%;max-height:60vh;object-fit:contain;border-radius:10px;background:#000;">`)
+          : `<div class="cover-placeholder" style="height:180px;">⏳ Still downloading from Drive…</div>`}
+      </div>
       ${entries.length ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Pulled from: ${entries.map((e) => escapeHtml(e.title)).join(', ')}</div>` : ''}
       <div class="field-row">
         <label>Groups</label>
@@ -5399,6 +5480,7 @@ async function openHImageModal(dataUrl) {
       </div>
     </div>
   `, { centered: true });
+  wireModalSwipeNav(prev ? () => openHImageModal(prev) : null, next ? () => openHImageModal(next) : null);
 }
 
 function attachHGridHandlers() {
@@ -7226,10 +7308,21 @@ function attachRootHandlers() {
   const notesArea = root.querySelector('#user-notes');
   if (notesArea) {
     attachBulletTextarea(notesArea);
-    const autoGrow = () => { notesArea.style.height = 'auto'; notesArea.style.height = (notesArea.scrollHeight + 2) + 'px'; };
-    autoGrow();
-    notesArea.oninput = autoGrow;
+    // Resetting height to 'auto' before remeasuring momentarily collapses the
+    // box, which shifts the Images panel sitting right below it — the
+    // browser's scroll-anchoring logic was fighting that shift on every
+    // keystroke and visibly yanking the page toward Images (or to the top).
+    // A full collapse-and-remeasure is only needed once up front and again
+    // once typing has stopped (on blur); while actively typing, only grow in
+    // place when content actually overflows, which never collapses anything.
+    const fullAutoGrow = () => { notesArea.style.height = 'auto'; notesArea.style.height = (notesArea.scrollHeight + 2) + 'px'; };
+    const growIfNeeded = () => {
+      if (notesArea.scrollHeight > notesArea.clientHeight) notesArea.style.height = (notesArea.scrollHeight + 2) + 'px';
+    };
+    fullAutoGrow();
+    notesArea.oninput = growIfNeeded;
     notesArea.onblur = async () => {
+      fullAutoGrow();
       const e = getEntry(STATE.entryId); e.notes = notesArea.value; await saveEntry(e);
     };
   }
@@ -7832,6 +7925,14 @@ document.addEventListener('click', async (ev) => {
     CROSSREF_REVIEW_INDEX = Math.max(0, CROSSREF_REVIEW_INDEX - 1);
     openCrossRefModal(CROSSREF_REVIEW_QUEUE[CROSSREF_REVIEW_INDEX], { index: CROSSREF_REVIEW_INDEX, total: CROSSREF_REVIEW_QUEUE.length });
   }
+  // Prev/next chevrons in the individual Images/Reactions/H item modals —
+  // see mediaModalNavArrowsHtml/mediaModalNavNeighbors near openModal().
+  if (t.matches('[data-images-nav-prev]')) openImageAttachmentsModal(t.getAttribute('data-images-nav-prev'));
+  if (t.matches('[data-images-nav-next]')) openImageAttachmentsModal(t.getAttribute('data-images-nav-next'));
+  if (t.matches('[data-meme-nav-prev]')) openMemeEditModal(t.getAttribute('data-meme-nav-prev'));
+  if (t.matches('[data-meme-nav-next]')) openMemeEditModal(t.getAttribute('data-meme-nav-next'));
+  if (t.matches('[data-h-nav-prev]')) openHImageModal(t.getAttribute('data-h-nav-prev'));
+  if (t.matches('[data-h-nav-next]')) openHImageModal(t.getAttribute('data-h-nav-next'));
   if (t.matches('[data-goto-entry-from-modal]')) {
     closeModal();
     navigate('detail', t.getAttribute('data-goto-entry-from-modal'));

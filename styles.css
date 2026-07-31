@@ -368,6 +368,18 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 .mood-chip.active { background: var(--purple); color: #fff; border-color: var(--purple); }
 .mood-chip.small { padding: 5px 10px; font-size: 12px; }
 
+/* Group/mood chip row in Images/Reactions/NSFW gallery headers (.app-header
+   is position:sticky, so it stays pinned to the top of the window while
+   scrolling — but its total height sticks with it too. Without a cap here,
+   adding more custom groups just kept growing this row forever, until the
+   sticky header itself was tall enough to cover the whole gallery beneath
+   it. Capping the height and scrolling internally keeps the sticky header a
+   fixed, predictable size no matter how many groups exist. */
+.group-chip-row {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  max-height: 88px; overflow-y: auto; padding-right: 2px;
+}
+
 /* ---------- Detail / Journal screen ---------- */
 /* Split into two stacked rows (title row, then an icon toolbar row below it)
    instead of cramming Back + title + 5 action icons onto one line — that
@@ -653,6 +665,20 @@ textarea {
   background: rgba(18,22,46,0.85); color: var(--text); border: 1px solid var(--border);
   font-size: 15px; line-height: 1; z-index: 2;
 }
+/* Prev/next chevrons overlaid on the media in the individual Images/
+   Reactions/H item modals — lets her step through the same set of items she
+   was just browsing without closing the modal. Swipe works too on touch
+   devices (see wireModalSwipeNav in app.js); these are the tap targets for
+   everyone else, and the visible affordance either way. */
+.modal-media-nav { position: relative; }
+.modal-nav-arrow {
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 3;
+  width: 36px; height: 36px; border-radius: 999px; border: none;
+  background: rgba(18,22,46,0.55); color: #fff; font-size: 22px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.modal-nav-prev { left: 8px; }
+.modal-nav-next { right: 8px; }
 .modal-actions { display: flex; gap: 10px; margin-top: 16px; }
 .btn-primary { flex: 1; background: linear-gradient(135deg, var(--purple), var(--pink)); color: #170b26; border: none; border-radius: 10px; padding: 11px; font-weight: 700; font-size: 14px; }
 .btn-ghost { flex: 1; background: transparent; border: 1px solid var(--border); color: var(--text-dim); border-radius: 10px; padding: 11px; font-size: 14px; }
