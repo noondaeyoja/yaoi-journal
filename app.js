@@ -153,6 +153,7 @@ let STATE = {
   smutFilter: null,         // null or 1-5, meaning "at least N eggplants"
   qualityFilter: null,      // null or 1-5, meaning "at least N hearts"
   lolFilter: null,          // null or 1-5, meaning "at least N laughing faces"
+  cryFilter: null,          // null or 1-5, meaning "at least N crying faces"
   flagFilter: null,         // null or 'green'|'red'|'black'
   linkFilter: false,        // true = only show entries with a reading link attached
   noLinkFilter: false,      // true = only show entries WITHOUT a reading link attached
@@ -176,6 +177,7 @@ function resetHomeFiltersClean() {
   STATE.smutFilter = null;
   STATE.qualityFilter = null;
   STATE.lolFilter = null;
+  STATE.cryFilter = null;
   STATE.flagFilter = null;
   STATE.linkFilter = false;
   STATE.noLinkFilter = false;
@@ -2246,6 +2248,7 @@ function filteredEntries() {
     if (STATE.smutFilter && (e.smutRating || 0) < STATE.smutFilter) return false;
     if (STATE.qualityFilter && (e.qualityRating || 0) < STATE.qualityFilter) return false;
     if (STATE.lolFilter && (e.lolRating || 0) < STATE.lolFilter) return false;
+    if (STATE.cryFilter && (e.cryRating || 0) < STATE.cryFilter) return false;
     if (STATE.flagFilter) {
       const hasFlag = (e.semi && e.semi.flag === STATE.flagFilter) || (e.uke && e.uke.flag === STATE.flagFilter);
       if (!hasFlag) return false;
@@ -2444,7 +2447,7 @@ function renderHome() {
   const tags = topTags(ALL_ENTRIES.filter((e) => !STATE.format || e.format === STATE.format));
 
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter) {
     // Suggested-matches row sits above the shelf rows, same section-title +
     // horizontal-scroll treatment, so unconfirmed matches are easy to spot
     // and jump into without leaving the homepage.
@@ -2505,6 +2508,7 @@ function renderHome() {
   const smutChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.smutFilter && n <= STATE.smutFilter ? 'active' : ''}" data-smut-filter="${n}" title="${n}+ ${isSFW() ? 'hearts' : 'eggplants'}">${themeIcon()}</span>`).join('');
   const qualityChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.qualityFilter && n <= STATE.qualityFilter ? 'active' : ''}" data-quality-filter="${n}" title="${n}+ hearts">❤️</span>`).join('');
   const lolChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.lolFilter && n <= STATE.lolFilter ? 'active' : ''}" data-lol-filter="${n}" title="${n}+ laughs">😂</span>`).join('');
+  const cryChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.cryFilter && n <= STATE.cryFilter ? 'active' : ''}" data-cry-filter="${n}" title="${n}+ cries">😭</span>`).join('');
   // Semi/Uke green/red/black flags are hidden entirely for SFW accounts —
   // her explicit call: this is a general relationship-dynamic marker, not
   // just a hentai-adjacent thing, but it's still part of the SFW cut.
@@ -2536,7 +2540,7 @@ function renderHome() {
         <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
         <div class="filter-section-label">Ratings &amp; Flags</div>
-        <div class="rating-pick-row">${formatIcons}${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${lolChips}${flagChips ? `<span class="rating-pick-divider"></span>${flagChips}` : ''}</div>
+        <div class="rating-pick-row">${formatIcons}${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${lolChips}<span class="rating-pick-divider"></span>${cryChips}${flagChips ? `<span class="rating-pick-divider"></span>${flagChips}` : ''}</div>
       </div>
     </div>
     <main>${body}</main>
@@ -5861,17 +5865,21 @@ function renderDetail(e) {
 
       <!-- 2. Ratings -->
       <div class="panel">
-        <div class="rating-row">
-          <div class="rating-block">
-            <div class="label">${isSFW() ? 'Cute' : 'Smut Level'}</div>
-            <div class="rating-icons" data-rating="smutRating">${renderRatingIcons(e.smutRating, themeIcon())}</div>
-          </div>
+        <div class="rating-grid">
           <div class="rating-block">
             <div class="label">Overall</div>
             <div class="rating-icons" data-rating="qualityRating">${renderRatingIcons(e.qualityRating, '❤️')}</div>
           </div>
           <div class="rating-block">
-            <div class="label">LOL</div>
+            <div class="label">${isSFW() ? 'Cute' : 'Smut'}</div>
+            <div class="rating-icons" data-rating="smutRating">${renderRatingIcons(e.smutRating, themeIcon())}</div>
+          </div>
+          <div class="rating-block">
+            <div class="label">Crying</div>
+            <div class="rating-icons" data-rating="cryRating">${renderRatingIcons(e.cryRating, '😭')}</div>
+          </div>
+          <div class="rating-block">
+            <div class="label">Laughing</div>
             <div class="rating-icons" data-rating="lolRating">${renderRatingIcons(e.lolRating, '😂')}</div>
           </div>
         </div>
@@ -6195,6 +6203,7 @@ function mergeEntryData(target, source) {
   target.smutRating = Math.max(target.smutRating || 0, source.smutRating || 0);
   target.qualityRating = Math.max(target.qualityRating || 0, source.qualityRating || 0);
   target.lolRating = Math.max(target.lolRating || 0, source.lolRating || 0);
+  target.cryRating = Math.max(target.cryRating || 0, source.cryRating || 0);
   target.notes = mergeText(target.notes, source.notes);
 
   ['semi', 'uke'].forEach((k) => {
@@ -6735,7 +6744,7 @@ async function submitAdd() {
     shelf: ADD_FORMAT_PICK === 'reading' ? 'Plan to Read' : 'Completed',
     tags: [], customTags: [], notes: '', favorite: false,
     coverUrl: null, referenceUrl: null, referenceSite: null, referenceStatus: 'none', suggestedMatch: null,
-    summaryCache: null, summaryCachedAt: null, smutRating: 0, qualityRating: 0, lolRating: 0,
+    summaryCache: null, summaryCachedAt: null, smutRating: 0, qualityRating: 0, lolRating: 0, cryRating: 0,
     semi: { flag: null, notes: '', photo: null }, uke: { flag: null, notes: '', photo: null },
     screencaps: [], pdfLink: '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
   };
@@ -6844,7 +6853,7 @@ function attachRootHandlers() {
     // Clicking the already-active icon turns it off (STATE.format = null,
     // meaning no format filter — Reading + Watching both show, mixed
     // together). Clicking the other icon switches to it as before.
-    el.onclick = () => { const val = el.getAttribute('data-format'); STATE.format = STATE.format === val ? null : val; STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.lolFilter = null; STATE.flagFilter = null; STATE.linkFilter = false; STATE.noLinkFilter = false; STATE.storyStatusFilter = null; render(); };
+    el.onclick = () => { const val = el.getAttribute('data-format'); STATE.format = STATE.format === val ? null : val; STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.lolFilter = null; STATE.cryFilter = null; STATE.flagFilter = null; STATE.linkFilter = false; STATE.noLinkFilter = false; STATE.storyStatusFilter = null; render(); };
   });
   root.querySelectorAll('[data-shelf]').forEach((el) => {
     el.onclick = () => { STATE.shelf = el.getAttribute('data-shelf'); render(); };
@@ -6907,6 +6916,13 @@ function attachRootHandlers() {
     el.onclick = () => {
       const n = Number(el.getAttribute('data-lol-filter'));
       STATE.lolFilter = STATE.lolFilter === n ? null : n;
+      render();
+    };
+  });
+  root.querySelectorAll('[data-cry-filter]').forEach((el) => {
+    el.onclick = () => {
+      const n = Number(el.getAttribute('data-cry-filter'));
+      STATE.cryFilter = STATE.cryFilter === n ? null : n;
       render();
     };
   });
@@ -7758,7 +7774,7 @@ function renderHomeInPlace() {
   const main = root.querySelector('main');
   const entries = filteredEntries();
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter) {
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
       body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)).join(''));

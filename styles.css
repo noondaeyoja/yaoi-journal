@@ -472,6 +472,10 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 .details-divider-full { margin: 14px 0; }
 
 .rating-row { display: flex; align-items: stretch; justify-content: space-around; gap: 10px; }
+/* 2x2 layout (Overall/Smut on top, Crying/Laughing below) instead of the old
+   single cramped row of three — same .rating-block/.rating-icons cells, just
+   wrapped in a grid so a 4th rating fits without squeezing everything down. */
+.rating-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px 14px; }
 .rating-block { text-align: center; flex: 1; }
 .rating-block .label { font-size: 13.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 10px; }
 .rating-icons { display: flex; justify-content: space-between; align-items: center; font-size: 32px; cursor: pointer; padding: 0 2px; }
