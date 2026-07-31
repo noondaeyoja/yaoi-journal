@@ -3725,7 +3725,7 @@ function renderReactionsLibrary() {
   if (IMAGES_UNTAGGED_ONLY) items = items.filter((i) => isImageUntagged(i));
   const attached = items.filter((i) => i.attachedEntries.length > 0);
   const unattached = items.filter((i) => i.attachedEntries.length === 0);
-  IMAGES_NAV_LIST = (IMAGES_TAB === 'unattached' ? unattached : IMAGES_TAB === 'attached' ? attached : []).map((i) => i.dataUrl);
+  IMAGES_NAV_LIST = (IMAGES_TAB === 'unattached' ? unattached : IMAGES_TAB === 'attached' ? attached : IMAGES_TAB === 'gallery' ? items : []).map((i) => i.dataUrl);
 
   // `forceDel` is only passed true from the Possible Duplicates tab — it
   // makes every image in a duplicate comparison deletable (not just
@@ -3752,7 +3752,13 @@ function renderReactionsLibrary() {
     </div>`;
 
   let tabBody;
-  if (IMAGES_TAB === 'unattached') {
+  if (IMAGES_TAB === 'gallery') {
+    // Unlike Attached/Unattached, this ignores attach-status entirely — the
+    // point is being able to click a mood chip and see every image tagged
+    // with it in one place, same as Reactions/H already work, instead of
+    // having to check Attached and Unattached separately for the same mood.
+    tabBody = items.length ? `<div class="image-masonry">${items.map((img) => masonryItem(img)).join('')}</div>` : `<div class="empty-state">No images match. Try clearing the filter/search.</div>`;
+  } else if (IMAGES_TAB === 'unattached') {
     tabBody = unattached.length ? `<div class="image-masonry">${unattached.map((img) => masonryItem(img)).join('')}</div>` : `<div class="empty-state">Everything's attached to a read. 🎉</div>`;
   } else if (IMAGES_TAB === 'duplicates') {
     // A pair dismissed via "Not duplicates" is skipped by every future scan
@@ -3809,6 +3815,7 @@ function renderReactionsLibrary() {
         </div>
       ` : ''}
       <div class="tagmgr-tabs" style="margin-bottom:8px;">
+        <button class="tagmgr-tab ${IMAGES_TAB === 'gallery' ? 'active' : ''}" data-images-tab="gallery" title="Everything matching the filters below, attached or not">Gallery (${items.length})</button>
         <button class="tagmgr-tab ${IMAGES_TAB === 'attached' ? 'active' : ''}" data-images-tab="attached">Attached (${attached.length})</button>
         <button class="tagmgr-tab ${IMAGES_TAB === 'unattached' ? 'active' : ''}" data-images-tab="unattached">Unattached (${unattached.length})</button>
         <button class="tagmgr-tab ${IMAGES_TAB === 'duplicates' ? 'active' : ''}" data-images-tab="duplicates">Possible Duplicates${IMAGE_DUP_GROUPS !== null ? ` (${IMAGE_DUP_GROUPS.length})` : ''}</button>
