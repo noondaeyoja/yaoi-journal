@@ -3598,6 +3598,39 @@ function hammingDistance(a, b) {
   return d;
 }
 
+// Groups a list of perceptual hashes into clusters using full transitive
+// closure (union-find) rather than the old "one hub per group" pairwise
+// comparison. The old approach only ever compared each unclaimed item to a
+// single hub, so if item A got claimed as a near-match of unrelated item X
+// before A's TRUE duplicate B was ever compared against it, A was already
+// "used" and B's real match silently never formed a group — a real
+// duplicate could vanish from the scan for no reason visible to her. Union-
+// find instead treats "A~B and B~C" as one connected group even when A and
+// C aren't within the threshold of each other directly, which is the
+// correct behavior for a chain of slightly-different re-compressions of the
+// same source image. Returns an array of index-arrays (each length ≥ 2).
+function clusterByHammingDistance(hashes, threshold) {
+  const n = hashes.length;
+  const parent = Array.from({ length: n }, (_, i) => i);
+  function find(x) { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+  function union(a, b) { const ra = find(a); const rb = find(b); if (ra !== rb) parent[ra] = rb; }
+  for (let i = 0; i < n; i++) {
+    if (!hashes[i]) continue;
+    for (let j = i + 1; j < n; j++) {
+      if (!hashes[j]) continue;
+      if (hammingDistance(hashes[i], hashes[j]) <= threshold) union(i, j);
+    }
+  }
+  const clusters = new Map();
+  for (let i = 0; i < n; i++) {
+    if (!hashes[i]) continue;
+    const root = find(i);
+    if (!clusters.has(root)) clusters.set(root, []);
+    clusters.get(root).push(i);
+  }
+  return Array.from(clusters.values()).filter((c) => c.length > 1);
+}
+
 function imageDupSignature(group) {
   return group.map((img) => imageKey(img.dataUrl)).sort().join('|');
 }
@@ -3652,22 +3685,13 @@ async function scanForImageDuplicates() {
     withHashes.push({ img, hash });
   }
   const groups = [];
-  const used = new Set();
-  for (let i = 0; i < withHashes.length; i++) {
-    if (used.has(i) || !withHashes[i].hash) continue;
-    const group = [withHashes[i].img];
-    used.add(i);
-    for (let j = i + 1; j < withHashes.length; j++) {
-      if (used.has(j) || !withHashes[j].hash) continue;
-      if (hammingDistance(withHashes[i].hash, withHashes[j].hash) <= 6) {
-        group.push(withHashes[j].img);
-        used.add(j);
-      }
-    }
+  const clusters = clusterByHammingDistance(withHashes.map((x) => x.hash), 6);
+  for (const idxs of clusters) {
+    const group = idxs.map((idx) => withHashes[idx].img);
     // Skip groups the user already reviewed and confirmed aren't
     // duplicates — otherwise every "Scan again" just re-surfaces the same
     // ~40 groups forever.
-    if (group.length > 1 && !IGNORED_IMAGE_DUP_GROUPS.has(imageDupSignature(group))) groups.push(group);
+    if (!IGNORED_IMAGE_DUP_GROUPS.has(imageDupSignature(group))) groups.push(group);
   }
   const coveredSets = groups.map((g) => new Set(g.map((img) => img.dataUrl)));
   carriedGroups.forEach((cg) => {
@@ -3853,6 +3877,18 @@ function toggleHMembership(dataUrl) {
   pullImageIntoH(dataUrl);
   return true;
 }
+// Like isDataUrlInReactions, but can exclude one specific reaction record by
+// id. Needed right before that record is deleted: checking "is this content
+// already in the reactions pool" without excluding the doomed record would
+// find the record that's ABOUT to be deleted and wrongly conclude "yes,
+// already covered" — then a moment later that was the only copy providing
+// that coverage, and it's gone. Excluding it up front answers the question
+// that actually matters: "will anything still be in Reactions for this
+// content after the delete goes through?"
+async function reactionsPoolHasOtherRecord(dataUrl, excludeId) {
+  const hash = await hashDataUrl(dataUrl);
+  return ALL_REACTIONS.some((r) => r.hash === hash && r.source !== 'images' && r.id !== excludeId);
+}
 // Before a duplicate copy is permanently deleted from any of the three
 // Possible Duplicates tabs (Images/Reactions/H), carry over anything the
 // OTHER copies still in that same comparison group are missing — mood/group
@@ -3862,9 +3898,23 @@ function toggleHMembership(dataUrl) {
 // silently erasing that categorization work instead of preserving it on
 // whichever copy is left. `survivorDataUrls` is every OTHER item's dataUrl
 // from that same duplicate group (there can be more than one in a 3+ group —
-// all of them get the merge, not just one "primary" survivor).
-async function transferDuplicateTagsOnDelete(deletedDataUrl, survivorDataUrls) {
-  const survivors = (survivorDataUrls || []).filter((u) => u && u !== deletedDataUrl);
+// all of them get the merge, not just one "primary" survivor). `deletedId`
+// is the deleted item's own reaction id, if it has one — passed through so
+// a byte-identical survivor (the single most common "duplicate" case: the
+// exact same file uploaded/attached twice) doesn't get mistaken for the
+// record that's about to disappear.
+//
+// IMPORTANT: survivors are intentionally NOT re-filtered by dataUrl here.
+// The caller already excludes the specific item being deleted, by identity
+// (id, for reactions), before building survivorDataUrls. A second content-
+// based filter used to also exist here (dropping any survivor whose dataUrl
+// happened to equal deletedDataUrl) — that silently discarded every
+// legitimate survivor that was a byte-for-byte identical copy, which is
+// exactly what most "possible duplicates" actually are. That bug made this
+// whole function a no-op for the most common case, which is why the merge
+// looked "broken" even though the logic below it was otherwise correct.
+async function transferDuplicateTagsOnDelete(deletedDataUrl, survivorDataUrls, deletedId) {
+  const survivors = (survivorDataUrls || []).filter(Boolean);
   if (!survivors.length) return;
   // getImageTags() already unions IMAGE_TAG_MAP with any reaction moodTags
   // for this exact dataUrl, so this alone captures Semi/Uke/every mood group
@@ -3881,11 +3931,14 @@ async function transferDuplicateTagsOnDelete(deletedDataUrl, survivorDataUrls) {
       const existing = IMAGE_TAG_MAP[key] || [];
       const merged = new Set([...existing, ...deletedTags]);
       if (merged.size !== existing.length) { IMAGE_TAG_MAP[key] = Array.from(merged); imageTagMapChanged = true; }
-      // Also merge onto the survivor's own reaction record, if it has one —
-      // otherwise the Reactions gallery's own untagged badge/sort wouldn't
-      // notice tags that only landed in IMAGE_TAG_MAP.
-      const survivorReaction = ALL_REACTIONS.find((r) => r.dataUrl === survivorUrl);
-      if (survivorReaction) {
+      // Also merge onto every survivor reaction record that shares this
+      // dataUrl (there can legitimately be more than one — e.g. the same
+      // file uploaded as two separate reactions), excluding the one about
+      // to be deleted so writing to it isn't wasted effort. Using filter
+      // instead of find so a coincidental extra match elsewhere in the
+      // library doesn't leave any real survivor's tags stale.
+      const survivorReactions = ALL_REACTIONS.filter((r) => r.dataUrl === survivorUrl && r.id !== deletedId);
+      for (const survivorReaction of survivorReactions) {
         const existingR = survivorReaction.moodTags || [];
         const mergedR = new Set([...existingR, ...deletedTags]);
         if (mergedR.size !== existingR.length) {
@@ -3900,7 +3953,7 @@ async function transferDuplicateTagsOnDelete(deletedDataUrl, survivorDataUrls) {
       const merged = new Set([...existing, ...deletedHTags]);
       if (merged.size !== existing.length) { H_TAG_MAP[key] = Array.from(merged); hTagMapChanged = true; }
     }
-    if (deletedInReactions && !(await isDataUrlInReactions(survivorUrl))) await addImageAsReaction(survivorUrl);
+    if (deletedInReactions && !(await reactionsPoolHasOtherRecord(survivorUrl, deletedId))) await addImageAsReaction(survivorUrl);
     if (deletedInH && !isDataUrlInH(survivorUrl)) pullImageIntoH(survivorUrl);
   }
   if (imageTagMapChanged) persistImageTagMap();
@@ -4159,21 +4212,12 @@ async function scanForMemeDuplicates() {
     withHashes.push({ r, hash });
   }
   const groups = [];
-  const used = new Set();
-  for (let i = 0; i < withHashes.length; i++) {
-    if (used.has(i) || !withHashes[i].hash) continue;
-    const group = [withHashes[i].r];
-    used.add(i);
-    for (let j = i + 1; j < withHashes.length; j++) {
-      if (used.has(j) || !withHashes[j].hash) continue;
-      if (hammingDistance(withHashes[i].hash, withHashes[j].hash) <= 6) {
-        group.push(withHashes[j].r);
-        used.add(j);
-      }
-    }
+  const clusters = clusterByHammingDistance(withHashes.map((x) => x.hash), 6);
+  for (const idxs of clusters) {
+    const group = idxs.map((idx) => withHashes[idx].r);
     // Skip anything already reviewed and confirmed as "not duplicates" so
     // scanning again doesn't just re-show the same groups forever.
-    if (group.length > 1 && !IGNORED_MEME_DUP_GROUPS.has(reactionDupSignature(group))) groups.push(group);
+    if (!IGNORED_MEME_DUP_GROUPS.has(reactionDupSignature(group))) groups.push(group);
   }
   const coveredSets = groups.map((g) => new Set(g.map((r) => r.id)));
   carriedGroups.forEach((cg) => {
@@ -4274,7 +4318,7 @@ function attachMemeGridHandlers() {
         if (!confirm('Delete this image from your library? Any entries it\'s already attached to keep their own copy.')) return;
         const deletedRec = ALL_REACTIONS.find((r) => r.id === id);
         const memeDupGroup = (MEME_DUP_GROUPS || []).find((g) => g.some((r) => r.id === id));
-        if (deletedRec && memeDupGroup) await transferDuplicateTagsOnDelete(deletedRec.dataUrl, memeDupGroup.filter((r) => r.id !== id).map((r) => r.dataUrl));
+        if (deletedRec && memeDupGroup) await transferDuplicateTagsOnDelete(deletedRec.dataUrl, memeDupGroup.filter((r) => r.id !== id).map((r) => r.dataUrl), id);
         await deleteReaction(id);
         if (MEME_DUP_GROUPS) {
           MEME_DUP_GROUPS = MEME_DUP_GROUPS
@@ -5423,19 +5467,10 @@ async function scanForHDuplicates() {
     withHashes.push({ i, hash });
   }
   const groups = [];
-  const used = new Set();
-  for (let i = 0; i < withHashes.length; i++) {
-    if (used.has(i) || !withHashes[i].hash) continue;
-    const group = [withHashes[i].i];
-    used.add(i);
-    for (let j = i + 1; j < withHashes.length; j++) {
-      if (used.has(j) || !withHashes[j].hash) continue;
-      if (hammingDistance(withHashes[i].hash, withHashes[j].hash) <= 6) {
-        group.push(withHashes[j].i);
-        used.add(j);
-      }
-    }
-    if (group.length > 1 && !IGNORED_H_DUP_GROUPS.has(hDupSignature(group))) groups.push(group);
+  const clusters = clusterByHammingDistance(withHashes.map((x) => x.hash), 6);
+  for (const idxs of clusters) {
+    const group = idxs.map((idx) => withHashes[idx].i);
+    if (!IGNORED_H_DUP_GROUPS.has(hDupSignature(group))) groups.push(group);
   }
   const coveredSets = groups.map((g) => new Set(g.map((i) => i.id || i.dataUrl)));
   carriedGroups.forEach((cg) => {
@@ -7525,7 +7560,7 @@ function attachRootHandlers() {
         // copy(ies) remain in this same comparison, so tapping the "wrong"
         // one to delete never costs already-done sorting work.
         const dupGroup = (IMAGE_DUP_GROUPS || []).find((g) => g.some((img) => img.dataUrl === url));
-        if (dupGroup) await transferDuplicateTagsOnDelete(url, dupGroup.filter((img) => img.dataUrl !== url).map((img) => img.dataUrl));
+        if (dupGroup) await transferDuplicateTagsOnDelete(url, dupGroup.filter((img) => img.dataUrl !== url).map((img) => img.dataUrl), match ? match.reactionId : null);
         await deleteImageFromGalleryEverywhere({ dataUrl: url, reactionId: match ? match.reactionId : null });
         if (IMAGE_DUP_GROUPS) {
           IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS
