@@ -3889,6 +3889,77 @@ async function reactionsPoolHasOtherRecord(dataUrl, excludeId) {
   const hash = await hashDataUrl(dataUrl);
   return ALL_REACTIONS.some((r) => r.hash === hash && r.source !== 'images' && r.id !== excludeId);
 }
+// If the deleted duplicate was attached to a read — as its semi/uke photo,
+// a screencap, or sitting in semi/uke photoHistory — hand that attachment
+// off to the surviving copy instead of letting the read lose its photo
+// outright. Picks the first survivor as the new value (a semi/uke photo is
+// a single field, so a 3+ group can't attach to "all" survivors at once).
+// Mirrors the same swap-and-reupload pattern the crop flow already uses
+// (openCropImageModal): the entry's dataUrl reference changes, the stale
+// driveId is cleared since it pointed at the file that's about to be
+// deleted from Drive, and a fresh upload kicks off in the background so
+// the survivor gets its own Drive file for that slot.
+async function transferEntryAttachmentOnDuplicateDelete(deletedDataUrl, survivorDataUrls) {
+  const survivors = (survivorDataUrls || []).filter(Boolean);
+  if (!survivors.length) return;
+  const targetUrl = survivors[0];
+  if (targetUrl === deletedDataUrl) return;
+  for (const e of ALL_ENTRIES) {
+    let changed = false;
+    if (e.semi && e.semi.photo === deletedDataUrl) {
+      e.semi.photo = targetUrl; e.semi.photoDriveId = null; changed = true;
+      tryUploadImageToDrive(targetUrl, `${e.id}-semi-photo.jpg`).then((fileId) => {
+        if (!fileId) return;
+        const fresh = ALL_ENTRIES.find((x) => x.id === e.id);
+        if (fresh && fresh.semi && fresh.semi.photo === targetUrl) { fresh.semi.photoDriveId = fileId; saveEntry(fresh); }
+      });
+    }
+    if (e.uke && e.uke.photo === deletedDataUrl) {
+      e.uke.photo = targetUrl; e.uke.photoDriveId = null; changed = true;
+      tryUploadImageToDrive(targetUrl, `${e.id}-uke-photo.jpg`).then((fileId) => {
+        if (!fileId) return;
+        const fresh = ALL_ENTRIES.find((x) => x.id === e.id);
+        if (fresh && fresh.uke && fresh.uke.photo === targetUrl) { fresh.uke.photoDriveId = fileId; saveEntry(fresh); }
+      });
+    }
+    if (e.screencaps && e.screencaps.includes(deletedDataUrl)) {
+      const idx = e.screencaps.indexOf(deletedDataUrl);
+      if (!e.screencaps.includes(targetUrl)) {
+        e.screencaps[idx] = targetUrl;
+        if (e.screencapDriveIds && e.screencapDriveIds[idx]) e.screencapDriveIds[idx] = null;
+        changed = true;
+        tryUploadImageToDrive(targetUrl, `${e.id}-screencap-${Date.now()}-${idx}.jpg`).then((fileId) => {
+          if (!fileId) return;
+          const fresh = ALL_ENTRIES.find((x) => x.id === e.id);
+          if (fresh && fresh.screencapDriveIds && fresh.screencaps[idx] === targetUrl) { fresh.screencapDriveIds[idx] = fileId; saveEntry(fresh); }
+        });
+      } else {
+        // Survivor's dataUrl is already a screencap on this same entry —
+        // drop the now-redundant deleted slot instead of showing the same
+        // picture twice in one read's Images container.
+        e.screencaps.splice(idx, 1);
+        if (e.screencapDriveIds && e.screencapDriveIds.length > idx) e.screencapDriveIds.splice(idx, 1);
+        changed = true;
+      }
+    }
+    // photoHistory is a plain trail of past semi/uke photos (no Drive id of
+    // its own) — swap it too so "used to be tagged semi/uke" history isn't
+    // silently lost, but skip if the survivor's already in there.
+    if (e.semi && e.semi.photoHistory && e.semi.photoHistory.includes(deletedDataUrl)) {
+      const hidx = e.semi.photoHistory.indexOf(deletedDataUrl);
+      if (e.semi.photoHistory.includes(targetUrl)) e.semi.photoHistory.splice(hidx, 1);
+      else e.semi.photoHistory[hidx] = targetUrl;
+      changed = true;
+    }
+    if (e.uke && e.uke.photoHistory && e.uke.photoHistory.includes(deletedDataUrl)) {
+      const hidx = e.uke.photoHistory.indexOf(deletedDataUrl);
+      if (e.uke.photoHistory.includes(targetUrl)) e.uke.photoHistory.splice(hidx, 1);
+      else e.uke.photoHistory[hidx] = targetUrl;
+      changed = true;
+    }
+    if (changed) await saveEntry(e);
+  }
+}
 // Before a duplicate copy is permanently deleted from any of the three
 // Possible Duplicates tabs (Images/Reactions/H), carry over anything the
 // OTHER copies still in that same comparison group are missing — mood/group
@@ -4318,7 +4389,11 @@ function attachMemeGridHandlers() {
         if (!confirm('Delete this image from your library? Any entries it\'s already attached to keep their own copy.')) return;
         const deletedRec = ALL_REACTIONS.find((r) => r.id === id);
         const memeDupGroup = (MEME_DUP_GROUPS || []).find((g) => g.some((r) => r.id === id));
-        if (deletedRec && memeDupGroup) await transferDuplicateTagsOnDelete(deletedRec.dataUrl, memeDupGroup.filter((r) => r.id !== id).map((r) => r.dataUrl), id);
+        if (deletedRec && memeDupGroup) {
+          const survivorMemeUrls = memeDupGroup.filter((r) => r.id !== id).map((r) => r.dataUrl);
+          await transferDuplicateTagsOnDelete(deletedRec.dataUrl, survivorMemeUrls, id);
+          await transferEntryAttachmentOnDuplicateDelete(deletedRec.dataUrl, survivorMemeUrls);
+        }
         await deleteReaction(id);
         if (MEME_DUP_GROUPS) {
           MEME_DUP_GROUPS = MEME_DUP_GROUPS
@@ -5662,7 +5737,11 @@ function attachHGridHandlers() {
         // Same fast tap-to-delete triage flow as Images/Reactions duplicates.
         if (!confirm('Delete this image?')) return;
         const hDupGroup = (H_DUP_GROUPS || []).find((g) => g.some((i) => i.dataUrl === url));
-        if (hDupGroup) await transferDuplicateTagsOnDelete(url, hDupGroup.filter((i) => i.dataUrl !== url).map((i) => i.dataUrl));
+        if (hDupGroup) {
+          const survivorHUrls = hDupGroup.filter((i) => i.dataUrl !== url).map((i) => i.dataUrl);
+          await transferDuplicateTagsOnDelete(url, survivorHUrls);
+          await transferEntryAttachmentOnDuplicateDelete(url, survivorHUrls);
+        }
         await removeFromH(url);
         if (H_DUP_GROUPS) {
           H_DUP_GROUPS = H_DUP_GROUPS
@@ -7560,7 +7639,15 @@ function attachRootHandlers() {
         // copy(ies) remain in this same comparison, so tapping the "wrong"
         // one to delete never costs already-done sorting work.
         const dupGroup = (IMAGE_DUP_GROUPS || []).find((g) => g.some((img) => img.dataUrl === url));
-        if (dupGroup) await transferDuplicateTagsOnDelete(url, dupGroup.filter((img) => img.dataUrl !== url).map((img) => img.dataUrl), match ? match.reactionId : null);
+        if (dupGroup) {
+          const survivorImageUrls = dupGroup.filter((img) => img.dataUrl !== url).map((img) => img.dataUrl);
+          await transferDuplicateTagsOnDelete(url, survivorImageUrls, match ? match.reactionId : null);
+          // Do this BEFORE the actual delete below — once the entry's photo
+          // reference has already been swapped to the survivor, deleteImage-
+          // FromGalleryEverywhere's own entry scan (which matches by this
+          // exact dataUrl) simply won't find anything left to strip there.
+          await transferEntryAttachmentOnDuplicateDelete(url, survivorImageUrls);
+        }
         await deleteImageFromGalleryEverywhere({ dataUrl: url, reactionId: match ? match.reactionId : null });
         if (IMAGE_DUP_GROUPS) {
           IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS
