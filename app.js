@@ -1148,9 +1148,14 @@ function entryNeedsImageHydration(e) {
   );
 }
 async function hydrateMissingEntryImages() {
-  if (ENTRY_IMAGE_HYDRATE_BUSY || !driveTokenValid()) return;
+  if (ENTRY_IMAGE_HYDRATE_BUSY) return;
   const missing = ALL_ENTRIES.filter(entryNeedsImageHydration);
   if (!missing.length) return;
+  // There's real work waiting but no valid token to fetch it with — surface
+  // the reconnect banner instead of bailing silently. Previously this guard
+  // returned before ever setting DRIVE_NEEDS_RECONNECT, so a placeholder
+  // could sit stuck with no visible explanation of why.
+  if (!driveTokenValid()) { DRIVE_NEEDS_RECONNECT = true; return; }
   ENTRY_IMAGE_HYDRATE_BUSY = true;
   let lastRender = 0;
   for (const e of missing) {
@@ -1198,9 +1203,10 @@ async function hydrateDriveReaction(reaction) {
 // right after a successful Reconnect, instead of only once at boot.
 let REACTION_HYDRATE_BUSY = false;
 async function hydrateMissingReactions() {
-  if (REACTION_HYDRATE_BUSY || !driveTokenValid()) return;
+  if (REACTION_HYDRATE_BUSY) return;
   const missing = ALL_REACTIONS.filter((r) => r.driveId && !r.dataUrl);
   if (!missing.length) return;
+  if (!driveTokenValid()) { DRIVE_NEEDS_RECONNECT = true; return; }
   REACTION_HYDRATE_BUSY = true;
   let lastRender = 0;
   for (const r of missing) {
@@ -4639,6 +4645,155 @@ function migrateImageKeyMetadata(oldDataUrl, newDataUrl) {
   if (H_IMAGE_KEYS.has(oldKey)) { H_IMAGE_KEYS.delete(oldKey); H_IMAGE_KEYS.add(newKey); persistHImageKeys(); }
 }
 
+// A photo can live as a copy in up to three places at once — an entry's
+// semi/uke photo or a screencap, a Reactions record, and a standalone NSFW
+// upload. Cropping used to only ever update wherever the crop was actually
+// opened from (and Reactions-side crops didn't even try to reach entries at
+// all), so the other copies silently kept showing the pre-crop image.
+// Called after every crop save to bring every sibling copy in line.
+//
+// Matching is exact-dataUrl first (fast, zero false-positive risk), since
+// that's still true immediately after "use elsewhere in this gallery" links
+// two copies. If that finds nothing, we fall back to a tight perceptual-hash
+// match (Hamming distance ≤2 — well under the ≤6 threshold Possible
+// Duplicates uses) because two copies of "the same" picture often aren't
+// byte-identical: each gallery uploads/re-encodes its own copy to Drive
+// independently, so raw bytes can drift apart over time even though it's
+// visually the same photo. The tight threshold keeps this fallback from
+// ever touching an unrelated, merely-similar-looking image.
+async function propagateCropEverywhere(oldDataUrl, newDataUrl, opts) {
+  const skipReactionId = (opts && opts.skipReactionId) || null;
+  const skipHId = (opts && opts.skipHId) || null;
+
+  async function reuploadEntryField(entryId, field, idx) {
+    const label = field === 'screencap' ? `${entryId}-screencap-${Date.now()}-${idx}` : `${entryId}-${field}-photo`;
+    tryUploadImageToDrive(newDataUrl, `${label}.jpg`).then((fileId) => {
+      if (!fileId) return;
+      const fresh = ALL_ENTRIES.find((x) => x.id === entryId);
+      if (!fresh) return;
+      if (field === 'semi' && fresh.semi && fresh.semi.photo === newDataUrl) { fresh.semi.photoDriveId = fileId; saveEntry(fresh); }
+      else if (field === 'uke' && fresh.uke && fresh.uke.photo === newDataUrl) { fresh.uke.photoDriveId = fileId; saveEntry(fresh); }
+      else if (field === 'screencap' && fresh.screencapDriveIds && fresh.screencaps && fresh.screencaps[idx] === newDataUrl) { fresh.screencapDriveIds[idx] = fileId; saveEntry(fresh); }
+    });
+  }
+
+  let entryChanged = false;
+  for (const e of ALL_ENTRIES) {
+    let changed = false;
+    if (e.semi && e.semi.photo === oldDataUrl) {
+      e.semi.photo = newDataUrl; e.semi.photoDriveId = null; changed = true;
+      reuploadEntryField(e.id, 'semi', null);
+    }
+    if (e.uke && e.uke.photo === oldDataUrl) {
+      e.uke.photo = newDataUrl; e.uke.photoDriveId = null; changed = true;
+      reuploadEntryField(e.id, 'uke', null);
+    }
+    if (e.screencaps && e.screencaps.includes(oldDataUrl)) {
+      const idx = e.screencaps.indexOf(oldDataUrl);
+      e.screencaps[idx] = newDataUrl;
+      if (e.screencapDriveIds && e.screencapDriveIds[idx]) e.screencapDriveIds[idx] = null;
+      changed = true;
+      reuploadEntryField(e.id, 'screencap', idx);
+    }
+    if (changed) { entryChanged = true; await saveEntry(e); }
+  }
+
+  let reactionChanged = false;
+  for (const r of ALL_REACTIONS) {
+    if (r.id === skipReactionId || r.dataUrl !== oldDataUrl) continue;
+    r.dataUrl = newDataUrl;
+    r.hash = await hashDataUrl(newDataUrl);
+    r.driveId = null;
+    await saveReaction(r);
+    tryUploadImageToDrive(newDataUrl, `reaction-${r.id}.jpg`, 'reaction').then((fileId) => {
+      if (!fileId) return;
+      const fresh = ALL_REACTIONS.find((x) => x.id === r.id);
+      if (fresh && fresh.dataUrl === newDataUrl) { fresh.driveId = fileId; saveReaction(fresh); }
+    });
+    reactionChanged = true;
+  }
+
+  let hChanged = false;
+  for (const hi of ALL_H_IMAGES) {
+    if (hi.id === skipHId || hi.dataUrl !== oldDataUrl) continue;
+    const fresh0 = ALL_H_IMAGES.find((x) => x.id === hi.id);
+    if (!fresh0) continue;
+    fresh0.dataUrl = newDataUrl;
+    fresh0.hash = await hashDataUrl(newDataUrl);
+    fresh0.driveId = null;
+    await saveHImage(fresh0);
+    tryUploadImageToDrive(newDataUrl, `h-${fresh0.id}.jpg`, 'h').then((fileId) => {
+      if (!fileId) return;
+      const f2 = ALL_H_IMAGES.find((x) => x.id === fresh0.id);
+      if (f2 && f2.dataUrl === newDataUrl) { f2.driveId = fileId; saveHImage(f2); }
+    });
+    hChanged = true;
+  }
+
+  // Exact match found nothing anywhere else — fall back to visual similarity
+  // in case a sibling copy exists but has already drifted to different bytes.
+  if (!entryChanged && !reactionChanged && !hChanged) {
+    const targetHash = await perceptualHash(oldDataUrl);
+    if (targetHash) {
+      for (const e of ALL_ENTRIES) {
+        let changed = false;
+        if (e.semi && e.semi.photo && e.semi.photo !== newDataUrl) {
+          const h = await perceptualHash(e.semi.photo);
+          if (hammingDistance(targetHash, h) <= 2) { e.semi.photo = newDataUrl; e.semi.photoDriveId = null; changed = true; reuploadEntryField(e.id, 'semi', null); }
+        }
+        if (e.uke && e.uke.photo && e.uke.photo !== newDataUrl) {
+          const h = await perceptualHash(e.uke.photo);
+          if (hammingDistance(targetHash, h) <= 2) { e.uke.photo = newDataUrl; e.uke.photoDriveId = null; changed = true; reuploadEntryField(e.id, 'uke', null); }
+        }
+        if (e.screencaps) {
+          for (let i = 0; i < e.screencaps.length; i++) {
+            if (e.screencaps[i] === newDataUrl) continue;
+            const h = await perceptualHash(e.screencaps[i]);
+            if (hammingDistance(targetHash, h) <= 2) {
+              e.screencaps[i] = newDataUrl;
+              if (e.screencapDriveIds && e.screencapDriveIds[i]) e.screencapDriveIds[i] = null;
+              changed = true;
+              reuploadEntryField(e.id, 'screencap', i);
+            }
+          }
+        }
+        if (changed) await saveEntry(e);
+      }
+      for (const r of ALL_REACTIONS) {
+        if (r.id === skipReactionId || !r.dataUrl || r.dataUrl === newDataUrl) continue;
+        const h = await perceptualHash(r.dataUrl);
+        if (hammingDistance(targetHash, h) <= 2) {
+          r.dataUrl = newDataUrl; r.hash = await hashDataUrl(newDataUrl); r.driveId = null;
+          await saveReaction(r);
+          tryUploadImageToDrive(newDataUrl, `reaction-${r.id}.jpg`, 'reaction').then((fileId) => {
+            if (!fileId) return;
+            const fresh = ALL_REACTIONS.find((x) => x.id === r.id);
+            if (fresh && fresh.dataUrl === newDataUrl) { fresh.driveId = fileId; saveReaction(fresh); }
+          });
+        }
+      }
+      for (const hi of ALL_H_IMAGES) {
+        if (hi.id === skipHId || !hi.dataUrl || hi.dataUrl === newDataUrl) continue;
+        const h = await perceptualHash(hi.dataUrl);
+        if (hammingDistance(targetHash, h) <= 2) {
+          const fresh = ALL_H_IMAGES.find((x) => x.id === hi.id);
+          if (fresh) {
+            fresh.dataUrl = newDataUrl; fresh.hash = await hashDataUrl(newDataUrl); fresh.driveId = null;
+            await saveHImage(fresh);
+            tryUploadImageToDrive(newDataUrl, `h-${fresh.id}.jpg`, 'h').then((fileId) => {
+              if (!fileId) return;
+              const f2 = ALL_H_IMAGES.find((x) => x.id === fresh.id);
+              if (f2 && f2.dataUrl === newDataUrl) { f2.driveId = fileId; saveHImage(f2); }
+            });
+          }
+        }
+      }
+    }
+  }
+
+  migrateImageKeyMetadata(oldDataUrl, newDataUrl);
+}
+
 function openCropReactionModal(id) {
   const r = ALL_REACTIONS.find((x) => x.id === id);
   if (!r || !r.dataUrl) return;
@@ -4650,7 +4805,7 @@ function openCropReactionModal(id) {
     fresh.hash = await hashDataUrl(newDataUrl);
     fresh.driveId = null;
     await saveReaction(fresh);
-    migrateImageKeyMetadata(oldDataUrl, newDataUrl);
+    await propagateCropEverywhere(oldDataUrl, newDataUrl, { skipReactionId: id });
     showToast('Cropped!');
     // The masonry grid behind this modal was rendered with the OLD dataUrl
     // baked into its <img src>— closing/reopening the modal alone doesn't
@@ -4671,54 +4826,12 @@ function openCropReactionModal(id) {
 
 // Images-tab crop: the same dataUrl can live on an entry's semi/uke photo
 // and/or its screencaps, and (since the direct-upload fix) may ALSO be a
-// standalone reaction — update every place it's found so nothing goes out
-// of sync with a stale, uncropped copy.
+// standalone reaction or NSFW upload — propagateCropEverywhere() updates
+// every place it's found so nothing goes out of sync with a stale,
+// uncropped copy.
 async function openCropImageModal(dataUrl) {
   openCropModal(dataUrl, async (newDataUrl) => {
-    for (const e of ALL_ENTRIES) {
-      let changed = false;
-      if (e.semi && e.semi.photo === dataUrl) {
-        e.semi.photo = newDataUrl; e.semi.photoDriveId = null; changed = true;
-        tryUploadImageToDrive(newDataUrl, `${e.id}-semi-photo.jpg`).then((fileId) => {
-          if (!fileId) return;
-          const fresh = ALL_ENTRIES.find((x) => x.id === e.id);
-          if (fresh && fresh.semi) { fresh.semi.photoDriveId = fileId; saveEntry(fresh); }
-        });
-      }
-      if (e.uke && e.uke.photo === dataUrl) {
-        e.uke.photo = newDataUrl; e.uke.photoDriveId = null; changed = true;
-        tryUploadImageToDrive(newDataUrl, `${e.id}-uke-photo.jpg`).then((fileId) => {
-          if (!fileId) return;
-          const fresh = ALL_ENTRIES.find((x) => x.id === e.id);
-          if (fresh && fresh.uke) { fresh.uke.photoDriveId = fileId; saveEntry(fresh); }
-        });
-      }
-      if (e.screencaps && e.screencaps.includes(dataUrl)) {
-        const idx = e.screencaps.indexOf(dataUrl);
-        e.screencaps[idx] = newDataUrl;
-        if (e.screencapDriveIds && e.screencapDriveIds[idx]) e.screencapDriveIds[idx] = null;
-        changed = true;
-        tryUploadImageToDrive(newDataUrl, `${e.id}-screencap-${Date.now()}-${idx}.jpg`).then((fileId) => {
-          if (!fileId) return;
-          const fresh = ALL_ENTRIES.find((x) => x.id === e.id);
-          if (fresh && fresh.screencapDriveIds) { fresh.screencapDriveIds[idx] = fileId; saveEntry(fresh); }
-        });
-      }
-      if (changed) await saveEntry(e);
-    }
-    const reaction = ALL_REACTIONS.find((r) => r.dataUrl === dataUrl);
-    if (reaction) {
-      reaction.dataUrl = newDataUrl;
-      reaction.hash = await hashDataUrl(newDataUrl);
-      reaction.driveId = null;
-      await saveReaction(reaction);
-      tryUploadImageToDrive(newDataUrl, `reaction-${reaction.id}.jpg`, 'reaction').then((fileId) => {
-        if (!fileId) return;
-        const fresh = ALL_REACTIONS.find((x) => x.id === reaction.id);
-        if (fresh) { fresh.driveId = fileId; saveReaction(fresh); }
-      });
-    }
-    migrateImageKeyMetadata(dataUrl, newDataUrl);
+    await propagateCropEverywhere(dataUrl, newDataUrl, {});
     showToast('Cropped!');
     render();
     closeModal();
@@ -4728,7 +4841,8 @@ async function openCropImageModal(dataUrl) {
 
 // H-tab crop: a standalone H upload has its own record to update; an
 // entry-sourced H image (just flagged via H_IMAGE_KEYS, no copy of its own)
-// gets updated the same way an Images-tab crop would.
+// gets updated the same way an Images-tab crop would. Either way,
+// propagateCropEverywhere() also reaches any sibling Reactions/Images copy.
 async function openCropHModal(dataUrl) {
   const upload = ALL_H_IMAGES.find((h) => h.dataUrl === dataUrl);
   openCropModal(dataUrl, async (newDataUrl) => {
@@ -4745,52 +4859,10 @@ async function openCropHModal(dataUrl) {
           if (f2) { f2.driveId = fileId; saveHImage(f2); }
         });
       }
+      await propagateCropEverywhere(dataUrl, newDataUrl, { skipHId: upload.id });
     } else {
-      for (const e of ALL_ENTRIES) {
-        let changed = false;
-        if (e.semi && e.semi.photo === dataUrl) {
-          e.semi.photo = newDataUrl; e.semi.photoDriveId = null; changed = true;
-          tryUploadImageToDrive(newDataUrl, `${e.id}-semi-photo.jpg`).then((fileId) => {
-            if (!fileId) return;
-            const fresh = ALL_ENTRIES.find((x) => x.id === e.id);
-            if (fresh && fresh.semi) { fresh.semi.photoDriveId = fileId; saveEntry(fresh); }
-          });
-        }
-        if (e.uke && e.uke.photo === dataUrl) {
-          e.uke.photo = newDataUrl; e.uke.photoDriveId = null; changed = true;
-          tryUploadImageToDrive(newDataUrl, `${e.id}-uke-photo.jpg`).then((fileId) => {
-            if (!fileId) return;
-            const fresh = ALL_ENTRIES.find((x) => x.id === e.id);
-            if (fresh && fresh.uke) { fresh.uke.photoDriveId = fileId; saveEntry(fresh); }
-          });
-        }
-        if (e.screencaps && e.screencaps.includes(dataUrl)) {
-          const idx = e.screencaps.indexOf(dataUrl);
-          e.screencaps[idx] = newDataUrl;
-          if (e.screencapDriveIds && e.screencapDriveIds[idx]) e.screencapDriveIds[idx] = null;
-          changed = true;
-          tryUploadImageToDrive(newDataUrl, `${e.id}-screencap-${Date.now()}-${idx}.jpg`).then((fileId) => {
-            if (!fileId) return;
-            const fresh = ALL_ENTRIES.find((x) => x.id === e.id);
-            if (fresh && fresh.screencapDriveIds) { fresh.screencapDriveIds[idx] = fileId; saveEntry(fresh); }
-          });
-        }
-        if (changed) await saveEntry(e);
-      }
-      const reaction = ALL_REACTIONS.find((r) => r.dataUrl === dataUrl);
-      if (reaction) {
-        reaction.dataUrl = newDataUrl;
-        reaction.hash = await hashDataUrl(newDataUrl);
-        reaction.driveId = null;
-        await saveReaction(reaction);
-        tryUploadImageToDrive(newDataUrl, `reaction-${reaction.id}.jpg`, 'reaction').then((fileId) => {
-          if (!fileId) return;
-          const fresh = ALL_REACTIONS.find((x) => x.id === reaction.id);
-          if (fresh) { fresh.driveId = fileId; saveReaction(fresh); }
-        });
-      }
+      await propagateCropEverywhere(dataUrl, newDataUrl, {});
     }
-    migrateImageKeyMetadata(dataUrl, newDataUrl);
     showToast('Cropped!');
     render();
     closeModal();
@@ -5184,9 +5256,10 @@ async function hydrateDriveHImage(hImage) {
 // time it would otherwise have hydrated.
 let H_IMAGE_HYDRATE_BUSY = false;
 async function hydrateMissingHImages() {
-  if (H_IMAGE_HYDRATE_BUSY || !driveTokenValid()) return;
+  if (H_IMAGE_HYDRATE_BUSY) return;
   const missing = ALL_H_IMAGES.filter((h) => h.driveId && !h.dataUrl);
   if (!missing.length) return;
+  if (!driveTokenValid()) { DRIVE_NEEDS_RECONNECT = true; return; }
   H_IMAGE_HYDRATE_BUSY = true;
   let lastRender = 0;
   for (const h of missing) {
@@ -9042,5 +9115,22 @@ async function boot() {
     startY = null;
   });
 })();
+
+/* ---------------------------------------------------------------------- */
+/* Drive hydration auto-retry                                             */
+/* hydrateMissingEntryImages()/hydrateMissingReactions()/                 */
+/* hydrateMissingHImages() previously only ever fired once — right when   */
+/* navigate() switched to the relevant tab. If the Drive token wasn't     */
+/* valid at that exact instant (e.g. it had just expired, or a reconnect  */
+/* was still in flight), the placeholder was stuck until the user left    */
+/* and came back to the tab. This ticks every ~30s and retries whichever  */
+/* gallery is currently open, so a stuck "?" placeholder resolves itself  */
+/* on its own while she's sitting right there looking at it.              */
+/* ---------------------------------------------------------------------- */
+setInterval(() => {
+  if (STATE.view === 'reactions') hydrateMissingEntryImages().catch(() => {});
+  else if (STATE.view === 'meme') hydrateMissingReactions().catch(() => {});
+  else if (STATE.view === 'h') hydrateMissingHImages().catch(() => {});
+}, 30000);
 
 boot();
