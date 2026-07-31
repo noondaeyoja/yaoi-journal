@@ -548,6 +548,16 @@ function pushMetaField(field, value) {
   ref.set({ [field]: value }, { merge: true }).catch((err) => console.error('Meta sync failed:', err));
 }
 
+// Same as pushMetaField but writes several fields in one round trip — used
+// wherever a value and its "last write wins" timestamp need to land together
+// (see applyMetaSnapshot()), so a listener on another device never sees the
+// new map without its matching timestamp, or vice versa.
+function pushMetaFields(fields) {
+  const ref = metaDocRef();
+  if (!ref) return;
+  ref.set(fields, { merge: true }).catch((err) => console.error('Meta sync failed:', err));
+}
+
 // Saves the one-time SFW/NSFW choice both locally and to Firestore — same
 // dual-write pattern as every other piece of synced meta state. There's
 // deliberately no "unsave"/change function: once this is set it's meant to
@@ -558,129 +568,223 @@ async function saveThemeMode(mode) {
   pushMetaField('themeMode', mode);
 }
 
-// Pulls whatever's already in Firestore and unions it into the local sets,
-// so a deletion/resolution made on one device shows up on the other without
-// ever silently losing one side's decisions.
+// Applies one Firestore meta-doc snapshot to local state. Shared by the
+// once-at-boot pull (pullMetaState()) and the live listener
+// (startMetaFirestoreListener()) so both go through the exact same merge
+// logic instead of two copies drifting apart.
+//
+// Most fields here (dismissed duplicates, hidden/deleted tag and group keys,
+// custom mood/group names, etc.) are append-only sets — "delete/hide this"
+// is recorded as adding a key to a set, so a plain union of local+remote can
+// never lose a decision either device already made, regardless of order.
+//
+// IMAGE_TAG_MAP / H_TAG_MAP / H_NOTE_MAP are different: they're whole
+// objects whose VALUES change in place (re-tagging an image overwrites its
+// entry, it doesn't just add one). A union merge can't represent "this
+// device's value for key X is now stale" — so this used to always keep
+// EVERY key this device already had, even after it was edited elsewhere,
+// with only brand-new keys ever coming through from another device. That's
+// exactly why cleanup done on desktop wasn't showing up on mobile. Each of
+// these three now carries a whole-map "last write wins" timestamp (bumped
+// on every persist*Map() call): if the incoming snapshot's timestamp is
+// newer than this device's, the WHOLE incoming map replaces the local one;
+// otherwise local stays untouched. Combined with the live listener below,
+// two devices converge within seconds of either one saving a change instead
+// of only at the next full reload.
+async function applyMetaSnapshot(data) {
+  if (!data) return false;
+  let changed = false;
+  if (Array.isArray(data.deletedTagKeys) && data.deletedTagKeys.length) {
+    const before = DELETED_TAG_KEYS.size;
+    DELETED_TAG_KEYS = new Set([...DELETED_TAG_KEYS, ...data.deletedTagKeys]);
+    if (DELETED_TAG_KEYS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'deletedTagKeys', value: Array.from(DELETED_TAG_KEYS) });
+  }
+  if (Array.isArray(data.hdResolvedRaw) && data.hdResolvedRaw.length) {
+    const before = HD_RESOLVED_RAW.size;
+    HD_RESOLVED_RAW = new Set([...HD_RESOLVED_RAW, ...data.hdResolvedRaw]);
+    if (HD_RESOLVED_RAW.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'hdResolvedRaw', value: Array.from(HD_RESOLVED_RAW) });
+  }
+  if (Array.isArray(data.ignoredDupGroups) && data.ignoredDupGroups.length) {
+    const before = IGNORED_DUP_GROUPS.size;
+    IGNORED_DUP_GROUPS = new Set([...IGNORED_DUP_GROUPS, ...data.ignoredDupGroups]);
+    if (IGNORED_DUP_GROUPS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'ignoredDupGroups', value: Array.from(IGNORED_DUP_GROUPS) });
+  }
+  if (Array.isArray(data.userHiddenTagKeys) && data.userHiddenTagKeys.length) {
+    const before = USER_HIDDEN_TAG_KEYS.size;
+    USER_HIDDEN_TAG_KEYS = new Set([...USER_HIDDEN_TAG_KEYS, ...data.userHiddenTagKeys]);
+    if (USER_HIDDEN_TAG_KEYS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'userHiddenTagKeys', value: Array.from(USER_HIDDEN_TAG_KEYS) });
+  }
+  if (Array.isArray(data.ignoredTagSuggestions) && data.ignoredTagSuggestions.length) {
+    const before = IGNORED_TAG_SUGGESTIONS.size;
+    IGNORED_TAG_SUGGESTIONS = new Set([...IGNORED_TAG_SUGGESTIONS, ...data.ignoredTagSuggestions]);
+    if (IGNORED_TAG_SUGGESTIONS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'ignoredTagSuggestions', value: Array.from(IGNORED_TAG_SUGGESTIONS) });
+  }
+  // Only fill in the proxy URL from the cloud if this device doesn't
+  // already have one set locally — never overwrite a value someone just
+  // typed in on this device with an older/blank remote one.
+  if (typeof data.proxyUrl === 'string' && data.proxyUrl && !localStorage.getItem('yj_proxy_url')) {
+    localStorage.setItem('yj_proxy_url', data.proxyUrl);
+  }
+  if (typeof data.tagSuggestionsCollapsed === 'boolean' && data.tagSuggestionsCollapsed !== TAG_SUGGESTIONS_COLLAPSED) {
+    TAG_SUGGESTIONS_COLLAPSED = data.tagSuggestionsCollapsed;
+    changed = true;
+    await idbPut(STORE_META, { key: 'tagSuggestionsCollapsed', value: TAG_SUGGESTIONS_COLLAPSED });
+  }
+  if (Array.isArray(data.homeCollapsedSections)) {
+    const before = HOME_COLLAPSED_SECTIONS.size;
+    HOME_COLLAPSED_SECTIONS = new Set([...HOME_COLLAPSED_SECTIONS, ...data.homeCollapsedSections]);
+    if (HOME_COLLAPSED_SECTIONS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'homeCollapsedSections', value: Array.from(HOME_COLLAPSED_SECTIONS) });
+  }
+  // Adopt whatever Drive folder id(s) another device already established
+  // (see findOrCreateDriveFolder()) so this device never independently
+  // searches/creates its own copy of "Yaoi Journal"/"Images"/"Reactions" —
+  // that race is what caused the duplicate-folder bug in the first place.
+  for (const key of Object.keys(data)) {
+    if (key.indexOf('driveFolder:') === 0 && typeof data[key] === 'string' && data[key]) {
+      const cached = await idbGet(STORE_META, key);
+      if (!cached || !cached.value) await idbPut(STORE_META, { key, value: data[key] });
+    }
+  }
+  // CUSTOM_MOODS and IMAGE_GROUPS are the same shared Set (see its
+  // declaration) — merge incoming updates from EITHER legacy meta field
+  // into it and reassign both variables together, so they can't drift
+  // back apart into two separate objects as sync events come in.
+  if ((Array.isArray(data.customMoods) && data.customMoods.length) || (Array.isArray(data.imageGroups) && data.imageGroups.length)) {
+    const before = CUSTOM_MOODS.size;
+    const merged = new Set([...CUSTOM_MOODS, ...(data.customMoods || []), ...(data.imageGroups || [])]);
+    CUSTOM_MOODS = merged;
+    IMAGE_GROUPS = merged;
+    if (merged.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'customMoods', value: Array.from(merged) });
+    await idbPut(STORE_META, { key: 'imageGroups', value: Array.from(merged) });
+  }
+  if (data.imageTagMap && typeof data.imageTagMap === 'object' && (data.imageTagMapUpdatedAt || 0) > IMAGE_TAG_MAP_UPDATED_AT) {
+    IMAGE_TAG_MAP = data.imageTagMap;
+    IMAGE_TAG_MAP_UPDATED_AT = data.imageTagMapUpdatedAt;
+    changed = true;
+    await idbPut(STORE_META, { key: 'imageTagMap', value: IMAGE_TAG_MAP });
+    await idbPut(STORE_META, { key: 'imageTagMapUpdatedAt', value: IMAGE_TAG_MAP_UPDATED_AT });
+  }
+  if (Array.isArray(data.hiddenGroupKeys) && data.hiddenGroupKeys.length) {
+    const before = HIDDEN_GROUP_KEYS.size;
+    HIDDEN_GROUP_KEYS = new Set([...HIDDEN_GROUP_KEYS, ...data.hiddenGroupKeys]);
+    if (HIDDEN_GROUP_KEYS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'hiddenGroupKeys', value: Array.from(HIDDEN_GROUP_KEYS) });
+  }
+  if (Array.isArray(data.deletedGroupKeys) && data.deletedGroupKeys.length) {
+    const before = DELETED_GROUP_KEYS.size;
+    DELETED_GROUP_KEYS = new Set([...DELETED_GROUP_KEYS, ...data.deletedGroupKeys]);
+    if (DELETED_GROUP_KEYS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'deletedGroupKeys', value: Array.from(DELETED_GROUP_KEYS) });
+  }
+  if (Array.isArray(data.ignoredImageDupGroups) && data.ignoredImageDupGroups.length) {
+    const before = IGNORED_IMAGE_DUP_GROUPS.size;
+    IGNORED_IMAGE_DUP_GROUPS = new Set([...IGNORED_IMAGE_DUP_GROUPS, ...data.ignoredImageDupGroups]);
+    if (IGNORED_IMAGE_DUP_GROUPS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'ignoredImageDupGroups', value: Array.from(IGNORED_IMAGE_DUP_GROUPS) });
+  }
+  if (Array.isArray(data.ignoredMemeDupGroups) && data.ignoredMemeDupGroups.length) {
+    const before = IGNORED_MEME_DUP_GROUPS.size;
+    IGNORED_MEME_DUP_GROUPS = new Set([...IGNORED_MEME_DUP_GROUPS, ...data.ignoredMemeDupGroups]);
+    if (IGNORED_MEME_DUP_GROUPS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'ignoredMemeDupGroups', value: Array.from(IGNORED_MEME_DUP_GROUPS) });
+  }
+  if (Array.isArray(data.ignoredHDupGroups) && data.ignoredHDupGroups.length) {
+    const before = IGNORED_H_DUP_GROUPS.size;
+    IGNORED_H_DUP_GROUPS = new Set([...IGNORED_H_DUP_GROUPS, ...data.ignoredHDupGroups]);
+    if (IGNORED_H_DUP_GROUPS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'ignoredHDupGroups', value: Array.from(IGNORED_H_DUP_GROUPS) });
+  }
+  if (Array.isArray(data.hImageKeys) && data.hImageKeys.length) {
+    const before = H_IMAGE_KEYS.size;
+    H_IMAGE_KEYS = new Set([...H_IMAGE_KEYS, ...data.hImageKeys]);
+    if (H_IMAGE_KEYS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'hImageKeys', value: Array.from(H_IMAGE_KEYS) });
+  }
+  if (Array.isArray(data.hGroups) && data.hGroups.length) {
+    const before = H_GROUPS.size;
+    H_GROUPS = new Set([...H_GROUPS, ...data.hGroups]);
+    if (H_GROUPS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'hGroups', value: Array.from(H_GROUPS) });
+  }
+  if (data.hTagMap && typeof data.hTagMap === 'object' && (data.hTagMapUpdatedAt || 0) > H_TAG_MAP_UPDATED_AT) {
+    H_TAG_MAP = data.hTagMap;
+    H_TAG_MAP_UPDATED_AT = data.hTagMapUpdatedAt;
+    changed = true;
+    await idbPut(STORE_META, { key: 'hTagMap', value: H_TAG_MAP });
+    await idbPut(STORE_META, { key: 'hTagMapUpdatedAt', value: H_TAG_MAP_UPDATED_AT });
+  }
+  if (Array.isArray(data.hHiddenGroupKeys) && data.hHiddenGroupKeys.length) {
+    const before = H_HIDDEN_GROUP_KEYS.size;
+    H_HIDDEN_GROUP_KEYS = new Set([...H_HIDDEN_GROUP_KEYS, ...data.hHiddenGroupKeys]);
+    if (H_HIDDEN_GROUP_KEYS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'hHiddenGroupKeys', value: Array.from(H_HIDDEN_GROUP_KEYS) });
+  }
+  if (Array.isArray(data.hDeletedGroupKeys) && data.hDeletedGroupKeys.length) {
+    const before = H_DELETED_GROUP_KEYS.size;
+    H_DELETED_GROUP_KEYS = new Set([...H_DELETED_GROUP_KEYS, ...data.hDeletedGroupKeys]);
+    if (H_DELETED_GROUP_KEYS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'hDeletedGroupKeys', value: Array.from(H_DELETED_GROUP_KEYS) });
+  }
+  if (data.hNoteMap && typeof data.hNoteMap === 'object' && (data.hNoteMapUpdatedAt || 0) > H_NOTE_MAP_UPDATED_AT) {
+    H_NOTE_MAP = data.hNoteMap;
+    H_NOTE_MAP_UPDATED_AT = data.hNoteMapUpdatedAt;
+    changed = true;
+    await idbPut(STORE_META, { key: 'hNoteMap', value: H_NOTE_MAP });
+    await idbPut(STORE_META, { key: 'hNoteMapUpdatedAt', value: H_NOTE_MAP_UPDATED_AT });
+  }
+  // Only adopt a remote themeMode if this device doesn't already have one
+  // cached — same "never overwrite what's already decided" rule as the
+  // proxy URL above. Once set anywhere, it should read the same everywhere.
+  if (typeof data.themeMode === 'string' && data.themeMode && !THEME_MODE) {
+    THEME_MODE = data.themeMode;
+    changed = true;
+    await idbPut(STORE_META, { key: 'themeMode', value: THEME_MODE });
+  }
+  return changed;
+}
+
+// Pulls whatever's already in Firestore once (at boot, or right after a
+// manual reconnect) and applies it via applyMetaSnapshot(). See
+// startMetaFirestoreListener() for the live counterpart that keeps this in
+// sync afterward without needing a reload.
 async function pullMetaState() {
   const ref = metaDocRef();
   if (!ref) return;
   try {
     const snap = await ref.get({ source: 'server' }).catch(() => ref.get());
     if (!snap.exists) return;
-    const data = snap.data() || {};
-    if (Array.isArray(data.deletedTagKeys) && data.deletedTagKeys.length) {
-      DELETED_TAG_KEYS = new Set([...DELETED_TAG_KEYS, ...data.deletedTagKeys]);
-      await idbPut(STORE_META, { key: 'deletedTagKeys', value: Array.from(DELETED_TAG_KEYS) });
-    }
-    if (Array.isArray(data.hdResolvedRaw) && data.hdResolvedRaw.length) {
-      HD_RESOLVED_RAW = new Set([...HD_RESOLVED_RAW, ...data.hdResolvedRaw]);
-      await idbPut(STORE_META, { key: 'hdResolvedRaw', value: Array.from(HD_RESOLVED_RAW) });
-    }
-    if (Array.isArray(data.ignoredDupGroups) && data.ignoredDupGroups.length) {
-      IGNORED_DUP_GROUPS = new Set([...IGNORED_DUP_GROUPS, ...data.ignoredDupGroups]);
-      await idbPut(STORE_META, { key: 'ignoredDupGroups', value: Array.from(IGNORED_DUP_GROUPS) });
-    }
-    if (Array.isArray(data.userHiddenTagKeys) && data.userHiddenTagKeys.length) {
-      USER_HIDDEN_TAG_KEYS = new Set([...USER_HIDDEN_TAG_KEYS, ...data.userHiddenTagKeys]);
-      await idbPut(STORE_META, { key: 'userHiddenTagKeys', value: Array.from(USER_HIDDEN_TAG_KEYS) });
-    }
-    if (Array.isArray(data.ignoredTagSuggestions) && data.ignoredTagSuggestions.length) {
-      IGNORED_TAG_SUGGESTIONS = new Set([...IGNORED_TAG_SUGGESTIONS, ...data.ignoredTagSuggestions]);
-      await idbPut(STORE_META, { key: 'ignoredTagSuggestions', value: Array.from(IGNORED_TAG_SUGGESTIONS) });
-    }
-    // Only fill in the proxy URL from the cloud if this device doesn't
-    // already have one set locally — never overwrite a value someone just
-    // typed in on this device with an older/blank remote one.
-    if (typeof data.proxyUrl === 'string' && data.proxyUrl && !localStorage.getItem('yj_proxy_url')) {
-      localStorage.setItem('yj_proxy_url', data.proxyUrl);
-    }
-    if (typeof data.tagSuggestionsCollapsed === 'boolean') {
-      TAG_SUGGESTIONS_COLLAPSED = data.tagSuggestionsCollapsed;
-      await idbPut(STORE_META, { key: 'tagSuggestionsCollapsed', value: TAG_SUGGESTIONS_COLLAPSED });
-    }
-    if (Array.isArray(data.homeCollapsedSections)) {
-      HOME_COLLAPSED_SECTIONS = new Set([...HOME_COLLAPSED_SECTIONS, ...data.homeCollapsedSections]);
-      await idbPut(STORE_META, { key: 'homeCollapsedSections', value: Array.from(HOME_COLLAPSED_SECTIONS) });
-    }
-    // Adopt whatever Drive folder id(s) another device already established
-    // (see findOrCreateDriveFolder()) so this device never independently
-    // searches/creates its own copy of "Yaoi Journal"/"Images"/"Reactions" —
-    // that race is what caused the duplicate-folder bug in the first place.
-    for (const key of Object.keys(data)) {
-      if (key.indexOf('driveFolder:') === 0 && typeof data[key] === 'string' && data[key]) {
-        const cached = await idbGet(STORE_META, key);
-        if (!cached || !cached.value) await idbPut(STORE_META, { key, value: data[key] });
-      }
-    }
-    // CUSTOM_MOODS and IMAGE_GROUPS are the same shared Set (see its
-    // declaration) — merge incoming updates from EITHER legacy meta field
-    // into it and reassign both variables together, so they can't drift
-    // back apart into two separate objects as sync events come in.
-    if ((Array.isArray(data.customMoods) && data.customMoods.length) || (Array.isArray(data.imageGroups) && data.imageGroups.length)) {
-      const merged = new Set([...CUSTOM_MOODS, ...(data.customMoods || []), ...(data.imageGroups || [])]);
-      CUSTOM_MOODS = merged;
-      IMAGE_GROUPS = merged;
-      await idbPut(STORE_META, { key: 'customMoods', value: Array.from(merged) });
-      await idbPut(STORE_META, { key: 'imageGroups', value: Array.from(merged) });
-    }
-    if (data.imageTagMap && typeof data.imageTagMap === 'object') {
-      IMAGE_TAG_MAP = { ...data.imageTagMap, ...IMAGE_TAG_MAP };
-      await idbPut(STORE_META, { key: 'imageTagMap', value: IMAGE_TAG_MAP });
-    }
-    if (Array.isArray(data.hiddenGroupKeys) && data.hiddenGroupKeys.length) {
-      HIDDEN_GROUP_KEYS = new Set([...HIDDEN_GROUP_KEYS, ...data.hiddenGroupKeys]);
-      await idbPut(STORE_META, { key: 'hiddenGroupKeys', value: Array.from(HIDDEN_GROUP_KEYS) });
-    }
-    if (Array.isArray(data.deletedGroupKeys) && data.deletedGroupKeys.length) {
-      DELETED_GROUP_KEYS = new Set([...DELETED_GROUP_KEYS, ...data.deletedGroupKeys]);
-      await idbPut(STORE_META, { key: 'deletedGroupKeys', value: Array.from(DELETED_GROUP_KEYS) });
-    }
-    if (Array.isArray(data.ignoredImageDupGroups) && data.ignoredImageDupGroups.length) {
-      IGNORED_IMAGE_DUP_GROUPS = new Set([...IGNORED_IMAGE_DUP_GROUPS, ...data.ignoredImageDupGroups]);
-      await idbPut(STORE_META, { key: 'ignoredImageDupGroups', value: Array.from(IGNORED_IMAGE_DUP_GROUPS) });
-    }
-    if (Array.isArray(data.ignoredMemeDupGroups) && data.ignoredMemeDupGroups.length) {
-      IGNORED_MEME_DUP_GROUPS = new Set([...IGNORED_MEME_DUP_GROUPS, ...data.ignoredMemeDupGroups]);
-      await idbPut(STORE_META, { key: 'ignoredMemeDupGroups', value: Array.from(IGNORED_MEME_DUP_GROUPS) });
-    }
-    if (Array.isArray(data.ignoredHDupGroups) && data.ignoredHDupGroups.length) {
-      IGNORED_H_DUP_GROUPS = new Set([...IGNORED_H_DUP_GROUPS, ...data.ignoredHDupGroups]);
-      await idbPut(STORE_META, { key: 'ignoredHDupGroups', value: Array.from(IGNORED_H_DUP_GROUPS) });
-    }
-    if (Array.isArray(data.hImageKeys) && data.hImageKeys.length) {
-      H_IMAGE_KEYS = new Set([...H_IMAGE_KEYS, ...data.hImageKeys]);
-      await idbPut(STORE_META, { key: 'hImageKeys', value: Array.from(H_IMAGE_KEYS) });
-    }
-    if (Array.isArray(data.hGroups) && data.hGroups.length) {
-      H_GROUPS = new Set([...H_GROUPS, ...data.hGroups]);
-      await idbPut(STORE_META, { key: 'hGroups', value: Array.from(H_GROUPS) });
-    }
-    if (data.hTagMap && typeof data.hTagMap === 'object') {
-      H_TAG_MAP = { ...data.hTagMap, ...H_TAG_MAP };
-      await idbPut(STORE_META, { key: 'hTagMap', value: H_TAG_MAP });
-    }
-    if (Array.isArray(data.hHiddenGroupKeys) && data.hHiddenGroupKeys.length) {
-      H_HIDDEN_GROUP_KEYS = new Set([...H_HIDDEN_GROUP_KEYS, ...data.hHiddenGroupKeys]);
-      await idbPut(STORE_META, { key: 'hHiddenGroupKeys', value: Array.from(H_HIDDEN_GROUP_KEYS) });
-    }
-    if (Array.isArray(data.hDeletedGroupKeys) && data.hDeletedGroupKeys.length) {
-      H_DELETED_GROUP_KEYS = new Set([...H_DELETED_GROUP_KEYS, ...data.hDeletedGroupKeys]);
-      await idbPut(STORE_META, { key: 'hDeletedGroupKeys', value: Array.from(H_DELETED_GROUP_KEYS) });
-    }
-    if (data.hNoteMap && typeof data.hNoteMap === 'object') {
-      H_NOTE_MAP = { ...data.hNoteMap, ...H_NOTE_MAP };
-      await idbPut(STORE_META, { key: 'hNoteMap', value: H_NOTE_MAP });
-    }
-    // Only adopt a remote themeMode if this device doesn't already have one
-    // cached — same "never overwrite what's already decided" rule as the
-    // proxy URL above. Once set anywhere, it should read the same everywhere.
-    if (typeof data.themeMode === 'string' && data.themeMode && !THEME_MODE) {
-      THEME_MODE = data.themeMode;
-      await idbPut(STORE_META, { key: 'themeMode', value: THEME_MODE });
-    }
+    await applyMetaSnapshot(snap.data());
   } catch (err) {
     console.error('Meta pull failed:', err);
   }
+}
+
+// Live counterpart to pullMetaState() — without this, tag/mood cleanup done
+// on one device only ever reached another device at that OTHER device's next
+// full reload (meta state had no live listener at all, unlike entries/
+// reactions/H images which already got cross-device updates within
+// seconds). Subscribes to the same meta doc and re-applies every incoming
+// snapshot through applyMetaSnapshot(), so both devices converge quickly
+// while both apps are open.
+let META_UNSUB = null;
+function startMetaFirestoreListener(user) {
+  if (META_UNSUB) { META_UNSUB(); META_UNSUB = null; }
+  const ref = metaDocRef();
+  if (!ref) return;
+  let skippedFirst = false;
+  META_UNSUB = ref.onSnapshot(async (snap) => {
+    if (!skippedFirst) { skippedFirst = true; return; }
+    if (!snap.exists) return;
+    const changed = await applyMetaSnapshot(snap.data());
+    if (changed && ['reactions', 'meme', 'h', 'tags', 'tagEntries', 'home'].includes(STATE.view)) render();
+  }, (err) => console.error('Meta listener error:', err));
 }
 
 // Firestore caps each document at 1MiB. Manually-uploaded cover images are
@@ -3201,13 +3305,19 @@ function imageKey(dataUrl) {
 // the Images tab code already refers to it by this name throughout.
 let IMAGE_GROUPS = CUSTOM_MOODS;
 let IMAGE_TAG_MAP = {}; // { [imageKey]: string[] group names }
+// Whole-map "last write wins" timestamp — see the big comment on
+// applyMetaSnapshot() for why this exists (a device used to always keep its
+// OWN tag data on sync, even when another device's was newer).
+let IMAGE_TAG_MAP_UPDATED_AT = 0;
 function persistImageGroups() {
   idbPut(STORE_META, { key: 'imageGroups', value: Array.from(IMAGE_GROUPS) });
   pushMetaField('imageGroups', Array.from(IMAGE_GROUPS));
 }
 function persistImageTagMap() {
+  IMAGE_TAG_MAP_UPDATED_AT = Date.now();
   idbPut(STORE_META, { key: 'imageTagMap', value: IMAGE_TAG_MAP });
-  pushMetaField('imageTagMap', IMAGE_TAG_MAP);
+  idbPut(STORE_META, { key: 'imageTagMapUpdatedAt', value: IMAGE_TAG_MAP_UPDATED_AT });
+  pushMetaFields({ imageTagMap: IMAGE_TAG_MAP, imageTagMapUpdatedAt: IMAGE_TAG_MAP_UPDATED_AT });
 }
 // Shared by both galleries' add/rename/delete group functions below —
 // persists under both legacy meta keys (a device that's only ever synced
@@ -5333,6 +5443,7 @@ async function addHImageFiles(fileList) {
 // Images-tab groups.
 let H_GROUPS = new Set();
 let H_TAG_MAP = {}; // { [imageKey]: string[] group names }
+let H_TAG_MAP_UPDATED_AT = 0; // whole-map LWW timestamp, see applyMetaSnapshot()
 // Same hide/delete lifecycle as the shared Images/Reactions groups above,
 // but its own separate copy — H's groups were deliberately kept out of that
 // shared set, so hiding/deleting one here has no effect on the other two
@@ -5345,8 +5456,10 @@ function persistHGroups() {
   pushMetaField('hGroups', Array.from(H_GROUPS));
 }
 function persistHTagMap() {
+  H_TAG_MAP_UPDATED_AT = Date.now();
   idbPut(STORE_META, { key: 'hTagMap', value: H_TAG_MAP });
-  pushMetaField('hTagMap', H_TAG_MAP);
+  idbPut(STORE_META, { key: 'hTagMapUpdatedAt', value: H_TAG_MAP_UPDATED_AT });
+  pushMetaFields({ hTagMap: H_TAG_MAP, hTagMapUpdatedAt: H_TAG_MAP_UPDATED_AT });
 }
 function isHiddenHGroup(name) {
   return H_HIDDEN_GROUP_KEYS.has(name) || H_DELETED_GROUP_KEYS.has(name);
@@ -5431,9 +5544,12 @@ function toggleHTag(dataUrl, tag) {
 // a live reference to an entry's photo, and only the map approach works for
 // both uniformly (mirrors H_TAG_MAP for the same reason).
 let H_NOTE_MAP = {};
+let H_NOTE_MAP_UPDATED_AT = 0; // whole-map LWW timestamp, see applyMetaSnapshot()
 function persistHNoteMap() {
+  H_NOTE_MAP_UPDATED_AT = Date.now();
   idbPut(STORE_META, { key: 'hNoteMap', value: H_NOTE_MAP });
-  pushMetaField('hNoteMap', H_NOTE_MAP);
+  idbPut(STORE_META, { key: 'hNoteMapUpdatedAt', value: H_NOTE_MAP_UPDATED_AT });
+  pushMetaFields({ hNoteMap: H_NOTE_MAP, hNoteMapUpdatedAt: H_NOTE_MAP_UPDATED_AT });
 }
 function getHNote(dataUrl) {
   return H_NOTE_MAP[imageKey(dataUrl)] || '';
@@ -9005,6 +9121,8 @@ async function boot() {
     }
     const savedImageTagMap = await idbGet(STORE_META, 'imageTagMap');
     if (savedImageTagMap && savedImageTagMap.value && typeof savedImageTagMap.value === 'object') IMAGE_TAG_MAP = savedImageTagMap.value;
+    const savedImageTagMapTs = await idbGet(STORE_META, 'imageTagMapUpdatedAt');
+    if (savedImageTagMapTs && typeof savedImageTagMapTs.value === 'number') IMAGE_TAG_MAP_UPDATED_AT = savedImageTagMapTs.value;
     const savedHiddenGroups = await idbGet(STORE_META, 'hiddenGroupKeys');
     if (savedHiddenGroups && Array.isArray(savedHiddenGroups.value)) HIDDEN_GROUP_KEYS = new Set(savedHiddenGroups.value);
     const savedDeletedGroups = await idbGet(STORE_META, 'deletedGroupKeys');
@@ -9021,12 +9139,16 @@ async function boot() {
     if (savedHGroups && Array.isArray(savedHGroups.value)) H_GROUPS = new Set(savedHGroups.value);
     const savedHTagMap = await idbGet(STORE_META, 'hTagMap');
     if (savedHTagMap && savedHTagMap.value && typeof savedHTagMap.value === 'object') H_TAG_MAP = savedHTagMap.value;
+    const savedHTagMapTs = await idbGet(STORE_META, 'hTagMapUpdatedAt');
+    if (savedHTagMapTs && typeof savedHTagMapTs.value === 'number') H_TAG_MAP_UPDATED_AT = savedHTagMapTs.value;
     const savedHHiddenGroups = await idbGet(STORE_META, 'hHiddenGroupKeys');
     if (savedHHiddenGroups && Array.isArray(savedHHiddenGroups.value)) H_HIDDEN_GROUP_KEYS = new Set(savedHHiddenGroups.value);
     const savedHDeletedGroups = await idbGet(STORE_META, 'hDeletedGroupKeys');
     if (savedHDeletedGroups && Array.isArray(savedHDeletedGroups.value)) H_DELETED_GROUP_KEYS = new Set(savedHDeletedGroups.value);
     const savedHNoteMap = await idbGet(STORE_META, 'hNoteMap');
     if (savedHNoteMap && savedHNoteMap.value && typeof savedHNoteMap.value === 'object') H_NOTE_MAP = savedHNoteMap.value;
+    const savedHNoteMapTs = await idbGet(STORE_META, 'hNoteMapUpdatedAt');
+    if (savedHNoteMapTs && typeof savedHNoteMapTs.value === 'number') H_NOTE_MAP_UPDATED_AT = savedHNoteMapTs.value;
     const savedThemeMode = await idbGet(STORE_META, 'themeMode');
     if (savedThemeMode && typeof savedThemeMode.value === 'string') THEME_MODE = savedThemeMode.value;
     if ('serviceWorker' in navigator) {
@@ -9063,6 +9185,7 @@ async function boot() {
           startFirestoreListener(user);
           startReactionsFirestoreListener(user);
           startHImagesFirestoreListener(user);
+          startMetaFirestoreListener(user);
         } catch (err) {
           console.error('Firestore sync failed:', err);
           showToast("Couldn't sync — check your connection");
