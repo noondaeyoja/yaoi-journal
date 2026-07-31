@@ -343,11 +343,27 @@ async function ensureSeeded() {
   await idbPut(STORE_META, { key: 'seeded', value: true });
 }
 
+// Every entry is supposed to have a semi/uke object (see addEntry()'s
+// default shape), but at least one entry has been found on this account
+// with both missing entirely — likely stray test data from early on, before
+// that default was consistently applied. The Database table, CSV export,
+// and Possible-Duplicates diff view all read e.semi.flag/e.uke.flag
+// directly (no guard, since every OTHER call site already checks
+// `e.semi &&` first), so a single entry like that threw and broke those
+// screens for the WHOLE account, not just that one entry. Called wherever
+// entries enter memory so nothing downstream has to guard against this again.
+function normalizeEntry(e) {
+  if (!e.semi) e.semi = { flag: null, notes: '', photo: null };
+  if (!e.uke) e.uke = { flag: null, notes: '', photo: null };
+  return e;
+}
+
 async function loadAllEntries() {
-  ALL_ENTRIES = await idbGetAll(STORE_ENTRIES);
+  ALL_ENTRIES = (await idbGetAll(STORE_ENTRIES)).map(normalizeEntry);
 }
 
 async function saveEntry(entry) {
+  normalizeEntry(entry);
   entry.updatedAt = new Date().toISOString();
   await idbPut(STORE_ENTRIES, entry);
   const idx = ALL_ENTRIES.findIndex((e) => e.id === entry.id);
@@ -1250,7 +1266,7 @@ async function syncWithFirestore(user) {
     return;
   }
 
-  const remoteEntries = snap.docs.map((d) => d.data());
+  const remoteEntries = snap.docs.map((d) => normalizeEntry(d.data()));
   const localById = new Map(ALL_ENTRIES.map((e) => [e.id, e]));
   const merged = [];
   const toLocal = [];
@@ -1311,7 +1327,7 @@ function startFirestoreListener(user) {
     if (!skippedFirst) { skippedFirst = true; return; }
     let changed = false;
     snap.docChanges().forEach((change) => {
-      const data = change.doc.data();
+      const data = normalizeEntry(change.doc.data());
       if (change.type === 'removed') {
         if (ALL_ENTRIES.some((e) => e.id === data.id)) {
           ALL_ENTRIES = ALL_ENTRIES.filter((e) => e.id !== data.id);
@@ -6406,7 +6422,7 @@ function renderDatabase() {
       <td>${escapeHtml(e.shelf)}</td>
       <td>${escapeHtml(formatNames(e.author))}</td>
       <td>${escapeHtml((e.tags || []).concat(e.customTags || []).filter((t) => !isHiddenTag(t)).join(', '))}</td>
-      ${isSFW() ? '' : `<td>${e.semi.flag || ''}</td><td>${e.uke.flag || ''}</td>`}
+      ${isSFW() ? '' : `<td>${(e.semi && e.semi.flag) || ''}</td><td>${(e.uke && e.uke.flag) || ''}</td>`}
       <td>${e.smutRating || 0}</td>
       <td>${e.qualityRating || 0}</td>
       <td>${e.favorite ? 'Yes' : ''}</td>
@@ -6731,8 +6747,8 @@ function duplicateFieldDiffs(group) {
     // point surfacing them in a duplicate comparison for an account that
     // can never see or set them.
     ...(isSFW() ? [] : [
-      { label: 'Semi flag', get: (e) => e.semi.flag || '—' },
-      { label: 'Uke flag', get: (e) => e.uke.flag || '—' },
+      { label: 'Semi flag', get: (e) => (e.semi && e.semi.flag) || '—' },
+      { label: 'Uke flag', get: (e) => (e.uke && e.uke.flag) || '—' },
     ]),
     { label: 'Cover image', get: (e) => (e.coverUrl ? 'Yes' : 'No') },
     { label: 'Reference link', get: (e) => (e.referenceStatus === 'confirmed' ? (e.referenceSite || 'Linked') : 'Not linked') },
@@ -6814,7 +6830,7 @@ function exportCsv() {
     lines.push([
       e.title, e.altTitle, e.format, e.shelf, e.author, e.artist, e.isNovel, e.status,
       (e.tags || []).concat(e.customTags || []).join('; '),
-      e.semi.flag, e.semi.notes, e.uke.flag, e.uke.notes,
+      e.semi && e.semi.flag, e.semi && e.semi.notes, e.uke && e.uke.flag, e.uke && e.uke.notes,
       e.smutRating, e.qualityRating, e.favorite, e.notes, e.referenceUrl, e.pdfLink
     ].map(esc).join(','));
   });
