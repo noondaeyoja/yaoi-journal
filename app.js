@@ -2618,6 +2618,22 @@ function homeSectionHtml(rowId, title, count, innerHtml) {
     </div>`;
 }
 
+// Permanent homepage section, sitting right below Suggested Matches and
+// above the shelf rows — the 20 reads with the most recent updatedAt
+// (any save bumps it: edits, new ratings, tags, attached photos, a fresh
+// suggested match, etc.), so whatever she was just working on is one tap
+// away instead of buried in the full shelf grid. Same collapsible-section
+// treatment as every other homepage row.
+const RECENTS_COUNT = 20;
+function recentsSectionHtml(entries) {
+  const recents = entries
+    .slice()
+    .sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0))
+    .slice(0, RECENTS_COUNT);
+  if (!recents.length) return '';
+  return homeSectionHtml('row-recents', '🕒 Recents', recents.length, recents.map((e) => renderCoverCard(e)).join(''));
+}
+
 function renderHome() {
   const entries = filteredEntries();
   const tags = topTags(ALL_ENTRIES.filter((e) => !STATE.format || e.format === STATE.format));
@@ -2631,6 +2647,7 @@ function renderHome() {
     if (suggestedGroup.length > 0) {
       body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)).join(''));
     }
+    body += recentsSectionHtml(entries);
     // grouped by shelf, each group scrolls horizontally so hundreds of entries
     // don't turn into an endless vertical scroll.
     // Watching entries used to be locked to always showing under 'Completed'
@@ -8367,6 +8384,7 @@ function renderHomeInPlace() {
     if (suggestedGroup.length > 0) {
       body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)).join(''));
     }
+    body += recentsSectionHtml(entries);
     const shelvesToShow = STATE.format === 'watching' ? ['Completed'] : SHELVES_READING;
     shelvesToShow.forEach((shelf) => {
       const group = entries.filter((e) => e.shelf === shelf);
