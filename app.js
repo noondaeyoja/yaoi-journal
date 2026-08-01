@@ -7161,14 +7161,22 @@ async function fetchReferencePreview(entryId) {
   const urlInput = document.getElementById('crossref-url');
   const url = urlInput.value.trim();
   if (!url) { showToast('Paste a URL first'); return; }
+  // MyAnimeList links are fetched directly from the browser (Jikan blocks
+  // the Apps Script proxy's IP) — everything else still goes through the
+  // proxy, which handles MangaDex links server-side.
+  const isMalUrl = /^https:\/\/myanimelist\.net\/anime\//i.test(url);
   const proxy = getProxyUrl();
-  if (!proxy) { showToast('Set your proxy URL in Settings first'); return; }
+  if (!isMalUrl && !proxy) { showToast('Set your proxy URL in Settings first'); return; }
   const previewEl = document.getElementById('crossref-preview');
   previewEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-dim);">Fetching…</div>';
   try {
-    const resp = await fetch(proxy + '?action=fetchReference&url=' + encodeURIComponent(url));
-    const data = await resp.json();
-    if (data.error) throw new Error(data.error);
+    const data = isMalUrl ? await fetchJikanByUrl(url) : await (async () => {
+      const resp = await fetch(proxy + '?action=fetchReference&url=' + encodeURIComponent(url));
+      const json = await resp.json();
+      if (json.error) throw new Error(json.error);
+      return json;
+    })();
+    if (!data) throw new Error('Could not find that MyAnimeList entry');
     previewEl.innerHTML = `
       <div class="match-preview">
         <img src="${escapeHtml(data.coverUrl || '')}" referrerpolicy="no-referrer" onerror="this.style.display='none'">
@@ -7192,9 +7200,9 @@ async function fetchReferencePreview(entryId) {
   }
 }
 
-// Shared by the manual "Generate Suggested Match" button and the automatic
-// background sweep. `kind` tells Anime-Planet whether to search its manga
-// or anime catalog — MangaGo only has manga, so it's skipped for anime kind.
+// Manga/manhwa matches go through the Apps Script proxy, which searches
+// MangaDex server-side. `site` is passed through but no longer changes proxy
+// behavior (MangaDex is the only manga source) — kept for forward compat.
 async function trySearchSite(proxy, title, site, kind) {
   try {
     const resp = await fetch(proxy + '?action=searchMatch&site=' + site + '&kind=' + kind + '&title=' + encodeURIComponent(title));
@@ -7206,11 +7214,60 @@ async function trySearchSite(proxy, title, site, kind) {
   }
 }
 
+// MyAnimeList's Jikan API blocks requests from Apps Script's server IPs
+// (reliable HTTP 504 there), but works fine called directly from a real
+// browser, so anime searches go straight from the app instead of through
+// the proxy. Shapes the response identically to what the proxy would have
+// returned, so dataToSuggestedMatch() doesn't need to know the difference.
+function jikanItemToMatchData(item) {
+  const tags = []
+    .concat((item.genres || []).map(g => g.name))
+    .concat((item.themes || []).map(g => g.name))
+    .concat((item.demographics || []).map(g => g.name))
+    .filter(Boolean);
+  return {
+    site: 'MyAnimeList',
+    sourceUrl: item.url || '',
+    title: item.title || '',
+    altTitle: item.title_english || '',
+    coverUrl: (item.images && item.images.jpg && item.images.jpg.large_image_url) || '',
+    summary: item.synopsis || '',
+    tags: tags,
+    author: '',
+    artist: (item.studios || []).map(s => s.name).join(', '),
+    confidence: 'auto',
+  };
+}
+
+async function searchJikanDirect(title) {
+  try {
+    const resp = await fetch('https://api.jikan.moe/v4/anime?q=' + encodeURIComponent(title) + '&limit=1');
+    const json = await resp.json();
+    const item = json.data && json.data[0];
+    if (!item) return null;
+    return jikanItemToMatchData(item);
+  } catch (err) {
+    return null;
+  }
+}
+
+async function fetchJikanByUrl(url) {
+  const m = url.match(/^https:\/\/myanimelist\.net\/anime\/(\d+)/i);
+  if (!m) return null;
+  try {
+    const resp = await fetch('https://api.jikan.moe/v4/anime/' + m[1]);
+    const json = await resp.json();
+    if (!json.data) return null;
+    return jikanItemToMatchData(json.data);
+  } catch (err) {
+    return null;
+  }
+}
+
 async function findSuggestedMatchData(proxy, entry) {
   const kind = entry.format === 'watching' ? 'anime' : 'manga';
-  let data = await trySearchSite(proxy, entry.title, 'anime-planet', kind);
-  if (!data && kind === 'manga') data = await trySearchSite(proxy, entry.title, 'mangago', kind);
-  return data;
+  if (kind === 'anime') return await searchJikanDirect(entry.title);
+  return await trySearchSite(proxy, entry.title, 'mangadex', kind);
 }
 
 function dataToSuggestedMatch(data) {
@@ -7228,14 +7285,14 @@ function dataToSuggestedMatch(data) {
   };
 }
 
-// Tries to find this entry on Anime-Planet first, then falls back to
-// MangaGo (manga only), so the user doesn't have to hunt down and paste a
-// URL manually.
+// Looks this entry up on MangaDex (manga/manhwa) or MyAnimeList (anime), so
+// the user doesn't have to hunt down and paste a URL manually.
 async function generateSuggestedMatch(entryId) {
   const e = getEntry(entryId);
+  const isAnime = e.format === 'watching';
   const proxy = getProxyUrl();
-  if (!proxy) { showToast('Set your proxy URL in Settings first'); return; }
-  showToast(e.format === 'watching' ? 'Searching Anime-Planet…' : 'Searching Anime-Planet & MangaGo…');
+  if (!isAnime && !proxy) { showToast('Set your proxy URL in Settings first'); return; }
+  showToast(isAnime ? 'Searching MyAnimeList…' : 'Searching MangaDex…');
   const data = await findSuggestedMatchData(proxy, e);
   if (!data) { showToast('No match found'); return; }
   e.suggestedMatch = dataToSuggestedMatch(data);
@@ -7252,7 +7309,7 @@ async function confirmReference(entryId) {
   const e = getEntry(entryId);
   if (data.coverUrl && !e.coverIsUserUploaded) e.coverUrl = data.coverUrl;
   e.referenceUrl = url;
-  e.referenceSite = url.includes('mangago') ? 'MangaGo' : 'Anime-Planet';
+  e.referenceSite = data.site || (url.includes('myanimelist') ? 'MyAnimeList' : 'MangaDex');
   e.referenceStatus = 'confirmed';
   e.summaryCache = data.summary || '';
   e.summaryCachedAt = new Date().toISOString();
@@ -8750,8 +8807,11 @@ const AUTO_MATCH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 async function autoMatchSweepIfDue() {
   try {
+    // Anime entries are matched via MyAnimeList directly (no proxy needed);
+    // manga/manhwa entries need the proxy for MangaDex. So this still runs
+    // with no proxy configured — manga candidates will just come back
+    // unmatched via findSuggestedMatchData() until one is set.
     const proxy = getProxyUrl();
-    if (!proxy) return; // nothing to do until a proxy URL is configured
 
     const meta = await idbGet(STORE_META, 'lastAutoMatchRun');
     const lastRun = meta && meta.value ? new Date(meta.value).getTime() : 0;
@@ -8798,9 +8858,15 @@ function bulkSweepCandidates() {
 }
 async function runBulkMatchSweep() {
   if (BULK_SWEEP.running) return;
+  // Anime entries match via MyAnimeList directly and don't need a proxy;
+  // manga/manhwa entries do (MangaDex is proxied). Only block the whole
+  // sweep if there isn't even anything anime to fall back on.
   const proxy = getProxyUrl();
-  if (!proxy) { showToast('Set a proxy URL in Settings first'); return; }
   const candidates = bulkSweepCandidates();
+  if (!proxy && !candidates.some((e) => e.format === 'watching')) {
+    showToast('Set a proxy URL in Settings first');
+    return;
+  }
   if (!candidates.length) { showToast('Nothing left to check — everything unmatched has already been searched.'); return; }
   BULK_SWEEP.running = true;
   BULK_SWEEP.checked = 0;
