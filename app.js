@@ -18,6 +18,25 @@ const SHELVES_READING = ['Currently Reading', 'Completed', 'Plan to Read', 'Disc
 const FLAG_COLORS = ['green', 'red', 'black'];
 const FLAG_HEX = { green: '#4ade80', red: '#f87171', black: '#6b6b7a' };
 
+// "Format" here is the media type (Manhwa/Manhua/Manga/Novel/Doujinshi/TV
+// Show/Movie) — a separate concept from the existing e.format field, which
+// is the broader Reading vs. Watching split used for shelves/match-search
+// routing. Stored on e.mediaFormat; shown as a dropdown in the Details
+// container and as a filter row on the homepage.
+const MEDIA_FORMATS = [
+  { value: 'manhwa', label: 'Manhwa' },
+  { value: 'manhua', label: 'Manhua' },
+  { value: 'manga', label: 'Manga' },
+  { value: 'novel', label: 'Novel' },
+  { value: 'doujinshi', label: 'Doujinshi' },
+  { value: 'tv-show', label: 'TV Show' },
+  { value: 'movie', label: 'Movie' },
+];
+function mediaFormatLabel(v) {
+  const found = MEDIA_FORMATS.find((f) => f.value === v);
+  return found ? found.label : '';
+}
+
 /* ---------------------------------------------------------------------- */
 /* SFW / NSFW account theme                                               */
 /* A one-time, per-account choice made at sign-up (or, for accounts that   */
@@ -144,7 +163,10 @@ let MEME_SEARCH_INPUT_SHOULD_FOCUS = false; // stays false on a fresh nav into R
 let STATE = {
   view: 'home',            // 'home' | 'detail' | 'tags' | 'database' | 'review' | 'duplicates'
   entryId: null,
-  format: 'reading',        // 'reading' | 'watching'
+  format: null,             // 'reading' | 'watching' | null — legacy book/tv split, no longer
+                            // driven by any homepage UI (replaced by mediaFormatFilter below);
+                            // left in place since e.format itself still matters per-entry.
+  mediaFormatFilter: null,  // null or one of MEDIA_FORMATS' values — homepage Format filter row
   showFavoritesOnly: false,
   showOnDriveOnly: false,   // "On Yaoi Drive" homepage tab — entries tagged as saved on the drive
   showHentaiOnly: false,    // "Hentai" filter — entries tagged as hentai
@@ -182,6 +204,7 @@ function resetHomeFiltersClean() {
   STATE.linkFilter = false;
   STATE.noLinkFilter = false;
   STATE.storyStatusFilter = null;
+  STATE.mediaFormatFilter = null;
   FILTERS_COLLAPSED = false;
 }
 
@@ -2417,6 +2440,7 @@ function filteredEntries() {
     }
     if (STATE.shelf !== 'ALL' && e.shelf !== STATE.shelf) return false;
     if (STATE.storyStatusFilter && e.status !== STATE.storyStatusFilter) return false;
+    if (STATE.mediaFormatFilter && e.mediaFormat !== STATE.mediaFormatFilter) return false;
     if (STATE.tagFilters.length) {
       const allTags = [...(e.tags || []), ...(e.customTags || [])];
       if (!STATE.tagFilters.some((t) => allTags.includes(t))) return false;
@@ -2681,10 +2705,13 @@ function renderHome() {
   // from Reading Status (her shelf: Currently Reading/Completed/etc, which is
   // about her progress through it, not whether the author's finished it).
   const storyStatusChips = ['ALL', 'WIP', 'Finished'].map((s) => `<div class="chip ${(STATE.storyStatusFilter || 'ALL') === s ? 'active' : ''}" data-story-status-filter="${escapeHtml(s)}">${s === 'ALL' ? 'All' : escapeHtml(s)}</div>`).join('');
-  const formatIcons = `
-    <span class="rating-pick-icon format-icon-pick ${STATE.format === 'reading' ? 'active' : ''}" data-format="reading" title="Reading (Manhwa/Manga)">📖</span>
-    <span class="rating-pick-icon format-icon-pick ${STATE.format === 'watching' ? 'active' : ''}" data-format="watching" title="Watching (Anime)">📺</span>
-  `;
+  // Format filter row — replaces the old book/tv icon toggle (STATE.format)
+  // with a proper chip row covering every media type, same style as Reading
+  // Status/Story Status above it.
+  const mediaFormatChips = ['ALL', ...MEDIA_FORMATS.map((f) => f.value)].map((v) => {
+    const label = v === 'ALL' ? 'All' : mediaFormatLabel(v);
+    return `<div class="chip ${(STATE.mediaFormatFilter || 'ALL') === v ? 'active' : ''}" data-media-format-filter="${escapeHtml(v)}">${escapeHtml(label)}</div>`;
+  }).join('');
 
   const tagMsPanel = tags.map((t) => `
     <label class="tag-ms-item"><input type="checkbox" data-tag-ms-item="${escapeHtml(t)}" ${STATE.tagFilters.includes(t) ? 'checked' : ''}><span>${escapeHtml(t)}</span></label>
@@ -2730,10 +2757,12 @@ function renderHome() {
         <div class="shelf-row">${shelfChips}</div>
         <div class="filter-section-label">Story Status</div>
         <div class="shelf-row">${storyStatusChips}</div>
+        <div class="filter-section-label">Format</div>
+        <div class="shelf-row">${mediaFormatChips}</div>
         <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
         <div class="filter-section-label">Ratings &amp; Flags</div>
-        <div class="rating-pick-row">${formatIcons}${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${lolChips}<span class="rating-pick-divider"></span>${cryChips}${flagChips ? `<span class="rating-pick-divider"></span>${flagChips}` : ''}</div>
+        <div class="rating-pick-row">${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${lolChips}<span class="rating-pick-divider"></span>${cryChips}${flagChips ? `<span class="rating-pick-divider"></span>${flagChips}` : ''}</div>
       </div>
     </div>
     <main>${body}</main>
@@ -6271,6 +6300,15 @@ function renderDetail(e) {
       ${SHELVES_READING.map((s) => `<option value="${escapeHtml(s)}" ${e.shelf === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
     </select>`;
 
+  // Media type dropdown (Manhwa/Manhua/Manga/Novel/Doujinshi/TV Show/Movie) —
+  // separate from e.format's Reading/Watching split. Live-editable like
+  // shelfSelect/status-select above, no pencil-edit-mode needed.
+  const mediaFormatSelect = `
+    <select class="shelf-select status-pill-select" data-mediaformat-select="1">
+      <option value="" ${!e.mediaFormat ? 'selected' : ''}>—</option>
+      ${MEDIA_FORMATS.map((f) => `<option value="${f.value}" ${e.mediaFormat === f.value ? 'selected' : ''}>${f.label}</option>`).join('')}
+    </select>`;
+
   // Display vs. edit mode for the top fields (Title, Alt Title, Novel, Author,
   // Artist, Chapters/Seasons, Status) — toggled by the pencil icon.
   let topFieldsHtml;
@@ -6321,6 +6359,7 @@ function renderDetail(e) {
         <div class="field-row"><label>Author</label><div class="value plain">${escapeHtml(formatNames(e.author)) || '—'}</div></div>
         <div class="field-row"><label>Artist</label><div class="value plain">${escapeHtml(formatNames(e.artist)) || '—'}</div></div>
       </div>
+      <div class="field-row" style="margin-bottom:0;"><label class="status-pill-label">Format</label>${mediaFormatSelect}</div>
       <div class="details-divider"></div>
       <div class="field-row-2col wide-gap">
         <div>
@@ -6342,6 +6381,7 @@ function renderDetail(e) {
         <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)}</div></div>
         <div class="field-row"><label>Alt title</label><div class="value plain">${escapeHtml(e.altTitle) || '—'}</div></div>
       </div>
+      <div class="field-row" style="margin-bottom:0;"><label class="status-pill-label">Format</label>${mediaFormatSelect}</div>
       <div class="details-divider"></div>
       <div class="field-row-2col wide-gap">
         <div>
@@ -6956,12 +6996,12 @@ function renderDuplicates() {
 
 function exportCsv() {
   const rows = ALL_ENTRIES.slice().sort((a, b) => a.title.localeCompare(b.title));
-  const cols = ['title', 'altTitle', 'format', 'shelf', 'author', 'artist', 'isNovel', 'status', 'tags', 'semiFlag', 'semiNotes', 'ukeFlag', 'ukeNotes', 'smutRating', 'qualityRating', 'favorite', 'notes', 'referenceUrl', 'pdfLink'];
+  const cols = ['title', 'altTitle', 'format', 'mediaFormat', 'shelf', 'author', 'artist', 'isNovel', 'status', 'tags', 'semiFlag', 'semiNotes', 'ukeFlag', 'ukeNotes', 'smutRating', 'qualityRating', 'favorite', 'notes', 'referenceUrl', 'pdfLink'];
   const esc = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
   const lines = [cols.join(',')];
   rows.forEach((e) => {
     lines.push([
-      e.title, e.altTitle, e.format, e.shelf, e.author, e.artist, e.isNovel, e.status,
+      e.title, e.altTitle, e.format, e.mediaFormat, e.shelf, e.author, e.artist, e.isNovel, e.status,
       (e.tags || []).concat(e.customTags || []).join('; '),
       e.semi && e.semi.flag, e.semi && e.semi.notes, e.uke && e.uke.flag, e.uke && e.uke.notes,
       e.smutRating, e.qualityRating, e.favorite, e.notes, e.referenceUrl, e.pdfLink
@@ -7239,11 +7279,26 @@ function jikanItemToMatchData(item) {
   };
 }
 
+// MyAnimeList genre id 28 = "Boys Love" (confirmed against Jikan's own
+// /v4/genres/anime list). Every anime suggested match must actually carry
+// this genre — per her explicit ask, a title match alone isn't enough,
+// since a same/similar-named non-BL show would otherwise slip through.
+const MAL_BOYS_LOVE_GENRE_ID = 28;
+function isBoysLoveAnime(item) {
+  return (item.genres || []).some((g) => g.mal_id === MAL_BOYS_LOVE_GENRE_ID || /boys love/i.test(g.name || ''));
+}
+
 async function searchJikanDirect(title) {
   try {
-    const resp = await fetch('https://api.jikan.moe/v4/anime?q=' + encodeURIComponent(title) + '&limit=1');
+    // genres=28 asks Jikan itself to only return Boys Love results, so the
+    // "top match" we take is the best BL match for this title — not just
+    // the overall best match, which could be an unrelated non-BL show with
+    // a similar/shared name. limit=5 plus the isBoysLoveAnime() re-check
+    // below is a belt-and-suspenders double-check on top of that filter.
+    const resp = await fetch('https://api.jikan.moe/v4/anime?q=' + encodeURIComponent(title) + '&genres=' + MAL_BOYS_LOVE_GENRE_ID + '&limit=5');
     const json = await resp.json();
-    const item = json.data && json.data[0];
+    const candidates = json.data || [];
+    const item = candidates.find(isBoysLoveAnime);
     if (!item) return null;
     return jikanItemToMatchData(item);
   } catch (err) {
@@ -7364,7 +7419,8 @@ async function submitAdd() {
   const author = document.getElementById('add-author').value.trim();
   const entry = {
     id: uid(ADD_FORMAT_PICK === 'reading' ? 'manhwa' : 'anime'),
-    format: ADD_FORMAT_PICK, title, altTitle: '', novelAuthor: '', author, artist: '', isNovel: false,
+    format: ADD_FORMAT_PICK, mediaFormat: ADD_FORMAT_PICK === 'reading' ? 'manhwa' : 'tv-show',
+    title, altTitle: '', novelAuthor: '', author, artist: '', isNovel: false,
     totalSeasons: null, totalChapters: null, epilogue: '', officialLink: '', released: null,
     status: '', currentlyReadingRaw: '', downloaded: '', currentChapter: '',
     shelf: ADD_FORMAT_PICK === 'reading' ? 'Plan to Read' : 'Completed',
@@ -7475,11 +7531,12 @@ function attachRootHandlers() {
     // closes automatically instead of staying up until manually dismissed.
     searchInput.onkeydown = (ev) => { if (ev.key === 'Enter') searchInput.blur(); };
   }
-  root.querySelectorAll('[data-format]').forEach((el) => {
-    // Clicking the already-active icon turns it off (STATE.format = null,
-    // meaning no format filter — Reading + Watching both show, mixed
-    // together). Clicking the other icon switches to it as before.
-    el.onclick = () => { const val = el.getAttribute('data-format'); STATE.format = STATE.format === val ? null : val; STATE.shelf = 'ALL'; STATE.tagFilters = []; STATE.smutFilter = null; STATE.qualityFilter = null; STATE.lolFilter = null; STATE.cryFilter = null; STATE.flagFilter = null; STATE.linkFilter = false; STATE.noLinkFilter = false; STATE.storyStatusFilter = null; render(); };
+  root.querySelectorAll('[data-media-format-filter]').forEach((el) => {
+    el.onclick = () => {
+      const val = el.getAttribute('data-media-format-filter');
+      STATE.mediaFormatFilter = val === 'ALL' ? null : val;
+      render();
+    };
   });
   root.querySelectorAll('[data-shelf]').forEach((el) => {
     el.onclick = () => { STATE.shelf = el.getAttribute('data-shelf'); render(); };
@@ -7701,6 +7758,14 @@ function attachRootHandlers() {
     e.status = statusSelectEl.value;
     await saveEntry(e);
     showToast('Status updated');
+    render();
+  };
+  const mediaFormatSelectEl = root.querySelector('[data-mediaformat-select]');
+  if (mediaFormatSelectEl) mediaFormatSelectEl.onchange = async () => {
+    const e = getEntry(STATE.entryId);
+    e.mediaFormat = mediaFormatSelectEl.value || null;
+    await saveEntry(e);
+    showToast('Format updated');
     render();
   };
   root.querySelectorAll('[data-rating]').forEach((container) => {
