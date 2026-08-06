@@ -51,6 +51,7 @@ function mediaFormatLabel(v) {
 /* ---------------------------------------------------------------------- */
 const ADMIN_EMAIL = 'noondaeyoja@gmail.com';
 let THEME_MODE = null;           // 'sfw' | 'nsfw' | null (not chosen yet)
+let BG_MODE = 'cyan'; // 'cyan' | 'pink' — homepage/app page-background choice, same sync pattern as THEME_MODE
 let THEME_PICKER_BLOCKING = false; // true only while the auto-forced new-user picker is open
 let THEME_PICKER_AUTO_SHOWN = false; // guards against re-popping the auto picker more than once per session
 function isSFW() { return THEME_MODE === 'sfw'; }
@@ -181,6 +182,7 @@ let STATE = {
   noLinkFilter: false,      // true = only show entries WITHOUT a reading link attached
   storyStatusFilter: null,  // null or 'WIP'|'Finished' — the story's own completion state
   showArtworkOnly: false,   // "Artwork" filter — entries tagged as artwork
+  wtfFilter: null,          // null or 1-5, meaning "at least N WTFs"
   search: '',
 };
 
@@ -200,6 +202,7 @@ function resetHomeFiltersClean() {
   STATE.qualityFilter = null;
   STATE.lolFilter = null;
   STATE.cryFilter = null;
+  STATE.wtfFilter = null;
   STATE.flagFilter = null;
   STATE.linkFilter = false;
   STATE.noLinkFilter = false;
@@ -591,6 +594,12 @@ async function saveThemeMode(mode) {
   pushMetaField('themeMode', mode);
 }
 
+async function saveBgMode(mode) {
+  BG_MODE = mode;
+  await idbPut(STORE_META, { key: 'bgMode', value: mode });
+  pushMetaField('bgMode', mode);
+}
+
 // Applies one Firestore meta-doc snapshot to local state. Shared by the
 // once-at-boot pull (pullMetaState()) and the live listener
 // (startMetaFirestoreListener()) so both go through the exact same merge
@@ -769,6 +778,11 @@ async function applyMetaSnapshot(data) {
     THEME_MODE = data.themeMode;
     changed = true;
     await idbPut(STORE_META, { key: 'themeMode', value: THEME_MODE });
+  }
+  if (typeof data.bgMode === 'string' && data.bgMode && data.bgMode !== BG_MODE) {
+    BG_MODE = data.bgMode;
+    changed = true;
+    await idbPut(STORE_META, { key: 'bgMode', value: BG_MODE });
   }
   return changed;
 }
@@ -2388,6 +2402,7 @@ function renderGlobalHeader() {
 }
 
 function render() {
+document.body.dataset.bg = BG_MODE;
   const root = document.getElementById('view-root');
   if (!CURRENT_USER) {
     root.innerHTML = renderAuthScreen();
@@ -2449,6 +2464,7 @@ function filteredEntries() {
     if (STATE.qualityFilter && (e.qualityRating || 0) < STATE.qualityFilter) return false;
     if (STATE.lolFilter && (e.lolRating || 0) < STATE.lolFilter) return false;
     if (STATE.cryFilter && (e.cryRating || 0) < STATE.cryFilter) return false;
+    if (STATE.wtfFilter && (e.wtfRating || 0) < STATE.wtfFilter) return false;
     if (STATE.flagFilter) {
       const hasFlag = (e.semi && e.semi.flag === STATE.flagFilter) || (e.uke && e.uke.flag === STATE.flagFilter);
       if (!hasFlag) return false;
@@ -2729,6 +2745,7 @@ function renderHome() {
   const qualityChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.qualityFilter && n <= STATE.qualityFilter ? 'active' : ''}" data-quality-filter="${n}" title="${n}+ hearts">❤️</span>`).join('');
   const lolChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.lolFilter && n <= STATE.lolFilter ? 'active' : ''}" data-lol-filter="${n}" title="${n}+ laughs">😂</span>`).join('');
   const cryChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.cryFilter && n <= STATE.cryFilter ? 'active' : ''}" data-cry-filter="${n}" title="${n}+ cries">😭</span>`).join('');
+  const wtfChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.wtfFilter && n <= STATE.wtfFilter ? 'active' : ''}" data-wtf-filter="${n}" title="${n}+ WTFs">🤯</span>`).join('');
   // Semi/Uke green/red/black flags are hidden entirely for SFW accounts —
   // her explicit call: this is a general relationship-dynamic marker, not
   // just a hentai-adjacent thing, but it's still part of the SFW cut.
@@ -2762,7 +2779,7 @@ function renderHome() {
         <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
         <div class="filter-section-label">Ratings &amp; Flags</div>
-        <div class="rating-pick-row">${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${lolChips}<span class="rating-pick-divider"></span>${cryChips}${flagChips ? `<span class="rating-pick-divider"></span>${flagChips}` : ''}</div>
+        <div class="rating-pick-row">${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${lolChips}<span class="rating-pick-divider"></span>${cryChips}<span class="rating-pick-divider"></span>${wtfChips}${flagChips ? `<span class="rating-pick-divider"></span>${flagChips}` : ''}</div>
       </div>
     </div>
     <main>${body}</main>
@@ -6491,6 +6508,10 @@ function renderDetail(e) {
             <div class="label">Laughing</div>
             <div class="rating-icons" data-rating="lolRating">${renderRatingIcons(e.lolRating, '😂')}</div>
           </div>
+          <div class="rating-block" style="grid-column:1 / -1;">
+            <div class="label">WTF</div>
+            <div class="rating-icons" data-rating="wtfRating">${renderRatingIcons(e.wtfRating, '🤯')}</div>
+          </div>
         </div>
       </div>
 
@@ -6691,6 +6712,13 @@ function renderSettingsPanel() {
   return `
     <div class="panel" style="margin-bottom:14px;">
       <div class="panel-title">⚙️ Settings</div>
+      <div class="field-row">
+        <label>Page Background</label>
+        <div style="display:flex;gap:8px;">
+          <button type="button" data-bg-mode-pick="cyan" class="chip ${BG_MODE !== 'pink' ? 'active' : ''}" style="flex:1;">Cyan</button>
+          <button type="button" data-bg-mode-pick="pink" class="chip ${BG_MODE === 'pink' ? 'active' : ''}" style="flex:1;">Pink</button>
+        </div>
+      </div>
       <div class="field-row">
         <label>Cross-reference proxy URL (your Apps Script web app URL)</label>
         <input type="text" id="proxy-url-input" value="${escapeHtml(getProxyUrl())}" placeholder="https://script.google.com/macros/s/.../exec">
@@ -6996,7 +7024,7 @@ function renderDuplicates() {
 
 function exportCsv() {
   const rows = ALL_ENTRIES.slice().sort((a, b) => a.title.localeCompare(b.title));
-  const cols = ['title', 'altTitle', 'format', 'mediaFormat', 'shelf', 'author', 'artist', 'isNovel', 'status', 'tags', 'semiFlag', 'semiNotes', 'ukeFlag', 'ukeNotes', 'smutRating', 'qualityRating', 'favorite', 'notes', 'referenceUrl', 'pdfLink'];
+  const cols = ['title', 'altTitle', 'format', 'mediaFormat', 'shelf', 'author', 'artist', 'isNovel', 'status', 'tags', 'semiFlag', 'semiNotes', 'ukeFlag', 'ukeNotes', 'smutRating', 'qualityRating', 'wtfRating', 'favorite', 'notes', 'referenceUrl', 'pdfLink'];
   const esc = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
   const lines = [cols.join(',')];
   rows.forEach((e) => {
@@ -7004,7 +7032,7 @@ function exportCsv() {
       e.title, e.altTitle, e.format, e.mediaFormat, e.shelf, e.author, e.artist, e.isNovel, e.status,
       (e.tags || []).concat(e.customTags || []).join('; '),
       e.semi && e.semi.flag, e.semi && e.semi.notes, e.uke && e.uke.flag, e.uke && e.uke.notes,
-      e.smutRating, e.qualityRating, e.favorite, e.notes, e.referenceUrl, e.pdfLink
+      e.smutRating, e.qualityRating, e.wtfRating, e.favorite, e.notes, e.referenceUrl, e.pdfLink
     ].map(esc).join(','));
   });
   const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
@@ -7426,7 +7454,7 @@ async function submitAdd() {
     shelf: ADD_FORMAT_PICK === 'reading' ? 'Plan to Read' : 'Completed',
     tags: [], customTags: [], notes: '', favorite: false,
     coverUrl: null, referenceUrl: null, referenceSite: null, referenceStatus: 'none', suggestedMatch: null,
-    summaryCache: null, summaryCachedAt: null, smutRating: 0, qualityRating: 0, lolRating: 0, cryRating: 0,
+    summaryCache: null, summaryCachedAt: null, smutRating: 0, qualityRating: 0, lolRating: 0, cryRating: 0, wtfRating: 0,
     semi: { flag: null, notes: '', photo: null }, uke: { flag: null, notes: '', photo: null },
     screencaps: [], pdfLink: '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
   };
@@ -7633,6 +7661,13 @@ function attachRootHandlers() {
   const proxyUrlInput = root.querySelector('#proxy-url-input');
   if (proxyUrlInput) proxyUrlInput.onblur = () => {
     setProxyUrl(proxyUrlInput.value);
+    const bgModeBtns = root.querySelectorAll('[data-bg-mode-pick]');
+  bgModeBtns.forEach((btn) => {
+    btn.onclick = () => {
+      saveBgMode(btn.getAttribute('data-bg-mode-pick'));
+      render();
+    };
+  });
     showToast('Settings saved');
   };
 
@@ -9300,6 +9335,8 @@ async function boot() {
     if (savedHNoteMapTs && typeof savedHNoteMapTs.value === 'number') H_NOTE_MAP_UPDATED_AT = savedHNoteMapTs.value;
     const savedThemeMode = await idbGet(STORE_META, 'themeMode');
     if (savedThemeMode && typeof savedThemeMode.value === 'string') THEME_MODE = savedThemeMode.value;
+    const savedBgMode = await idbGet(STORE_META, 'bgMode');
+    if (savedBgMode && typeof savedBgMode.value === 'string') BG_MODE = savedBgMode.value;
     if ('serviceWorker' in navigator) {
       setupAutoUpdatingServiceWorker();
     }
