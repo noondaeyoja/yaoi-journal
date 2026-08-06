@@ -120,6 +120,14 @@ let HD_RESOLVED_RAW = new Set();
 // keep both" for — see Review Duplicates. Prevents that same pair from
 // re-surfacing every visit.
 let IGNORED_DUP_GROUPS = new Set();
+// IDs of entries deleted on this device (e.g. via duplicate merge). Firestore
+// deletes are fire-and-forget — if one fails (offline, closed tab mid-flight,
+// dropped request) the doc lingers server-side and the next boot's
+// syncWithFirestore() would otherwise see "a remote entry with no local
+// counterpart" and silently resurrect it, which is exactly why merged/deleted
+// duplicates kept coming back. Anything in here is skipped on re-sync and its
+// remote delete is retried instead of being treated as new.
+let DELETED_ENTRY_IDS = new Set();
 // Same idea as IGNORED_DUP_GROUPS above but for the perceptual-hash-based
 // "Possible Duplicates" scanners in the Images and Reactions tabs — those
 // scanners used to have zero memory (every scan recomputed from nothing),
@@ -401,9 +409,17 @@ function getEntry(id) {
   return ALL_ENTRIES.find((e) => e.id === id);
 }
 
+async function recordDeletedEntryId(id) {
+  DELETED_ENTRY_IDS.add(id);
+  const arr = Array.from(DELETED_ENTRY_IDS);
+  await idbPut(STORE_META, { key: 'deletedEntryIds', value: arr });
+  pushMetaField('deletedEntryIds', arr);
+}
+
 async function deleteEntry(id) {
   await idbDelete(STORE_ENTRIES, id);
   ALL_ENTRIES = ALL_ENTRIES.filter((e) => e.id !== id);
+  await recordDeletedEntryId(id);
   deleteEntryFromFirestore(id);
 }
 
@@ -637,6 +653,12 @@ async function applyMetaSnapshot(data) {
     IGNORED_DUP_GROUPS = new Set([...IGNORED_DUP_GROUPS, ...data.ignoredDupGroups]);
     if (IGNORED_DUP_GROUPS.size !== before) changed = true;
     await idbPut(STORE_META, { key: 'ignoredDupGroups', value: Array.from(IGNORED_DUP_GROUPS) });
+  }
+  if (Array.isArray(data.deletedEntryIds) && data.deletedEntryIds.length) {
+    const before = DELETED_ENTRY_IDS.size;
+    DELETED_ENTRY_IDS = new Set([...DELETED_ENTRY_IDS, ...data.deletedEntryIds]);
+    if (DELETED_ENTRY_IDS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'deletedEntryIds', value: Array.from(DELETED_ENTRY_IDS) });
   }
   if (Array.isArray(data.userHiddenTagKeys) && data.userHiddenTagKeys.length) {
     const before = USER_HIDDEN_TAG_KEYS.size;
@@ -1410,6 +1432,12 @@ async function syncWithFirestore(user) {
   remoteEntries.forEach((re) => {
     const le = localById.get(re.id);
     if (!le) {
+      if (DELETED_ENTRY_IDS.has(re.id)) {
+        // Deleted locally (e.g. duplicate merge) but the Firestore delete
+        // never actually landed — retry it instead of resurrecting the entry.
+        deleteEntryFromFirestore(re.id);
+        return;
+      }
       merged.push(re);
       toLocal.push(re);
     } else {
@@ -6688,7 +6716,7 @@ function mergeText(a, b) {
 // has — only fills gaps, unions lists, and merges free-text notes.
 function mergeEntryData(target, source) {
   const preferTarget = ['title', 'altTitle', 'novelAuthor', 'author', 'artist', 'officialLink', 'status',
-    'currentlyReadingRaw', 'downloaded', 'shelf', 'coverUrl', 'referenceUrl', 'referenceSite', 'referenceStatus', 'pdfLink'];
+    'currentlyReadingRaw', 'downloaded', 'currentChapter', 'shelf', 'coverUrl', 'referenceUrl', 'referenceSite', 'referenceStatus', 'pdfLink', 'mediaFormat'];
   preferTarget.forEach((k) => { if (!target[k] && source[k]) target[k] = source[k]; });
 
   if (!target.totalSeasons && source.totalSeasons) target.totalSeasons = source.totalSeasons;
@@ -6704,6 +6732,7 @@ function mergeEntryData(target, source) {
   target.qualityRating = Math.max(target.qualityRating || 0, source.qualityRating || 0);
   target.lolRating = Math.max(target.lolRating || 0, source.lolRating || 0);
   target.cryRating = Math.max(target.cryRating || 0, source.cryRating || 0);
+  target.wtfRating = Math.max(target.wtfRating || 0, source.wtfRating || 0);
   target.notes = mergeText(target.notes, source.notes);
 
   ['semi', 'uke'].forEach((k) => {
@@ -9178,6 +9207,8 @@ async function boot() {
     if (savedResolved && Array.isArray(savedResolved.value)) HD_RESOLVED_RAW = new Set(savedResolved.value);
     const savedIgnoredDup = await idbGet(STORE_META, 'ignoredDupGroups');
     if (savedIgnoredDup && Array.isArray(savedIgnoredDup.value)) IGNORED_DUP_GROUPS = new Set(savedIgnoredDup.value);
+    const savedDeletedIds = await idbGet(STORE_META, 'deletedEntryIds');
+    if (savedDeletedIds && Array.isArray(savedDeletedIds.value)) DELETED_ENTRY_IDS = new Set(savedDeletedIds.value);
     const savedUserHidden = await idbGet(STORE_META, 'userHiddenTagKeys');
     if (savedUserHidden && Array.isArray(savedUserHidden.value)) USER_HIDDEN_TAG_KEYS = new Set(savedUserHidden.value);
     const savedIgnoredSugg = await idbGet(STORE_META, 'ignoredTagSuggestions');
