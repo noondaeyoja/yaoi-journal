@@ -632,12 +632,6 @@ async function applyMetaSnapshot(data) {
     if (DELETED_TAG_KEYS.size !== before) changed = true;
     await idbPut(STORE_META, { key: 'deletedTagKeys', value: Array.from(DELETED_TAG_KEYS) });
   }
-  if (Array.isArray(data.hdResolvedRaw) && data.hdResolvedRaw.length) {
-    const before = HD_RESOLVED_RAW.size;
-    HD_RESOLVED_RAW = new Set([...HD_RESOLVED_RAW, ...data.hdResolvedRaw]);
-    if (HD_RESOLVED_RAW.size !== before) changed = true;
-    await idbPut(STORE_META, { key: 'hdResolvedRaw', value: Array.from(HD_RESOLVED_RAW) });
-  }
   if (Array.isArray(data.ignoredDupGroups) && data.ignoredDupGroups.length) {
     const before = IGNORED_DUP_GROUPS.size;
     IGNORED_DUP_GROUPS = new Set([...IGNORED_DUP_GROUPS, ...data.ignoredDupGroups]);
@@ -2419,7 +2413,6 @@ document.body.dataset.bg = BG_MODE;
   else if (STATE.view === 'detail') body = renderDetail(getEntry(STATE.entryId));
   else if (STATE.view === 'tags') body = renderTagManager();
   else if (STATE.view === 'tagEntries') body = renderTagEntries();
-  else if (STATE.view === 'hdMatch') body = renderHdMatch();
   else if (STATE.view === 'reactions') body = renderReactionsLibrary();
   else if (STATE.view === 'meme') body = renderMemeLibrary();
   else if (STATE.view === 'h') body = renderHLibrary();
@@ -2501,6 +2494,8 @@ let SHOW_HIDDEN_TAGS = false;
 let USER_HIDDEN_TAG_KEYS = new Set();
 // Which Tag Manager tab is showing: 'active' or 'hidden'.
 let TAG_MGR_TAB = 'active';
+// Search text to restore + re-apply after an auto tab-switch triggered by the Tag Manager search box.
+let TAG_MGR_SEARCH_PENDING = '';
 // Signatures of hide/merge suggestions the user has dismissed ("not now"),
 // so the same suggestion doesn't keep reappearing every time Tag Manager opens.
 let IGNORED_TAG_SUGGESTIONS = new Set();
@@ -2729,14 +2724,17 @@ function renderHome() {
     return `<div class="chip ${(STATE.mediaFormatFilter || 'ALL') === v ? 'active' : ''}" data-media-format-filter="${escapeHtml(v)}">${escapeHtml(label)}</div>`;
   }).join('');
 
-  const tagMsPanel = tags.map((t) => `
-    <label class="tag-ms-item"><input type="checkbox" data-tag-ms-item="${escapeHtml(t)}" ${STATE.tagFilters.includes(t) ? 'checked' : ''}><span>${escapeHtml(t)}</span></label>
-  `).join('');
+  const tagMsPanel = tags.map((t) => `<span class="tag-pool-chip ${STATE.tagFilters.includes(t) ? 'active' : ''}" data-toggle-home-tag="${escapeHtml(t)}">${escapeHtml(t)}</span>`).join('');
   const tagMultiselect = `
     <div class="tag-multiselect">
       <button class="tag-ms-toggle" data-tag-ms-toggle="1">🏷️ Tags${STATE.tagFilters.length ? ` (${STATE.tagFilters.length})` : ''} <span class="chevron">${TAG_FILTER_OPEN ? '▴' : '▾'}</span></button>
       <div class="tag-ms-panel ${TAG_FILTER_OPEN ? 'open' : ''}" id="tag-ms-panel">
-        ${tagMsPanel || '<div style="color:var(--text-dim);font-size:12px;padding:4px;">No tags yet.</div>'}
+        <div class="tag-picker-box">
+          <input type="text" id="home-tag-filter-search" class="tag-picker-input" placeholder="Search tags...">
+        </div>
+        <div class="tag-pool" id="home-tag-pool">
+          ${tagMsPanel || '<div style="color:var(--text-dim);font-size:12px;padding:4px;">No tags yet.</div>'}
+        </div>
         ${STATE.tagFilters.length ? `<button class="ref-btn" style="width:100%;margin-top:6px;" data-tag-ms-clear="1">Clear selected</button>` : ''}
       </div>
     </div>`;
@@ -2969,10 +2967,10 @@ function renderTagManager() {
   return `
     <div class="app-header">
       <div class="brand-row"><h1>🏷️ Manage Tags</h1></div>
-      <div class="search-bar"><span>🔍</span><input type="search" id="tagmgr-search" placeholder="Filter tags..."></div>
+      <div class="search-bar"><span>🔍</span><input type="search" id="tagmgr-search" placeholder="Filter tags..." value="${escapeHtml(TAG_MGR_SEARCH_PENDING)}"></div>
     </div>
     <main>
-      <button class="ref-btn" style="width:100%;margin-bottom:12px;" data-nav="hdMatch">💾 Match Owned Titles from a List</button>
+      
       <div style="color:var(--text-dim);font-size:12px;margin-bottom:10px;">
         ${allNames.length} unique tag${allNames.length === 1 ? '' : 's'} across ${ALL_ENTRIES.length} entries. Tap a tag to see its entries. Renaming applies everywhere the tag is used — rename to an existing tag name to merge two tags together. Deleting removes it from every entry (can't be undone); hiding just keeps it out of filters.
       </div>
@@ -3035,156 +3033,6 @@ function splitAltSegments(s) {
   return String(s || '').split(/\s*[:|/]\s*/).map((x) => x.trim()).filter(Boolean);
 }
 
-function candidateKeysForRaw(raw) {
-  const cleaned = cleanCandidateTitle(raw);
-  const segs = splitAltSegments(cleaned);
-  const all = [cleaned, ...segs].filter(Boolean);
-  return Array.from(new Set(all.map((s) => normalizeTagKey(s)).filter((k) => k.length >= 3)));
-}
-
-function entryTitleKeys(e) {
-  const names = [e.title, ...String(e.altTitle || '').split(/\s*\/\s*/)].filter(Boolean);
-  const expanded = [];
-  names.forEach((n) => { expanded.push(n); splitAltSegments(n).forEach((x) => expanded.push(x)); });
-  return Array.from(new Set(expanded.map((s) => normalizeTagKey(s)).filter((k) => k.length >= 3)));
-}
-
-// Runs every pasted line against every journal entry's title/alt-title keys.
-// Exact (post-cleanup, post-normalization) matches are "confident" — safe to
-// auto-tag. Everything else that at least shares a meaningful substring is
-// "uncertain" and left for a manual tap-to-confirm; anything with no overlap
-// at all is "unmatched".
-// Normalizes a raw HD-scan line for the "already handled" registry — just
-// enough to recognize the exact same line pasted again, without collapsing
-// distinct lines (e.g. different volumes) into each other the way
-// normalizeTagKey's alphanumeric-only stripping would.
-function rawLineKey(raw) {
-  return String(raw || '').trim().toLowerCase().replace(/\s+/g, ' ');
-}
-
-async function markHdRawResolved(raws) {
-  raws.forEach((r) => HD_RESOLVED_RAW.add(rawLineKey(r)));
-  const arr = Array.from(HD_RESOLVED_RAW);
-  await idbPut(STORE_META, { key: 'hdResolvedRaw', value: arr });
-  pushMetaField('hdResolvedRaw', arr);
-}
-
-function findHdMatches(rawText) {
-  const allLines = String(rawText || '').split('\n').map((l) => l.trim()).filter(Boolean);
-  const lines = allLines.filter((l) => !HD_RESOLVED_RAW.has(rawLineKey(l)));
-  const alreadyResolvedCount = allLines.length - lines.length;
-  const entryKeyMap = new Map();
-  ALL_ENTRIES.forEach((e) => {
-    entryTitleKeys(e).forEach((k) => {
-      if (!entryKeyMap.has(k)) entryKeyMap.set(k, []);
-      if (!entryKeyMap.get(k).some((x) => x.id === e.id)) entryKeyMap.get(k).push(e);
-    });
-  });
-
-  const confidentMap = new Map();
-  const uncertain = [];
-  const unmatched = [];
-
-  lines.forEach((raw) => {
-    const keys = candidateKeysForRaw(raw);
-    if (!keys.length) { unmatched.push(raw); return; }
-    let exactEntries = [];
-    keys.forEach((k) => { if (entryKeyMap.has(k)) exactEntries.push(...entryKeyMap.get(k)); });
-    exactEntries = Array.from(new Set(exactEntries));
-    if (exactEntries.length) {
-      exactEntries.forEach((e) => {
-        if (!confidentMap.has(e.id)) confidentMap.set(e.id, { entry: e, matchedRaw: [] });
-        confidentMap.get(e.id).matchedRaw.push(raw);
-      });
-      return;
-    }
-    let possible = [];
-    for (const [k, entries] of entryKeyMap) {
-      for (const primaryKey of keys) {
-        if (primaryKey.length >= 5 && k.length >= 5 && (k.includes(primaryKey) || primaryKey.includes(k))) {
-          possible.push(...entries);
-          break;
-        }
-      }
-    }
-    possible = Array.from(new Set(possible)).slice(0, 3);
-    if (possible.length) uncertain.push({ raw, candidates: possible, confirmed: false });
-    else unmatched.push(raw);
-  });
-
-  return { confident: Array.from(confidentMap.values()), uncertain, unmatched, alreadyResolvedCount };
-}
-
-function renderHdMatch() {
-  const r = HD_MATCH_STATE.results;
-  let resultsHtml = '';
-  if (r) {
-    resultsHtml = `
-      ${r.alreadyResolvedCount ? `<div style="color:var(--text-dim);font-size:11.5px;padding:0 2px 8px;">✅ ${r.alreadyResolvedCount} line${r.alreadyResolvedCount === 1 ? '' : 's'} already handled from a previous run — skipped so you're not re-deciding the same titles.</div>` : ''}
-      <div class="panel">
-        <div class="panel-title">✅ Will tag ${r.confident.length} entr${r.confident.length === 1 ? 'y' : 'ies'}</div>
-        ${r.confident.length ? `
-          <div style="max-height:220px;overflow-y:auto;font-size:12.5px;color:var(--text-dim);margin-bottom:8px;">
-            ${r.confident.map((c) => `<div>${escapeHtml(c.entry.title)}</div>`).join('')}
-          </div>
-          <button class="btn-primary" data-hdmatch-apply="1">Apply "${escapeHtml(HD_MATCH_STATE.tagName)}" tag to these</button>
-        ` : `<div style="color:var(--text-dim);font-size:12px;">No exact matches found.</div>`}
-      </div>
-      <div class="panel">
-        <div class="panel-title">🤔 Possible matches (${r.uncertain.length}) — tap to confirm</div>
-        ${r.uncertain.length ? r.uncertain.map((u, i) => `
-          <div class="tagmgr-row" style="flex-direction:column;align-items:stretch;gap:6px;">
-            <div style="font-size:12.5px;color:var(--text);">"${escapeHtml(u.raw)}"</div>
-            <div style="display:flex;flex-wrap:wrap;gap:6px;">
-              ${u.confirmed
-                ? `<span style="font-size:11.5px;color:var(--yellow);">✓ Tagged as ${escapeHtml(u.confirmed)}</span>`
-                : u.candidates.map((c) => `<button class="ref-btn" data-hdmatch-confirm="${i}:${c.id}">${escapeHtml(c.title)}</button>`).join('') + `<button class="btn-ghost" data-hdmatch-skip="${i}">Not a match</button>`}
-            </div>
-          </div>
-        `).join('') : `<div style="color:var(--text-dim);font-size:12px;">Nothing in between — every line was either an exact match or no match.</div>`}
-      </div>
-      <div class="panel">
-        <div class="panel-title">❓ No match found (${r.unmatched.length})</div>
-        <div style="color:var(--text-dim);font-size:11.5px;margin-bottom:6px;">Not in your journal yet, or too different to recognize automatically. Tap ✕ to permanently ignore junk lines (like stray numbers) so they stop showing up here.</div>
-        <div style="max-height:220px;overflow-y:auto;">
-          ${r.unmatched.map((u, i) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:var(--text-dim);padding:3px 0;"><span>${escapeHtml(u)}</span><button class="icon-btn-inline" data-hdmatch-skip-unmatched="${i}" title="Ignore this line permanently">✕</button></div>`).join('') || '<div>—</div>'}
-        </div>
-      </div>
-    `;
-  }
-  return `
-    <div class="app-header">
-      <div class="brand-row">
-        <button class="back-btn" data-nav-back="1">← Back</button>
-        <h1>💾 Match Owned Titles</h1>
-      </div>
-    </div>
-    <main>
-      <div class="panel">
-        <div style="color:var(--text-dim);font-size:12px;margin-bottom:8px;">
-          Paste folder or file names from your hard drive below (one per line). Exact matches get auto-tagged; anything fuzzy gets a tap-to-confirm option instead.
-        </div>
-        <div class="field-row"><label>Tag to apply</label><input type="text" id="hdmatch-tagname" value="${escapeHtml(HD_MATCH_STATE.tagName)}"></div>
-        <div class="field-row"><label>Names (one per line)</label><textarea id="hdmatch-raw" rows="8" placeholder="Paste folder/file names here...">${escapeHtml(HD_MATCH_STATE.raw)}</textarea></div>
-        <button class="btn-primary" data-hdmatch-find="1">Find Matches</button>
-      </div>
-      ${resultsHtml}
-    </main>
-    ${renderBottomNav('tags')}
-  `;
-}
-
-/* ---------------------------------------------------------------------- */
-/* REACTIONS / MEME LIBRARY                                               */
-/* A standalone library of uploaded meme/reaction images, reusable across */
-/* any journal entry via the "Add from Reactions" picker on the detail    */
-/* page's Images section. Duplicate uploads (by image hash) get flagged.  */
-/* ---------------------------------------------------------------------- */
-
-// Every image in the app, in one place: the standalone reaction/meme
-// library PLUS any image uploaded straight onto an entry's own Images
-// panel. Images are keyed by their exact data-URL so the same picture
-// only shows once even if it's attached to several entries.
 function entryImageUrls(e) {
   return [...(e.screencaps || []), e.semi && e.semi.photo, e.uke && e.uke.photo].filter(Boolean);
 }
@@ -3592,7 +3440,7 @@ let IMAGES_NAV_LIST = [];
 // FILTERS_COLLAPSED/.filters-collapsible) — the Semi/Uke + mood-group chip
 // row can be tucked away on demand instead of always taking up header space.
 // Session-only, like its homepage counterpart (resets on reload).
-let IMAGES_FILTERS_COLLAPSED = false;
+let IMAGES_FILTERS_COLLAPSED = true;
 let IMAGE_KIND_FILTER = null; // null | 'semi' | 'uke'
 // Manual Semi/Uke tags — she can flag ANY image in the Images gallery as
 // "Semi only"/"Uke only" from its individual view, same chip-toggle
@@ -4382,7 +4230,7 @@ let MEME_STATE = { moodFilter: null, search: '', untaggedOnly: false };
 let MEME_NAV_LIST = [];
 // Same purpose as IMAGES_FILTERS_COLLAPSED above, for the Reactions mood
 // chip row.
-let MEME_FILTERS_COLLAPSED = false;
+let MEME_FILTERS_COLLAPSED = true;
 
 // Mirror of the Images gallery's own source filter — the Reactions pool
 // should only ever hold direct Reactions-tab uploads (source: 'reactions')
@@ -5738,7 +5586,7 @@ let H_SELECTED = new Set();
 // updated on every hMainBody() call.
 let H_NAV_LIST = [];
 // Same purpose as IMAGES_FILTERS_COLLAPSED above, for the NSFW group chip row.
-let H_FILTERS_COLLAPSED = false;
+let H_FILTERS_COLLAPSED = true;
 
 function hFilteredItems() {
   const q = H_STATE.search.trim().toLowerCase();
@@ -6245,6 +6093,20 @@ function renderTagCloud(e) {
 }
 
 // Plain, non-interactive tag display shown when the Tags panel isn't in edit mode.
+// Full alphabetical pool of every known tag, shown as tappable pills so existing
+// tags are easy to browse/select on mobile without relying on a fragile autocomplete.
+function renderTagPool(e) {
+  const ts = getTagEditState(e.id);
+  const counts = allTagCounts();
+  const allNames = Object.keys(counts).filter((t) => !isHiddenTag(t)).sort((a, b) => a.localeCompare(b));
+  if (!allNames.length) return '<span style="color:var(--text-dim);font-size:12.5px;">No tags yet — type one above and press Enter.</span>';
+  return allNames.map((t) => {
+    const isOriginal = (e.tags || []).includes(t) || (e.customTags || []).includes(t);
+    const selected = isOriginal ? !ts.removed.has(t) : ts.added.includes(t);
+    return `<span class="tag-pool-chip ${selected ? 'active' : ''}" data-toggle-pool-tag="${escapeHtml(t)}">${escapeHtml(t)}</span>`;
+  }).join('');
+}
+
 function renderTagCloudReadOnly(e) {
   const all = (e.tags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: false }))
     .concat((e.customTags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: true })));
@@ -6551,12 +6413,11 @@ function renderDetail(e) {
         </div>
         ${TAG_EDIT_MODE ? `
           <div style="color:var(--text-dim);font-size:11px;margin-bottom:6px;">Tap a tag to mark it for removal, add new ones below, then Save.</div>
-          <div class="tag-cloud">${renderTagCloud(e)}</div>
-          <div class="add-tag-row">
-            <input type="text" id="new-tag-input" placeholder="Add your own tag..." autocomplete="off">
-            <button data-add-tag="1">Add</button>
+          <div class="tag-picker-box">
+            <div class="tag-picker-selected">${renderTagCloud(e)}</div>
+            <input type="text" id="new-tag-input" class="tag-picker-input" placeholder="Type a tag and press Enter..." autocomplete="off">
           </div>
-          <div id="tag-similar-box"></div>
+          <div class="tag-pool">${renderTagPool(e)}</div>
           <div class="modal-actions" style="margin-top:10px;">
             <button class="btn-ghost" data-cancel-tag-edit="1">Cancel</button>
             <button class="btn-primary" data-save-tags="1">Save Tags</button>
@@ -6690,6 +6551,8 @@ function renderDatabase() {
       ${renderSettingsPanel()}
       <div class="export-row">
         <button class="ref-btn" data-export-csv="1">⬇ Export CSV</button>
+        <button class="ref-btn" data-import-csv="1">⬆ Import CSV</button>
+        <input type="file" id="import-csv-file" accept=".csv,text/csv" style="display:none;">
         <span style="color:var(--text-dim);font-size:12.5px;align-self:center;">${rows.length} total entries</span>
       </div>
       <div class="search-bar" style="margin-bottom:10px;"><span>🔍</span><input type="search" id="db-search" placeholder="Filter table..."></div>
@@ -7052,6 +6915,74 @@ function exportCsv() {
 // case a counter + Prev/Skip controls show up and confirming a match moves
 // straight to the next entry needing review instead of jumping to the full
 // detail page.
+function parseCsvText(text) {
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+  const s = String(text || '');
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (s[i + 1] === '"') { field += '"'; i++; }
+        else { inQuotes = false; }
+      } else field += c;
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ',') {
+      row.push(field); field = '';
+    } else if (c === '\n') {
+      row.push(field); rows.push(row); row = []; field = '';
+    } else if (c === '\r') {
+      // skip
+    } else {
+      field += c;
+    }
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.some((v) => String(v || '').trim() !== ''));
+}
+
+async function importEntriesFromCsv(text) {
+  const rows = parseCsvText(text);
+  if (!rows.length) return { added: 0, skipped: 0 };
+  const header = rows[0].map((h) => String(h || '').trim());
+  const dataRows = rows.slice(1);
+  const existingTitles = new Set(ALL_ENTRIES.map((e) => (e.title || '').trim().toLowerCase()));
+  let added = 0, skipped = 0;
+  for (const r of dataRows) {
+    const obj = {};
+    header.forEach((h, i) => { obj[h] = r[i] !== undefined ? r[i] : ''; });
+    const title = String(obj.title || '').trim();
+    if (!title || existingTitles.has(title.toLowerCase())) { skipped++; continue; }
+    const format = String(obj.format || 'reading').trim() || 'reading';
+    const mediaFormat = String(obj.mediaFormat || (format === 'reading' ? 'manhwa' : 'tv-show')).trim();
+    const tagsArr = String(obj.tags || '').split(';').map((t) => t.trim()).filter(Boolean);
+    const entry = {
+      id: uid(format === 'reading' ? 'manhwa' : 'anime'),
+      format, mediaFormat,
+      title, altTitle: obj.altTitle || '', novelAuthor: '', author: obj.author || '', artist: obj.artist || '',
+      isNovel: String(obj.isNovel).toLowerCase() === 'true',
+      totalSeasons: null, totalChapters: null, epilogue: '', officialLink: '', released: null,
+      status: obj.status || '', currentlyReadingRaw: '', downloaded: '', currentChapter: '',
+      shelf: String(obj.shelf || '').trim() || (format === 'reading' ? 'Plan to Read' : 'Completed'),
+      tags: tagsArr, customTags: [], notes: obj.notes || '', favorite: String(obj.favorite).toLowerCase() === 'true',
+      coverUrl: null, referenceUrl: obj.referenceUrl || null, referenceSite: null, referenceStatus: 'none', suggestedMatch: null,
+      summaryCache: null, summaryCachedAt: null,
+      smutRating: Number(obj.smutRating) || 0, qualityRating: Number(obj.qualityRating) || 0,
+      lolRating: 0, cryRating: 0, wtfRating: Number(obj.wtfRating) || 0,
+      semi: { flag: obj.semiFlag || null, notes: obj.semiNotes || '', photo: null },
+      uke: { flag: obj.ukeFlag || null, notes: obj.ukeNotes || '', photo: null },
+      screencaps: [], pdfLink: obj.pdfLink || '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+    };
+    await saveEntry(entry);
+    existingTitles.add(title.toLowerCase());
+    added++;
+  }
+  return { added, skipped };
+}
+
 function openCrossRefModal(entryId, reviewInfo) {
   if (!reviewInfo) CROSSREF_REVIEW_ACTIVE = false;
   const e = getEntry(entryId);
@@ -7540,12 +7471,13 @@ function attachRootHandlers() {
       // through navigate(), so it needs its own closeModal() call too.
       closeModal();
       if (STATE.view === 'home') {
+        FILTERS_COLLAPSED = true;
         renderHomeInPlace();
       } else {
         // Search lives in the global header now, reachable from any screen —
         // typing while elsewhere jumps to Journal to show results, then
         // restores focus/cursor so the jump doesn't interrupt typing.
-        STATE.showFavoritesOnly = false; STATE.showOnDriveOnly = false; STATE.showHentaiOnly = false; STATE.showArtworkOnly = false; FILTERS_COLLAPSED = false;
+        STATE.showFavoritesOnly = false; STATE.showOnDriveOnly = false; STATE.showHentaiOnly = false; STATE.showArtworkOnly = false; FILTERS_COLLAPSED = true;
         SEARCH_INPUT_SHOULD_FOCUS = true;
         navigate('home');
       }
@@ -7578,17 +7510,21 @@ function attachRootHandlers() {
   });
   const tagMsToggle = root.querySelector('[data-tag-ms-toggle]');
   if (tagMsToggle) tagMsToggle.onclick = () => { TAG_FILTER_OPEN = !TAG_FILTER_OPEN; render(); };
-  root.querySelectorAll('[data-tag-ms-item]').forEach((el) => {
-    el.onchange = () => {
-      const t = el.getAttribute('data-tag-ms-item');
-      if (el.checked) {
-        if (!STATE.tagFilters.includes(t)) STATE.tagFilters.push(t);
-      } else {
-        STATE.tagFilters = STATE.tagFilters.filter((x) => x !== t);
-      }
+  root.querySelectorAll('[data-toggle-home-tag]').forEach((el) => {
+    el.onclick = () => {
+      const t = el.getAttribute('data-toggle-home-tag');
+      if (STATE.tagFilters.includes(t)) STATE.tagFilters = STATE.tagFilters.filter((x) => x !== t);
+      else STATE.tagFilters.push(t);
       render();
     };
   });
+  const homeTagFilterSearch = root.querySelector('#home-tag-filter-search');
+  if (homeTagFilterSearch) homeTagFilterSearch.oninput = () => {
+    const q = homeTagFilterSearch.value.toLowerCase();
+    root.querySelectorAll('#home-tag-pool .tag-pool-chip').forEach((chip) => {
+      chip.style.display = chip.getAttribute('data-toggle-home-tag').toLowerCase().includes(q) ? '' : 'none';
+    });
+  };
   const tagMsClear = root.querySelector('[data-tag-ms-clear]');
   if (tagMsClear) tagMsClear.onclick = () => { STATE.tagFilters = []; render(); };
   const filtersToggleBtn = root.querySelector('[data-toggle-filters]');
@@ -7875,48 +7811,37 @@ function attachRootHandlers() {
     TAG_EDIT_STATE = { entryId: null, removed: new Set(), added: [] };
     render();
   };
-  const addTagBtn = root.querySelector('[data-add-tag]');
-  if (addTagBtn) addTagBtn.onclick = () => {
-    const input = document.getElementById('new-tag-input');
-    const val = input.value.trim();
-    if (!val) return;
-    if (isHiddenTag(val)) { showToast('That tag is blocked or was deleted before — it\'s hidden on purpose'); return; }
-    const ts = getTagEditState(STATE.entryId);
-    const e = getEntry(STATE.entryId);
-    const already = [...(e.tags || []), ...(e.customTags || []), ...ts.added].some((t) => t.toLowerCase() === val.toLowerCase());
-    if (!already) ts.added.push(val);
-    input.value = '';
-    const box = document.getElementById('tag-similar-box');
-    if (box) box.innerHTML = '';
-    render();
-  };
   const newTagInput = root.querySelector('#new-tag-input');
-  const similarBox = root.querySelector('#tag-similar-box');
-  if (newTagInput && similarBox) {
-    newTagInput.oninput = () => {
+  if (newTagInput) {
+    newTagInput.onkeydown = (ev) => {
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
       const val = newTagInput.value.trim();
-      if (!val) { similarBox.innerHTML = ''; return; }
-      const similar = findSimilarTags(val);
-      if (!similar.length) { similarBox.innerHTML = ''; return; }
-      similarBox.innerHTML = `
-        <div class="tag-similar-box">
-          <div class="label">Similar tag${similar.length === 1 ? '' : 's'} already exist — tap to reuse instead of creating a near-duplicate</div>
-          ${similar.map((t) => `<span class="tag-similar-chip" data-use-similar-tag="${escapeHtml(t)}">${escapeHtml(t)}</span>`).join('')}
-        </div>`;
-    };
-    similarBox.onclick = (ev) => {
-      const chip = ev.target.closest('[data-use-similar-tag]');
-      if (!chip) return;
-      const name = chip.getAttribute('data-use-similar-tag');
+      if (!val) return;
+      if (isHiddenTag(val)) { showToast("That tag is blocked or was deleted before \u2014 it's hidden on purpose"); return; }
       const ts = getTagEditState(STATE.entryId);
       const e = getEntry(STATE.entryId);
-      const already = [...(e.tags || []), ...(e.customTags || []), ...ts.added].some((t) => t.toLowerCase() === name.toLowerCase());
-      if (!already) ts.added.push(name);
+      const already = [...(e.tags || []), ...(e.customTags || []), ...ts.added].some((t) => t.toLowerCase() === val.toLowerCase());
+      if (!already) ts.added.push(val);
       newTagInput.value = '';
-      similarBox.innerHTML = '';
       render();
     };
   }
+  root.querySelectorAll('[data-toggle-pool-tag]').forEach((el) => {
+    el.onclick = () => {
+      const t = el.getAttribute('data-toggle-pool-tag');
+      const ts = getTagEditState(STATE.entryId);
+      const e = getEntry(STATE.entryId);
+      const isOriginal = (e.tags || []).includes(t) || (e.customTags || []).includes(t);
+      if (isOriginal) {
+        if (ts.removed.has(t)) ts.removed.delete(t); else ts.removed.add(t);
+      } else {
+        const idx2 = ts.added.indexOf(t);
+        if (idx2 === -1) ts.added.push(t); else ts.added.splice(idx2, 1);
+      }
+      render();
+    };
+  });
   root.querySelectorAll('[data-toggle-tag]').forEach((el) => {
     el.onclick = () => {
       const t = el.getAttribute('data-toggle-tag');
@@ -8217,10 +8142,38 @@ function attachRootHandlers() {
   const tagmgrSearch = root.querySelector('#tagmgr-search');
   if (tagmgrSearch) tagmgrSearch.oninput = () => {
     const q = tagmgrSearch.value.toLowerCase();
+    let anyMatchCurrent = false;
+    root.querySelectorAll('.tagmgr-row').forEach((row) => {
+      const match = row.getAttribute('data-tag-name').toLowerCase().includes(q);
+      row.style.display = match ? '' : 'none';
+      if (match) anyMatchCurrent = true;
+    });
+    if (q && !anyMatchCurrent) {
+      const counts = allTagCounts();
+      const allNames = Object.keys(counts);
+      const otherTab = TAG_MGR_TAB === 'hidden' ? 'active' : 'hidden';
+      const otherNames = otherTab === 'hidden'
+        ? allNames.filter((t) => USER_HIDDEN_TAG_KEYS.has(normalizeTagKey(t)) || DELETED_TAG_KEYS.has(normalizeTagKey(t)))
+        : allNames.filter((t) => !isHiddenTag(t));
+      const hasMatchInOther = otherNames.some((t) => t.toLowerCase().includes(q));
+      if (hasMatchInOther) {
+        TAG_MGR_TAB = otherTab;
+        TAG_MGR_SEARCH_PENDING = tagmgrSearch.value;
+        render();
+      }
+    }
+  };
+  if (tagmgrSearch && TAG_MGR_SEARCH_PENDING) {
+    tagmgrSearch.value = TAG_MGR_SEARCH_PENDING;
+    TAG_MGR_SEARCH_PENDING = '';
+    const q = tagmgrSearch.value.toLowerCase();
     root.querySelectorAll('.tagmgr-row').forEach((row) => {
       row.style.display = row.getAttribute('data-tag-name').toLowerCase().includes(q) ? '' : 'none';
     });
-  };
+    tagmgrSearch.focus();
+    const vlen = tagmgrSearch.value.length;
+    tagmgrSearch.setSelectionRange(vlen, vlen);
+  }
   root.querySelectorAll('[data-tagmgr-view]').forEach((el) => {
     el.onclick = () => {
       TAG_ENTRIES_FILTER = el.getAttribute('data-tagmgr-view');
@@ -8351,83 +8304,23 @@ function attachRootHandlers() {
     };
   });
 
-  // HD-match / bulk tag-from-list view
-  const hdRaw = root.querySelector('#hdmatch-raw');
-  if (hdRaw) hdRaw.oninput = () => { HD_MATCH_STATE.raw = hdRaw.value; };
-  const hdTagName = root.querySelector('#hdmatch-tagname');
-  if (hdTagName) hdTagName.oninput = () => { HD_MATCH_STATE.tagName = hdTagName.value; };
-  const hdFindBtn = root.querySelector('[data-hdmatch-find]');
-  if (hdFindBtn) hdFindBtn.onclick = () => {
-    HD_MATCH_STATE.raw = hdRaw ? hdRaw.value : HD_MATCH_STATE.raw;
-    HD_MATCH_STATE.tagName = hdTagName ? hdTagName.value : HD_MATCH_STATE.tagName;
-    if (!HD_MATCH_STATE.raw.trim()) { showToast('Paste some names first'); return; }
-    if (!HD_MATCH_STATE.tagName.trim()) { showToast('Give the tag a name first'); return; }
-    HD_MATCH_STATE.results = findHdMatches(HD_MATCH_STATE.raw);
-    render();
-  };
-  const hdApplyBtn = root.querySelector('[data-hdmatch-apply]');
-  if (hdApplyBtn) hdApplyBtn.onclick = async () => {
-    const tagName = HD_MATCH_STATE.tagName.trim();
-    const r = HD_MATCH_STATE.results;
-    if (!r) return;
-    let count = 0;
-    for (const { entry, matchedRaw } of r.confident) {
-      const already = [...(entry.tags || []), ...(entry.customTags || [])].some((t) => t.toLowerCase() === tagName.toLowerCase());
-      if (!already) {
-        entry.customTags = [...(entry.customTags || []), tagName];
-        await saveEntry(entry);
-        count++;
-      }
-      await markHdRawResolved(matchedRaw);
-    }
-    showToast(`Tagged ${count} entr${count === 1 ? 'y' : 'ies'} "${tagName}"`);
-    render();
-  };
-  root.querySelectorAll('[data-hdmatch-confirm]').forEach((el) => {
-    el.onclick = async () => {
-      const [idxStr, entryId] = el.getAttribute('data-hdmatch-confirm').split(':');
-      const idx = Number(idxStr);
-      const r = HD_MATCH_STATE.results;
-      if (!r || !r.uncertain[idx]) return;
-      const entry = getEntry(entryId);
-      const tagName = HD_MATCH_STATE.tagName.trim();
-      const already = [...(entry.tags || []), ...(entry.customTags || [])].some((t) => t.toLowerCase() === tagName.toLowerCase());
-      if (!already) {
-        entry.customTags = [...(entry.customTags || []), tagName];
-        await saveEntry(entry);
-      }
-      await markHdRawResolved([r.uncertain[idx].raw]);
-      r.uncertain[idx].confirmed = entry.title;
-      showToast(`Tagged "${entry.title}"`);
-      render();
-    };
-  });
-  root.querySelectorAll('[data-hdmatch-skip]').forEach((el) => {
-    el.onclick = async () => {
-      const idx = Number(el.getAttribute('data-hdmatch-skip'));
-      const r = HD_MATCH_STATE.results;
-      if (!r || !r.uncertain[idx]) return;
-      await markHdRawResolved([r.uncertain[idx].raw]);
-      r.uncertain.splice(idx, 1);
-      showToast('Skipped — won\'t ask again');
-      render();
-    };
-  });
-  root.querySelectorAll('[data-hdmatch-skip-unmatched]').forEach((el) => {
-    el.onclick = async () => {
-      const idx = Number(el.getAttribute('data-hdmatch-skip-unmatched'));
-      const r = HD_MATCH_STATE.results;
-      if (!r || r.unmatched[idx] == null) return;
-      await markHdRawResolved([r.unmatched[idx]]);
-      r.unmatched.splice(idx, 1);
-      showToast('Ignored');
-      render();
-    };
-  });
-
   // Database view
   const exportBtn = root.querySelector('[data-export-csv]');
   if (exportBtn) exportBtn.onclick = exportCsv;
+  const importBtn = root.querySelector('[data-import-csv]');
+  const importFileInput = root.querySelector('#import-csv-file');
+  if (importBtn && importFileInput) {
+    importBtn.onclick = () => importFileInput.click();
+    importFileInput.onchange = async () => {
+      const file = importFileInput.files[0];
+      if (!file) return;
+      const text = await file.text();
+      const result = await importEntriesFromCsv(text);
+      importFileInput.value = '';
+      showToast(`Imported ${result.added} new entr${result.added === 1 ? 'y' : 'ies'}${result.skipped ? `, skipped ${result.skipped}` : ''}`);
+      render();
+    };
+  }
   const bulkSweepBtn = root.querySelector('[data-run-bulk-sweep]');
   if (bulkSweepBtn) bulkSweepBtn.onclick = runBulkMatchSweep;
   const stopSweepBtn = root.querySelector('[data-stop-bulk-sweep]');
