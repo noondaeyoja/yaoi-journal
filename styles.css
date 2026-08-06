@@ -1,96 +1,86 @@
 :root {
-  --navy: #12162e;
-  --navy-2: #191d3a;
-  --card: #1e2247;
-  --card-2: #262a52;
-  --border: #333868;
-  --purple: #b34bff;
-  --purple-soft: #3a2b5c;
-  --pink: #ff4fc3;
-  --pink-soft: #4a2440;
-  --yellow: #ffd23f;
-  --yellow-soft: #4a4324;
-  --text: #f4f2ff;
-  --text-dim: #a9a3c9;
-  --green-flag: #4ade80;
-  --red-flag: #f87171;
-  --black-flag: #6b6b7a;
-  --radius: 16px;
-  --radius-sm: 10px;
-  /* Extra room at the very top on phones with a notch/status bar, so the
-     header doesn't sit flush against the physical edge of the screen. */
-  --safe-top: env(safe-area-inset-top, 0px);
-  --global-header-h: calc(58px + var(--safe-top));
+--navy: #0b0f2b;          /* Ocean Night — dark chrome (global/app/detail headers, bottom nav) */
+--navy-2: #eafbff;        /* input/dropzone fill — very light cyan */
+--card: #ffffff;          /* panel background */
+--card-2: #eef6ff;        /* secondary panel fill / hover / table header */
+--border: #0b0f2b;        /* Ocean Night borders everywhere */
+--purple: #9c6cff;        /* Neon Purple */
+--purple-soft: #ede3ff;   /* light lavender tint */
+--pink: #ff5ca8;          /* Sunset Pink */
+--pink-soft: #ffe3f2;     /* light pink tint */
+--cyan: #00f0ff;          /* Vice Cyan */
+--yellow: #ffe63b;        /* accent yellow */
+--yellow-soft: #fff9d6;   /* light yellow tint */
+--text: #0b0f2b;          /* primary text — dark navy on light backgrounds */
+--text-dim: #5b5f82;      /* secondary/dim text */
+--green-flag: #22b56a;
+--red-flag: #ef4444;
+--black-flag: #3a3d52;
+--bg-cyan: #d6f9ff;       /* page background option 1 */
+--bg-pink: #fbe3ff;       /* page background option 2 */
+--radius: 16px;
+--radius-sm: 10px;
+--safe-top: env(safe-area-inset-top, 0px);
+--global-header-h: calc(58px + var(--safe-top));
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
 html, body {
-  margin: 0;
-  height: 100%;
-  background: var(--navy);
-  color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+margin: 0;
+height: 100%;
+background: var(--bg-cyan);
+color: var(--text);
+font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 body {
-  /* tiled eggplant print background */
-  background-color: var(--navy);
-  background-image:
-    linear-gradient(180deg, rgba(18,22,46,0.94), rgba(18,22,46,0.97)),
-    url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96' viewBox='0 0 96 96'%3E%3Cg fill='%23b34bff' fill-opacity='0.10'%3E%3Cellipse cx='24' cy='30' rx='11' ry='16' transform='rotate(-18 24 30)'/%3E%3Crect x='19' y='11' width='10' height='7' rx='2' fill='%234ade80' fill-opacity='0.14' transform='rotate(-18 24 30)'/%3E%3C/g%3E%3Cg fill='%23ff4fc3' fill-opacity='0.09'%3E%3Cellipse cx='72' cy='66' rx='9' ry='14' transform='rotate(20 72 66)'/%3E%3Crect x='68' y='50' width='8' height='6' rx='2' fill='%234ade80' fill-opacity='0.12' transform='rotate(20 72 66)'/%3E%3C/g%3E%3C/svg%3E");
-  background-size: 100% 100%, 96px 96px;
-  min-height: 100vh;
+background-color: var(--bg-cyan);
+min-height: 100vh;
 }
+body[data-bg="pink"] { background-color: var(--bg-pink); }
+body[data-bg="cyan"] { background-color: var(--bg-cyan); }
 
 button, input, textarea, select { font-family: inherit; }
 
 a { color: var(--pink); }
-
 /* ---------- Global persistent header (every screen) ---------- */
-/* Taller than before (was 46px) to fit the search bar, which lives here now
-   so it's reachable from any screen, not just the homepage. GLOBAL_HEADER_H
-   below in JS-land (app-header/detail-header top offsets) must match this. */
 .global-header {
-  position: sticky; top: 0; z-index: 40; height: var(--global-header-h); box-sizing: border-box;
-  display: flex; align-items: center; gap: 10px; padding: var(--safe-top) 14px 0;
-  background: rgba(18,22,46,0.97); backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--border);
+position: sticky; top: 0; z-index: 40; height: var(--global-header-h); box-sizing: border-box;
+display: flex; align-items: center; gap: 10px; padding: var(--safe-top) 14px 0;
+background: rgba(11,15,43,0.97); backdrop-filter: blur(10px);
+border-bottom: 1px solid var(--border);
 }
 .global-header-brand { display: flex; align-items: center; gap: 6px; cursor: pointer; flex-shrink: 0; }
 .global-header-logo { font-size: 19px; line-height: 1; }
 .global-header-logo img { display: block; height: 24px; width: auto; border-radius: 6px; }
 .global-header-title { font-weight: 700; font-size: 14px; letter-spacing: .01em; white-space: nowrap; }
 .global-search-bar {
-  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
-  background: var(--card); border: 1px solid var(--border); border-radius: 999px;
-  padding: 7px 12px; margin-bottom: 0;
+flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
+background: var(--card); border: 1px solid var(--border); border-radius: 999px;
+padding: 7px 12px; margin-bottom: 0;
 }
 .global-search-bar input { background: transparent; border: none; outline: none; color: var(--text); width: 100%; font-size: 13.5px; }
 .global-search-bar input::placeholder { color: var(--text-dim); }
 
-/* Not sticky on purpose — sits directly under the sticky global header and
-   scrolls away with the page, so it doesn't need its own entry in the
-   --global-header-h math that the sticky app/detail headers rely on. */
 .drive-reconnect-banner {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  background: var(--yellow-soft); color: var(--yellow); border-bottom: 1px solid var(--border);
-  padding: 8px 14px; font-size: 12px;
+display: flex; align-items: center; justify-content: space-between; gap: 10px;
+background: var(--yellow-soft); color: var(--yellow); border-bottom: 1px solid var(--border);
+padding: 8px 14px; font-size: 12px;
 }
 .drive-reconnect-banner button {
-  background: var(--yellow); color: #170b26; border: none; border-radius: 999px;
-  padding: 5px 12px; font-size: 12px; font-weight: 700; cursor: pointer; flex-shrink: 0;
+background: var(--yellow); color: #241c02; border: none; border-radius: 999px;
+padding: 5px 12px; font-size: 12px; font-weight: 700; cursor: pointer; flex-shrink: 0;
 }
 
-/* ---------- Sticky header (per-screen, sits just below the global one) ---------- */
 .app-header {
-  position: sticky; top: var(--global-header-h); z-index: 30;
-  background: rgba(18,22,46,0.92);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--border);
-  padding: 10px 12px 8px;
-  transform: translateY(0);
-  transition: transform .22s ease;
+position: sticky; top: var(--global-header-h); z-index: 30;
+background: rgba(11,15,43,0.92);
+backdrop-filter: blur(10px);
+border-bottom: 1px solid var(--border);
+padding: 10px 12px 8px;
+transform: translateY(0);
+transition: transform .22s ease;
 }
 .app-header.header-hidden { transform: translateY(-100%); }
 .brand-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
@@ -98,144 +88,128 @@ a { color: var(--pink); }
 .brand-row h1 .egg { margin-right: 4px; }
 
 .search-bar {
-  display: flex; align-items: center; gap: 8px;
-  background: var(--card); border: 1px solid var(--border); border-radius: 999px;
-  padding: 8px 14px; margin-bottom: 8px;
+display: flex; align-items: center; gap: 8px;
+background: var(--card); border: 1px solid var(--border); border-radius: 999px;
+padding: 8px 14px; margin-bottom: 8px;
 }
 .search-bar input {
-  background: transparent; border: none; outline: none; color: var(--text); width: 100%; font-size: 14px;
+background: transparent; border: none; outline: none; color: var(--text); width: 100%; font-size: 14px;
 }
 .search-bar input::placeholder { color: var(--text-dim); }
 
 .tab-row { display: flex; gap: 6px; margin-bottom: 8px; }
 .tab-pill {
-  flex: 1; text-align: center; padding: 8px 6px; border-radius: 999px; font-size: 13px; font-weight: 700;
-  background: var(--card); color: var(--text-dim); border: 1px solid var(--border);
+flex: 1; text-align: center; padding: 8px 6px; border-radius: 999px; font-size: 13px; font-weight: 700;
+background: var(--card); color: var(--text-dim); border: 1px solid var(--border);
 }
-.tab-pill.active { background: linear-gradient(135deg, var(--purple), var(--pink)); color: #170b26; border-color: transparent; }
-.tab-pill.fav.active { background: var(--pink); color: #170b26; }
+.tab-pill.active { background: linear-gradient(135deg, var(--purple), var(--pink)); color: #ffffff; border-color: transparent; }
+.tab-pill.fav.active { background: var(--pink); color: #ffffff; }
 .tab-pill.drive { font-size: 11.5px; }
 .tab-pill.drive.active { background: var(--green-flag); color: #0d2b16; }
 
 .format-row { display: flex; gap: 6px; margin-bottom: 8px; }
 .format-btn {
-  flex: 1; padding: 7px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 700;
-  background: var(--navy-2); color: var(--text-dim); border: 1px solid var(--border);
+flex: 1; padding: 7px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 700;
+background: var(--navy-2); color: var(--text-dim); border: 1px solid var(--border);
 }
 .format-btn.active { background: var(--purple-soft); color: var(--purple); border-color: var(--purple); }
 
 .filter-section-label {
-  font-size: 10.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em;
-  margin: 8px 2px 4px;
+font-size: 10.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em;
+margin: 8px 2px 4px;
 }
 .shelf-row {
-  /* Used to be a horizontal-scroll row (overflow-x:auto) — on narrow phones
-     that hid the later statuses behind a sideways swipe the user had to
-     discover. Wrapping onto a second line instead keeps every status
-     visible without any scrolling. */
-  display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 4px;
+display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 4px;
 }
 .tag-row {
-  display: flex; flex-wrap: wrap; gap: 6px; max-height: none; overflow-y: visible; padding-bottom: 4px;
+display: flex; flex-wrap: wrap; gap: 6px; max-height: none; overflow-y: visible; padding-bottom: 4px;
 }
 .chip {
-  white-space: nowrap; padding: 8px 14px; border-radius: 999px; font-size: 13px; font-weight: 600;
-  background: var(--card); color: var(--yellow); border: 1px solid var(--yellow-soft);
-  flex: 0 1 auto; text-align: center;
+white-space: nowrap; padding: 8px 14px; border-radius: 999px; font-size: 13px; font-weight: 600;
+background: var(--card); color: var(--yellow); border: 1px solid var(--yellow-soft);
+flex: 0 1 auto; text-align: center;
 }
 .chip.active { background: var(--yellow); color: #241c02; border-color: var(--yellow); }
 
 .rating-pick-row { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; flex-wrap: wrap; }
 .rating-pick-icon {
-  font-size: 20px; opacity: .35; cursor: pointer; filter: grayscale(.6);
-  padding: 2px; line-height: 1;
+font-size: 20px; opacity: .35; cursor: pointer; filter: grayscale(.6);
+padding: 2px; line-height: 1;
 }
 .rating-pick-icon.active { opacity: 1; filter: none; }
 .rating-pick-icon.flag-filter-icon { font-size: 27px; opacity: .5; filter: none; }
 .rating-pick-icon.flag-filter-icon.active { opacity: 1; filter: none; text-shadow: 0 0 8px currentColor; }
 .rating-pick-divider { width: 1px; align-self: stretch; background: var(--border); margin: 2px 6px; }
 
-/* Add-entry modal's format picker — two big emoji she taps to choose
-   Reading vs Watching before anything else, with a soft glow on whichever
-   one is currently picked (distinct from the plain opacity/inset-ring
-   "active" styles used elsewhere, per her "have the selection glow" spec). */
 .add-format-pick-row { display: flex; align-items: center; justify-content: center; gap: 22px; margin: 4px 0 18px; }
 .add-format-pick-icon {
-  font-size: 36px; line-height: 1; cursor: pointer; padding: 10px 18px;
-  border-radius: var(--radius-sm); opacity: .45; filter: grayscale(.5);
-  transition: opacity .15s ease, filter .15s ease, transform .15s ease;
+font-size: 36px; line-height: 1; cursor: pointer; padding: 10px 18px;
+border-radius: var(--radius-sm); opacity: .45; filter: grayscale(.5);
+transition: opacity .15s ease, filter .15s ease, transform .15s ease;
 }
 .add-format-pick-icon.glow {
-  opacity: 1; filter: none; transform: scale(1.08);
-  text-shadow: 0 0 10px var(--purple), 0 0 22px var(--purple);
+opacity: 1; filter: none; transform: scale(1.08);
+text-shadow: 0 0 10px var(--purple), 0 0 22px var(--purple);
 }
 
 .review-banner {
-  margin: 10px auto 0; padding: 10px 14px; background: var(--yellow-soft); border: 1px solid var(--yellow);
-  border-radius: var(--radius-sm); color: var(--yellow); font-size: 13px; font-weight: 600; cursor: pointer;
-  display: flex; align-items: center; justify-content: space-between; max-width: 876px;
+margin: 10px auto 0; padding: 10px 14px; background: var(--yellow-soft); border: 1px solid var(--yellow);
+border-radius: var(--radius-sm); color: var(--yellow); font-size: 13px; font-weight: 600; cursor: pointer;
+display: flex; align-items: center; justify-content: space-between; max-width: 876px;
 }
 .review-banner-arrow { opacity: .8; }
 
 .filters-toggle-btn {
-  display: block; width: 100%; text-align: center; background: none; border: none; color: var(--text-dim);
-  font-size: 11px; padding: 6px 0 2px; cursor: pointer; letter-spacing: .04em; font-weight: 600;
+display: block; width: 100%; text-align: center; background: none; border: none; color: var(--text-dim);
+font-size: 11px; padding: 6px 0 2px; cursor: pointer; letter-spacing: .04em; font-weight: 600;
 }
 .filters-collapsible {
-  max-height: 3000px; overflow: hidden; opacity: 1;
-  transition: max-height .25s ease, opacity .2s ease, margin .2s ease;
+max-height: 3000px; overflow: hidden; opacity: 1;
+transition: max-height .25s ease, opacity .2s ease, margin .2s ease;
 }
 .filters-collapsible.collapsed { max-height: 0; opacity: 0; pointer-events: none; }
 
 .tag-multiselect { margin-bottom: 4px; }
 .tag-ms-toggle {
-  width: 100%; text-align: left; background: var(--card); color: var(--yellow); border: 1px solid var(--yellow-soft);
-  border-radius: 999px; padding: 7px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer;
-  display: flex; align-items: center; justify-content: space-between;
+width: 100%; text-align: left; background: var(--card); color: var(--yellow); border: 1px solid var(--yellow-soft);
+border-radius: 999px; padding: 7px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+display: flex; align-items: center; justify-content: space-between;
 }
 .tag-ms-toggle .chevron { opacity: .8; }
-/* Inline (not overlaid) — when open it pushes the rest of the header down;
-   when closed it collapses back to zero height, so the header returns to
-   its original compact size. Laid out in 3 columns so a long tag list
-   doesn't need much vertical room per row. */
 .tag-ms-panel {
-  display: none; background: var(--card-2); border: 1px solid var(--border); border-radius: 12px;
-  padding: 8px; margin-top: 6px;
+display: none; background: var(--card-2); border: 1px solid var(--border); border-radius: 12px;
+padding: 8px; margin-top: 6px;
 }
 .tag-ms-panel.open {
-  display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px 4px; align-content: start;
+display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px 4px; align-content: start;
 }
 .tag-ms-item {
-  display: flex; align-items: center; gap: 4px; padding: 6px 3px; font-size: 11px; color: var(--text);
-  border-radius: 6px; cursor: pointer; min-width: 0;
+display: flex; align-items: center; gap: 4px; padding: 6px 3px; font-size: 11px; color: var(--text);
+border-radius: 6px; cursor: pointer; min-width: 0;
 }
 .tag-ms-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tag-ms-item:hover { background: rgba(255,255,255,.04); }
 .tag-ms-item input { accent-color: var(--purple); flex: 0 0 auto; }
 .tag-ms-panel.open > button, .tag-ms-panel.open > div { grid-column: 1 / -1; }
-
 /* ---------- Main / grid ---------- */
 main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150px + env(safe-area-inset-bottom, 0px)); }
 .section-title { font-size: 19px; font-weight: 700; text-align: center; color: var(--text); text-transform: uppercase; letter-spacing: .06em; margin: 18px 4px 10px; }
-/* Homepage shelf-row headers double as expand/collapse toggles — see
-   homeSectionHtml()/HOME_COLLAPSED_SECTIONS. Same collapsible mechanic as
-   .filters-collapsible above: always rendered, max-height transition. */
 .home-section-title { cursor: pointer; user-select: none; }
 .home-section-chevron { display: inline-block; color: var(--purple); font-size: 15px; margin-right: 2px; }
 .home-section-body {
-  max-height: 6000px; overflow: hidden; opacity: 1;
-  transition: max-height .25s ease, opacity .2s ease, margin .2s ease;
+max-height: 6000px; overflow: hidden; opacity: 1;
+transition: max-height .25s ease, opacity .2s ease, margin .2s ease;
 }
 .home-section-body.collapsed { max-height: 0; opacity: 0; pointer-events: none; }
 
 .cover-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 12px;
+display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 12px;
 }
 .cover-card { cursor: pointer; }
 .cover-thumb {
-  width: 100%; aspect-ratio: 2/3; border-radius: var(--radius-sm); background: var(--card);
-  border: 1px solid var(--border); overflow: hidden; position: relative;
-  display: flex; align-items: center; justify-content: center;
+width: 100%; aspect-ratio: 2/3; border-radius: var(--radius-sm); background: var(--card);
+border: 1px solid var(--border); overflow: hidden; position: relative;
+display: flex; align-items: center; justify-content: center;
 }
 .cover-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .cover-placeholder { font-size: 30px; opacity: .5; }
@@ -247,249 +221,178 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 
 .empty-state { text-align: center; color: var(--text-dim); padding: 50px 20px; }
 
-/* Lives inline in the global header next to search now (was a fixed
-   bottom-right FAB) so it's reachable from every screen, not just the
-   homepage — same "always visible next to search" placement everywhere. */
 .header-add-btn {
-  flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%;
-  background: linear-gradient(135deg, var(--purple), var(--pink)); color: #170b26; font-size: 19px; border: none;
-  box-shadow: 0 3px 10px rgba(179,75,255,.4); display: flex; align-items: center; justify-content: center; line-height: 1;
+flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%;
+background: linear-gradient(135deg, var(--purple), var(--pink)); color: #ffffff; font-size: 19px; border: none;
+box-shadow: 0 3px 10px rgba(179,75,255,.4); display: flex; align-items: center; justify-content: center; line-height: 1;
 }
 
 .bottom-nav {
-  position: fixed; bottom: 0; left: 0; right: 0; z-index: 30;
-  display: flex; background: rgba(18,22,46,0.96); backdrop-filter: blur(10px);
-  border-top: 1px solid var(--border);
-  padding-bottom: env(safe-area-inset-bottom, 0px);
-  overflow-x: auto;
+position: fixed; bottom: 0; left: 0; right: 0; z-index: 30;
+display: flex; background: rgba(11,15,43,0.96); backdrop-filter: blur(10px);
+border-top: 1px solid var(--border);
+padding-bottom: env(safe-area-inset-bottom, 0px);
+overflow-x: auto;
 }
 .bottom-nav button {
-  flex: 1; min-width: 54px; background: none; border: none; color: var(--text-dim); padding: 8px 2px 7px; font-size: 9.5px;
-  display: flex; flex-direction: column; align-items: center; gap: 2px; white-space: nowrap;
+flex: 1; min-width: 54px; background: none; border: none; color: var(--text-dim); padding: 8px 2px 7px; font-size: 9.5px;
+display: flex; flex-direction: column; align-items: center; gap: 2px; white-space: nowrap;
 }
 .bottom-nav button .icon { font-size: 17px; }
 .bottom-nav button.active { color: var(--pink); }
-/* Red "H" glyph for the Hentai tab — plain sans-serif letter instead of an
-   emoji, per her spec, so it reads unambiguously at nav-icon size. */
 .icon-h { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; font-weight: 800; color: #f43f5e; line-height: 1; }
 .bottom-nav button.active .icon-h { color: #f43f5e; }
-/* A plain bold letter reads visually smaller than the other tabs' emoji at
-   the same font-size, so it gets a small bump here to match their apparent
-   weight/size in the nav bar specifically (the page-title usage above sets
-   its own inline size and is unaffected). */
 .bottom-nav button .icon-h { font-size: 20px; }
 
 /* ---------- Reactions/meme library ---------- */
 .reaction-thumb { position: relative; aspect-ratio: 1/1; border-radius: var(--radius-sm); overflow: hidden; background: var(--navy-2); cursor: pointer; }
 .reaction-thumb img, .reaction-thumb video { width: 100%; height: 100%; object-fit: cover; }
 .reaction-thumb .del {
-  position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 50%;
-  background: rgba(0,0,0,.6); color: #fff; border: none; font-size: 12px;
+position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 50%;
+background: rgba(0,0,0,.6); color: #fff; border: none; font-size: 12px;
 }
 .toggle-switch {
-  position: relative; width: 42px; height: 24px; border-radius: 12px; border: none;
-  background: var(--navy-2); border: 1px solid var(--border); cursor: pointer; padding: 0; flex-shrink: 0;
-  transition: background .18s ease;
+position: relative; width: 42px; height: 24px; border-radius: 12px; border: none;
+background: var(--navy-2); border: 1px solid var(--border); cursor: pointer; padding: 0; flex-shrink: 0;
+transition: background .18s ease;
 }
 .toggle-switch .toggle-knob {
-  position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
-  background: var(--text-dim); transition: transform .18s ease, background .18s ease;
+position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+background: var(--text-dim); transition: transform .18s ease, background .18s ease;
 }
 .toggle-switch.on { background: var(--pink); border-color: var(--pink); }
 .toggle-switch.on .toggle-knob { transform: translateX(18px); background: #fff; }
 
 .reaction-count {
-  position: absolute; bottom: 4px; left: 4px; min-width: 18px; height: 18px; padding: 0 5px;
-  border-radius: 9px; background: rgba(0,0,0,.65); color: #fff; font-size: 11px; font-weight: 600;
-  display: flex; align-items: center; justify-content: center;
+position: absolute; bottom: 4px; left: 4px; min-width: 18px; height: 18px; padding: 0 5px;
+border-radius: 9px; background: rgba(0,0,0,.65); color: #fff; font-size: 11px; font-weight: 600;
+display: flex; align-items: center; justify-content: center;
 }
 .reaction-picker-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; max-height: 320px; overflow-y: auto; margin-bottom: 10px; }
 .reaction-thumb.pickable { cursor: pointer; border: 2px solid transparent; }
 .reaction-thumb.pickable.selected { border-color: var(--pink); box-shadow: 0 0 0 2px var(--pink); }
 
-/* Masonry via CSS columns — each image keeps its natural aspect ratio (no
-   cropping/clipping like the old square grid), it just flows into whichever
-   column has room next, Pinterest-style. */
 .image-masonry { column-count: 2; column-gap: 10px; }
 @media (min-width: 480px) { .image-masonry { column-count: 3; } }
 @media (min-width: 720px) { .image-masonry { column-count: 4; } }
 .masonry-item {
-  position: relative; break-inside: avoid; margin-bottom: 10px; border-radius: var(--radius-sm);
-  overflow: hidden; background: var(--navy-2); cursor: pointer;
+position: relative; break-inside: avoid; margin-bottom: 10px; border-radius: var(--radius-sm);
+overflow: hidden; background: var(--navy-2); cursor: pointer;
 }
 .masonry-item img, .masonry-item video { width: 100%; height: auto; display: block; }
 .masonry-item.selectable { cursor: pointer; }
 .masonry-item.selected { box-shadow: 0 0 0 3px var(--purple) inset; }
 .masonry-item .select-check {
-  position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border-radius: 999px;
-  background: rgba(18,22,46,0.85); display: flex; align-items: center; justify-content: center;
-  font-size: 14px; line-height: 1; z-index: 2; pointer-events: none;
+position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border-radius: 999px;
+background: rgba(11,15,43,0.85); display: flex; align-items: center; justify-content: center;
+font-size: 14px; line-height: 1; z-index: 2; pointer-events: none;
 }
-/* Possible-Duplicates per-item delete "X" — was previously unstyled/
-   unpositioned, so it fell into normal document flow right under the image,
-   landing on top of the "Untagged" badge that sits at the image's own
-   bottom-left corner. Pinning it to the top-right (same spot as the
-   Reactions gallery's .reaction-thumb .del) keeps it clear of that badge. */
 .masonry-item .del {
-  position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 50%;
-  background: rgba(0,0,0,.6); color: #fff; border: none; font-size: 12px; z-index: 2;
+position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 50%;
+background: rgba(0,0,0,.6); color: #fff; border: none; font-size: 12px; z-index: 2;
 }
-/* Possible Duplicates screens (Images/Reactions/NSFW) are a fast triage
-   flow — tap a copy, it's gone. The whole card is the delete target (see
-   the click handlers on data-images-item/data-open-meme/data-h-item, which
-   branch on which tab is showing), so this is purely a big, unmissable
-   visual cue rather than its own separate hit target — no button, no
-   pointer-events, just a large centered ✕ instead of the old tiny corner
-   icon that was easy to miss/mis-tap. */
 .dup-del-hint {
-  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  width: 46px; height: 46px; border-radius: 50%; background: rgba(0,0,0,.55);
-  color: #fff; display: flex; align-items: center; justify-content: center;
-  font-size: 22px; line-height: 1; pointer-events: none; z-index: 2;
+position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+width: 46px; height: 46px; border-radius: 50%; background: rgba(0,0,0,.55);
+color: #fff; display: flex; align-items: center; justify-content: center;
+font-size: 22px; line-height: 1; pointer-events: none; z-index: 2;
 }
-/* "Untagged" needs to actually grab the eye while scanning a big grid — the
-   old version reused .reaction-count (the same small corner pill used for
-   attachment-count numbers), which was easy to miss. This is a distinct,
-   larger banner across the middle of the thumbnail instead. Never rendered
-   at the same time as .dup-del-hint (see masonryItem/hMasonryItem — forceDel
-   takes priority), so there's no risk of the two overlapping in Possible
-   Duplicates. */
 .untagged-badge {
-  position: absolute; top: 50%; left: 6px; right: 6px; transform: translateY(-50%);
-  padding: 7px 6px; border-radius: 8px; background: rgba(200,60,60,.88);
-  color: #fff; font-size: 13px; font-weight: 800; text-transform: uppercase;
-  letter-spacing: .4px; text-align: center; pointer-events: none; z-index: 2;
+position: absolute; top: 50%; left: 6px; right: 6px; transform: translateY(-50%);
+padding: 7px 6px; border-radius: 8px; background: rgba(200,60,60,.88);
+color: #fff; font-size: 13px; font-weight: 800; text-transform: uppercase;
+letter-spacing: .4px; text-align: center; pointer-events: none; z-index: 2;
 }
 
 .mood-chip {
-  padding: 7px 14px; border-radius: 999px; font-size: 13px; font-weight: 600;
-  background: var(--card); color: var(--text-dim); border: 1px solid var(--border); cursor: pointer;
+padding: 7px 14px; border-radius: 999px; font-size: 13px; font-weight: 600;
+background: var(--card); color: var(--text-dim); border: 1px solid var(--border); cursor: pointer;
 }
 .mood-chip.active { background: var(--purple); color: #fff; border-color: var(--purple); }
 .mood-chip.small { padding: 5px 10px; font-size: 12px; }
 
-/* Group/mood chip row in Images/Reactions/NSFW gallery headers (.app-header
-   is position:sticky, so it stays pinned to the top of the window while
-   scrolling — but its total height sticks with it too. Without a cap here,
-   adding more custom groups just kept growing this row forever, until the
-   sticky header itself was tall enough to cover the whole gallery beneath
-   it. Capping the height and scrolling internally keeps the sticky header a
-   fixed, predictable size no matter how many groups exist. */
 .group-chip-row {
-  /* No max-height/scroll here on purpose — now that the whole filter box
-     can be collapsed via the Hide/Show Filters toggle, a second nested
-     scroll area inside it is just annoying. Let it wrap and grow freely;
-     collapsing the box is the way to reclaim gallery space. */
-  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
 }
-
 /* ---------- Detail / Journal screen ---------- */
-/* Split into two stacked rows (title row, then an icon toolbar row below it)
-   instead of cramming Back + title + 5 action icons onto one line — that
-   line was squeezing the title down to almost nothing on narrow phones.
-   Icons are always in their own row now (not just under a mobile media
-   query) since that reads cleanly at any width and is one less layout mode
-   to maintain. */
 .detail-header {
-  display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; position: sticky; top: var(--global-header-h); z-index: 30;
-  background: rgba(18,22,46,0.92); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border);
+display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; position: sticky; top: var(--global-header-h); z-index: 30;
+background: rgba(11,15,43,0.92); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border);
 }
-/* Back button, title, and the action-icon row all share one flex row (not
-   stacked on separate lines) so they read as a single header line — title
-   shrinks/truncates first, icons wrap to a second row only if the viewport
-   is too narrow to fit everything. */
 .detail-header-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; row-gap: 10px; }
 .back-btn { background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 999px; padding: 7px 12px; font-size: 14px; flex-shrink: 0; }
 .detail-header h2 { font-size: 15px; margin: 0; flex: 1 1 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 70px; }
 .icon-btn { background: var(--card); border: 1px solid var(--border); color: var(--yellow); border-radius: 999px; width: 34px; height: 34px; font-size: 16px; flex-shrink: 0; }
 .icon-btn.danger { color: #ff6767; border-color: rgba(255,103,103,.4); }
-/* Same 💾 glyph either way (synced with the same icon used for "On Drive"
-   elsewhere in the app) — active/inactive is a color difference, not a
-   different emoji, so it doesn't look like two unrelated icons. */
-/* Same pink as the active bottom-nav tab (--pink), filled solid rather than
-   just outlined, so Favorite/On HD read as clearly "on" at a glance — not
-   just a subtle color shift. */
-.icon-btn.hd-active, .icon-btn.fav-active, .icon-btn.hentai-active { background: var(--pink); color: #170b26; border-color: var(--pink); }
+.icon-btn.hd-active, .icon-btn.fav-active, .icon-btn.hentai-active { background: var(--pink); color: #ffffff; border-color: var(--pink); }
 .icon-btn.save { color: #22c55e; border-color: rgba(34,197,94,.45); }
 .icon-btn.save.active { background: #22c55e; color: #08130c; }
 
-/* Icon + always-visible uppercase label, stacked pairs, per the redesigned
-   detail-header action row — replaces the old icon-only-with-hover-tooltip
-   buttons so the row reads clearly without needing to hover each one. */
 .icon-action { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
 .icon-action .icon-label { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-dim); white-space: nowrap; }
 
 .journal { padding: 12px; max-width: 720px; margin: 0 auto; padding-bottom: calc(190px + env(safe-area-inset-bottom, 0px)); }
 
 .panel {
-  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 14px;
+background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 14px;
 }
-.panel-title { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--yellow); margin: 0 0 10px; font-weight: 700; }
-.panel-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-.panel-title-row .icon-btn-inline { font-size: 15px; padding: 0; }
+.panel-title {
+font-size: 12px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700;
+background: var(--pink); color: #fff;
+margin: -14px -14px 12px; padding: 10px 14px;
+border-radius: var(--radius) var(--radius) 0 0;
+}
+.panel-title-row {
+display: flex; align-items: center; justify-content: space-between;
+background: var(--pink); color: #fff;
+margin: -14px -14px 12px; padding: 10px 14px;
+border-radius: var(--radius) var(--radius) 0 0;
+}
+.panel-title-row .panel-title { background: none; color: #fff; margin: 0; padding: 0; border-radius: 0; }
+.panel-title-row .icon-btn-inline { font-size: 15px; padding: 0; color: #fff; }
 
-/* align-items:flex-start (not the default stretch) so the cover column
-   keeps its own natural aspect-ratio height instead of stretching to match
-   however tall the info column's text ends up being — that stretch was
-   what made the top "Details" panel balloon into a tall, warped-looking
-   block on mobile, pushing everything below out of view. The Summary /
-   Suggested-match blocks (which can be long) now render full-width below
-   both columns instead of inside the right column, for the same reason. */
 .split-row { display: flex; gap: 12px; align-items: flex-start; }
 .split-row > div { flex: 1; min-width: 0; }
 .split-row > div:first-child { flex: 0 0 108px; }
 @media (max-width: 420px) {
-  .split-row > div:first-child { flex-basis: 84px; }
+.split-row > div:first-child { flex-basis: 84px; }
 }
 
 .cover-slot {
-  width: 100%; aspect-ratio: 2/3; border-radius: var(--radius-sm); background: var(--navy-2);
-  border: 1px dashed var(--border); overflow: hidden; display: flex; align-items: center; justify-content: center;
+width: 100%; aspect-ratio: 2/3; border-radius: var(--radius-sm); background: var(--navy-2);
+border: 1px dashed var(--border); overflow: hidden; display: flex; align-items: center; justify-content: center;
 }
 .cover-slot img { width: 100%; height: 100%; object-fit: cover; }
-/* Drag-and-drop target feedback (desktop only — see wireImageDropZone). */
 .cover-slot.drag-over, .char-photo-slot.drag-over {
-  border-color: var(--purple); border-style: solid; background: var(--purple-soft);
-  box-shadow: 0 0 0 2px rgba(155,109,255,.25) inset;
+border-color: var(--purple); border-style: solid; background: var(--purple-soft);
+box-shadow: 0 0 0 2px rgba(155,109,255,.25) inset;
 }
 .screencap-dropzone { min-height: 40px; border-radius: 10px; transition: box-shadow .1s, background .1s; }
 .screencap-dropzone.drag-over {
-  background: var(--purple-soft); box-shadow: 0 0 0 2px var(--purple) inset;
-  border: 1px dashed var(--purple);
+background: var(--purple-soft); box-shadow: 0 0 0 2px var(--purple) inset;
+border: 1px dashed var(--purple);
 }
-/* Images/Reactions/H gallery main areas — drop a batch of files anywhere in
-   here to upload them, same visual feedback as the other dropzones above. */
 .gallery-dropzone { min-height: 120px; border-radius: 10px; transition: box-shadow .1s, background .1s; }
 .gallery-dropzone.drag-over {
-  background: var(--purple-soft); box-shadow: 0 0 0 2px var(--purple) inset;
-  border: 1px dashed var(--purple);
+background: var(--purple-soft); box-shadow: 0 0 0 2px var(--purple) inset;
+border: 1px dashed var(--purple);
 }
 
 .field-row { margin-bottom: 8px; }
 .field-row label { display: block; font-size: 10.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
 .field-row .value, .field-row input, .field-row select, .field-row textarea {
-  font-size: 13.5px; color: var(--text); background: var(--navy-2); border: 1px solid var(--border);
-  border-radius: 8px; padding: 6px 8px; width: 100%; box-sizing: border-box; font-family: inherit; resize: vertical;
+font-size: 13.5px; color: var(--text); background: var(--navy-2); border: 1px solid var(--border);
+border-radius: 8px; padding: 6px 8px; width: 100%; box-sizing: border-box; font-family: inherit; resize: vertical;
 }
 .field-row .value.plain { background: none; border: none; padding: 0; }
 
-/* Details container redesign: Author/Artist and Total Seasons/Status pair up
-   into two columns, split by a pink divider bar — see renderDetailPage()'s
-   topFieldsHtml. A second, full-width divider (a direct sibling of
-   .split-row rather than nested inside it) separates the whole cover+fields
-   block from the Summary text below, matching the reference mockup. */
 .field-row-2col { display: flex; gap: 14px; }
 .field-row-2col > div { flex: 1; min-width: 0; }
-/* Extra breathing room specifically between Total Seasons/Chapters and the
-   Status pill — the default 14px gap read as too cramped there. */
 .field-row-2col.wide-gap { gap: 28px; }
 .details-divider { height: 3px; background: var(--pink); border-radius: 999px; margin: 12px 0; }
 .details-divider-full { margin: 14px 0; }
 
 .rating-row { display: flex; align-items: stretch; justify-content: space-around; gap: 10px; }
-/* 2x2 layout (Overall/Smut on top, Crying/Laughing below) instead of the old
-   single cramped row of three — same .rating-block/.rating-icons cells, just
-   wrapped in a grid so a 4th rating fits without squeezing everything down. */
 .rating-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px 14px; }
 .rating-block { text-align: center; flex: 1; }
 .rating-block .label { font-size: 13.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 10px; }
@@ -502,13 +405,11 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 .char-col-head { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .char-col-head h4 { font-size: 15px; font-weight: 700; margin: 0; color: var(--text); }
 .char-photo-slot {
-  width: 78%; margin: 0 auto 8px; aspect-ratio: 1/1; border-radius: var(--radius-sm); background: var(--navy-2);
-  border: 1px dashed var(--border); display: flex; align-items: center; justify-content: center; overflow: hidden;
-  font-size: 22px; color: var(--text-dim);
+width: 78%; margin: 0 auto 8px; aspect-ratio: 1/1; border-radius: var(--radius-sm); background: var(--navy-2);
+border: 1px dashed var(--border); display: flex; align-items: center; justify-content: center; overflow: hidden;
+font-size: 22px; color: var(--text-dim);
 }
 .char-photo-slot img { width: 100%; height: 100%; object-fit: cover; }
-/* Flag row sits directly under the photo and matches its width, same idea
-   as the Smut/Overall rating rows above this panel. */
 .flag-picker { display: flex; justify-content: space-between; gap: 6px; width: 78%; margin: 0 auto 10px; }
 .flag-picker .flag-dot { flex: 1; }
 .review-card-row { display: flex; gap: 10px; }
@@ -532,8 +433,8 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 
 .tag-cloud { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .tag-chip {
-  background: var(--yellow-soft); color: var(--yellow); border: 1px solid var(--yellow); border-radius: 999px;
-  padding: 4px 10px; font-size: 12px; display: flex; align-items: center; gap: 5px; cursor: pointer;
+background: var(--yellow-soft); color: var(--yellow); border: 1px solid var(--yellow); border-radius: 999px;
+padding: 4px 10px; font-size: 12px; display: flex; align-items: center; gap: 5px; cursor: pointer;
 }
 .tag-chip.custom { background: var(--pink-soft); color: var(--pink); border-color: var(--pink); }
 .tag-chip.tag-removed { opacity: .35; text-decoration: line-through; }
@@ -541,18 +442,18 @@ main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150
 .tag-chip button { background: none; border: none; color: inherit; font-size: 13px; cursor: pointer; padding: 0; }
 .add-tag-row { display: flex; gap: 6px; }
 .add-tag-row input { flex: 1; }
-.add-tag-row button { padding: 6px 12px; border-radius: 8px; border: none; background: var(--purple); color: #170b26; font-weight: 700; }
+.add-tag-row button { padding: 6px 12px; border-radius: 8px; border: none; background: var(--purple); color: #ffffff; font-weight: 700; }
 
 textarea {
-  width: 100%; background: var(--navy-2); color: var(--text); border: 1px solid var(--border);
-  border-radius: 8px; padding: 8px; font-size: 13.5px; resize: vertical; min-height: 70px;
+width: 100%; background: var(--navy-2); color: var(--text); border: 1px solid var(--border);
+border-radius: 8px; padding: 8px; font-size: 13.5px; resize: vertical; min-height: 70px;
 }
 
 .summary-text { font-size: 13px; color: var(--text-dim); line-height: 1.5; }
 .summary-source { font-size: 11px; margin-top: 6px; }
 .ref-btn {
-  background: var(--purple-soft); color: var(--purple); border: 1px solid var(--purple); border-radius: 999px;
-  padding: 7px 14px; font-size: 12.5px; font-weight: 700;
+background: var(--purple-soft); color: var(--purple); border: 1px solid var(--purple); border-radius: 999px;
+padding: 7px 14px; font-size: 12.5px; font-weight: 700;
 }
 
 .screencap-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
@@ -560,133 +461,114 @@ textarea {
 .screencap-thumb img { width: 100%; height: 100%; object-fit: cover; cursor: pointer; }
 .screencap-thumb .del { position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,.6); color: #fff; border: none; border-radius: 50%; width: 20px; height: 20px; font-size: 11px; }
 .upload-btn {
-  display: inline-block; background: var(--card-2); color: var(--text); border: 1px dashed var(--border);
-  border-radius: 8px; padding: 8px 12px; font-size: 12.5px; text-align: center; cursor: pointer;
+display: inline-block; background: var(--card-2); color: var(--text); border: 1px dashed var(--border);
+border-radius: 8px; padding: 8px 12px; font-size: 12.5px; text-align: center; cursor: pointer;
 }
 .upload-btn input { display: none; }
 .upload-btn.small { padding: 6px 8px; font-size: 11px; flex: 1; white-space: nowrap; }
 
-/* Stacked (not side-by-side) so the Change button and the shelf-status
-   pill each get the cover column's full width — the narrow cover column
-   (84-108px) isn't wide enough for both to share a row without squishing
-   into each other, which is what produced the overlapping/clipped text +
-   arrow-icon artifact reported on the "Currently Reading" pill. */
 .cover-actions-row { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 .cover-actions-row .upload-btn.small { flex: 0 0 auto; width: 100%; box-sizing: border-box; }
 .shelf-select {
-  width: 100%; box-sizing: border-box; appearance: none; -webkit-appearance: none; background: var(--purple); color: #170b26;
-  border: none; border-radius: 10px; padding: 6px 20px 6px 8px; font-size: 10.5px; font-weight: 700; line-height: 1.3;
-  cursor: pointer; text-align: center; text-align-last: center;
-  background-image: linear-gradient(45deg, transparent 50%, #170b26 50%), linear-gradient(135deg, #170b26 50%, transparent 50%);
-  background-position: right 8px center, right 4px center; background-size: 4px 4px, 4px 4px; background-repeat: no-repeat;
+width: 100%; box-sizing: border-box; appearance: none; -webkit-appearance: none; background: var(--purple); color: #ffffff;
+border: none; border-radius: 10px; padding: 6px 20px 6px 8px; font-size: 10.5px; font-weight: 700; line-height: 1.3;
+cursor: pointer; text-align: center; text-align-last: center;
+background-image: linear-gradient(45deg, transparent 50%, #ffffff 50%), linear-gradient(135deg, #ffffff 50%, transparent 50%);
+background-position: right 8px center, right 4px center; background-size: 4px 4px, 4px 4px; background-repeat: no-repeat;
 }
 
 .icon-btn-inline {
-  background: none; border: none; color: var(--text-dim); font-size: 13px; cursor: pointer; padding: 0 0 0 4px; vertical-align: middle;
+background: none; border: none; color: var(--text-dim); font-size: 13px; cursor: pointer; padding: 0 0 0 4px; vertical-align: middle;
 }
 
-/* Reading Link container redesign — link on the left, a new editable
-   "Current Chapter" pill on the right, remove (X) button aligned with both. */
 .reading-link-row { display: flex; gap: 14px; align-items: flex-start; }
 .reading-link-value {
-  display: block; color: var(--pink); text-decoration: underline; font-size: 13.5px;
-  overflow-wrap: anywhere; word-break: break-word;
+display: block; color: var(--pink); text-decoration: underline; font-size: 13.5px;
+overflow-wrap: anywhere; word-break: break-word;
 }
 .reading-chapter-col { flex: 0 0 108px; text-align: center; }
 .reading-chapter-col label {
-  display: block; font-size: 10.5px; color: var(--text-dim); text-transform: uppercase;
-  letter-spacing: .04em; margin-bottom: 2px; text-align: center;
+display: block; font-size: 10.5px; color: var(--text-dim); text-transform: uppercase;
+letter-spacing: .04em; margin-bottom: 2px; text-align: center;
 }
 .chapter-pill-input {
-  width: 100%; box-sizing: border-box; background: var(--purple); color: #fff; border: none;
-  border-radius: 10px; padding: 6px 10px; font-size: 12.5px; font-weight: 400; text-align: center; font-family: inherit;
+width: 100%; box-sizing: border-box; background: var(--purple); color: #fff; border: none;
+border-radius: 10px; padding: 6px 10px; font-size: 12.5px; font-weight: 400; text-align: center; font-family: inherit;
 }
 .chapter-pill-input::placeholder { color: rgba(255,255,255,.75); }
-/* Story Status + Reading Status pills — same title-label treatment as the
-   Current Chapter pill (centered, uppercase, dim), and both dropdowns
-   restyled to match: white, not-bold text, instead of the default
-   .shelf-select dark/bold pill look. */
 .status-pill-label {
-  display: block; font-size: 10.5px; color: var(--text-dim); text-transform: uppercase;
-  letter-spacing: .04em; margin-bottom: 2px; text-align: center;
+display: block; font-size: 10.5px; color: var(--text-dim); text-transform: uppercase;
+letter-spacing: .04em; margin-bottom: 2px; text-align: center;
 }
 .status-pill-select { color: #fff; font-weight: 400; }
 .reading-link-row .reading-link-clear { align-self: center; margin-top: 16px; }
 
 .pdf-row { display: flex; gap: 8px; align-items: center; }
 .pdf-row input {
-  width: 100%; font-size: 13.5px; color: var(--text); background: var(--navy-2); border: 1px solid var(--border);
-  border-radius: 8px; padding: 8px 10px; box-sizing: border-box;
+width: 100%; font-size: 13.5px; color: var(--text); background: var(--navy-2); border: 1px solid var(--border);
+border-radius: 8px; padding: 8px 10px; box-sizing: border-box;
 }
 .pdf-row a.open-link, .panel > a.open-link {
-  background: var(--pink); color: #170b26; font-weight: 700; border-radius: 8px; padding: 8px 12px; font-size: 12.5px; text-decoration: none; white-space: nowrap;
+background: var(--pink); color: #ffffff; font-weight: 700; border-radius: 8px; padding: 8px 12px; font-size: 12.5px; text-decoration: none; white-space: nowrap;
 }
 
 .status-toggle-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .status-toggle {
-  flex: 1; min-width: 80px; padding: 7px; text-align: center; border-radius: var(--radius-sm);
-  background: var(--navy-2); border: 1px solid var(--border); color: var(--text-dim); font-size: 12px; font-weight: 700;
+flex: 1; min-width: 80px; padding: 7px; text-align: center; border-radius: var(--radius-sm);
+background: var(--navy-2); border: 1px solid var(--border); color: var(--text-dim); font-size: 12px; font-weight: 700;
 }
-.status-toggle.active { background: var(--purple); color: #170b26; border-color: var(--purple); }
-
+.status-toggle.active { background: var(--purple); color: #ffffff; border-color: var(--purple); }
 /* ---------- Reaction crop tool ---------- */
 .crop-stage {
-  position: relative; width: 100%; max-height: 60vh; overflow: hidden; border-radius: 10px;
-  background: #000; display: flex; align-items: center; justify-content: center; touch-action: none;
+position: relative; width: 100%; max-height: 60vh; overflow: hidden; border-radius: 10px;
+background: #000; display: flex; align-items: center; justify-content: center; touch-action: none;
 }
 .crop-stage img { max-width: 100%; max-height: 60vh; display: block; user-select: none; -webkit-user-drag: none; }
 .crop-box {
-  position: absolute; border: 2px solid var(--purple); background: rgba(155,109,255,.15);
-  box-sizing: border-box; cursor: move; touch-action: none;
+position: absolute; border: 2px solid var(--purple); background: rgba(155,109,255,.15);
+box-sizing: border-box; cursor: move; touch-action: none;
 }
 .crop-handle {
-  position: absolute; right: -9px; bottom: -9px; width: 18px; height: 18px; background: var(--purple);
-  border-radius: 50%; cursor: nwse-resize; touch-action: none; border: 2px solid #170b26;
+position: absolute; right: -9px; bottom: -9px; width: 18px; height: 18px; background: var(--purple);
+border-radius: 50%; cursor: nwse-resize; touch-action: none; border: 2px solid #ffffff;
 }
 
 /* ---------- Modals ---------- */
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; align-items: flex-end; justify-content: center; z-index: 50; }
 .overlay.open { display: flex; }
 .modal-sheet {
-  background: var(--navy-2); width: 100%; max-width: 720px; max-height: 90vh; overflow-y: auto;
-  border-radius: 20px 20px 0 0; padding: 18px; border-top: 1px solid var(--border);
+background: var(--card); width: 100%; max-width: 720px; max-height: 90vh; overflow-y: auto;
+border-radius: 20px 20px 0 0; padding: 18px; border-top: 1px solid var(--border);
 }
-/* Individual Images/Reactions/H file modals open dead-center on screen
-   instead of the usual bottom sheet — see openModal({centered:true}). */
 .overlay.overlay-centered { align-items: center; padding: 16px; }
 .overlay.overlay-centered .modal-sheet { border-radius: 20px; border-top: 1px solid var(--border); }
 .modal-sheet h3 { margin-top: 0; font-size: 16px; }
 .lightbox-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .lightbox-img { max-width: 100%; max-height: 76vh; border-radius: 10px; object-fit: contain; }
 .lightbox-close {
-  background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 999px;
-  padding: 9px 18px; font-size: 13.5px; font-weight: 700;
+background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 999px;
+padding: 9px 18px; font-size: 13.5px; font-weight: 700;
 }
 .modal-close-corner-wrap { position: relative; }
 .modal-close-x {
-  position: absolute; top: -4px; right: -4px; width: 32px; height: 32px; border-radius: 999px;
-  background: rgba(18,22,46,0.85); color: var(--text); border: 1px solid var(--border);
-  font-size: 15px; line-height: 1; z-index: 2;
+position: absolute; top: -4px; right: -4px; width: 32px; height: 32px; border-radius: 999px;
+background: rgba(11,15,43,0.85); color: #fff; border: 1px solid var(--border);
+font-size: 15px; line-height: 1; z-index: 2;
 }
-/* Prev/next chevrons overlaid on the media in the individual Images/
-   Reactions/H item modals — lets her step through the same set of items she
-   was just browsing without closing the modal. Swipe works too on touch
-   devices (see wireModalSwipeNav in app.js); these are the tap targets for
-   everyone else, and the visible affordance either way. */
 .modal-media-nav { position: relative; }
 .modal-nav-arrow {
-  position: absolute; top: 50%; transform: translateY(-50%); z-index: 3;
-  width: 36px; height: 36px; border-radius: 999px; border: none;
-  background: rgba(18,22,46,0.55); color: #fff; font-size: 22px; line-height: 1;
-  display: flex; align-items: center; justify-content: center;
+position: absolute; top: 50%; transform: translateY(-50%); z-index: 3;
+width: 36px; height: 36px; border-radius: 999px; border: none;
+background: rgba(11,15,43,0.55); color: #fff; font-size: 22px; line-height: 1;
+display: flex; align-items: center; justify-content: center;
 }
 .modal-nav-prev { left: 8px; }
 .modal-nav-next { right: 8px; }
 .modal-actions { display: flex; gap: 10px; margin-top: 16px; }
-.btn-primary { flex: 1; background: linear-gradient(135deg, var(--purple), var(--pink)); color: #170b26; border: none; border-radius: 10px; padding: 11px; font-weight: 700; font-size: 14px; }
+.btn-primary { flex: 1; background: linear-gradient(135deg, var(--purple), var(--pink)); color: #ffffff; border: none; border-radius: 10px; padding: 11px; font-weight: 700; font-size: 14px; }
 .btn-ghost { flex: 1; background: transparent; border: 1px solid var(--border); color: var(--text-dim); border-radius: 10px; padding: 11px; font-size: 14px; }
 
-.match-preview { display: flex; gap: 12px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 10px; margin-bottom: 10px; }
+.match-preview { display: flex; gap: 12px; background: var(--card-2); border: 1px solid var(--border); border-radius: 12px; padding: 10px; margin-bottom: 10px; }
 .match-preview img { width: 70px; height: 100px; object-fit: cover; border-radius: 6px; background: var(--navy-2); }
 .match-preview .info { flex: 1; font-size: 12.5px; color: var(--text-dim); }
 .match-preview .info strong { color: var(--text); display: block; margin-bottom: 3px; font-size: 13.5px; }
@@ -700,35 +582,30 @@ textarea {
 .match-suggest-box .ref-btn { display: block; width: 100%; box-sizing: border-box; padding: 8px; font-size: 11.5px; }
 
 .toast {
-  /* Moved from a small top banner to dead-center of the screen — easier to
-     notice/read, especially for longer status messages (backfill/sweep
-     progress, sync results) that used to get cut off or missed entirely
-     up in the corner. Now also stays up until explicitly dismissed via the
-     OK button (see showToast/hideToast) instead of vanishing in ~2s. */
-  position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--purple); color: #170b26;
-  padding: 14px 18px; border-radius: 14px; font-size: 14px; font-weight: 700; z-index: 60; display: none;
-  max-width: 85vw; text-align: center; box-shadow: 0 8px 30px rgba(0,0,0,.45);
-  align-items: center; gap: 14px;
+position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--purple); color: #ffffff;
+padding: 14px 18px; border-radius: 14px; font-size: 14px; font-weight: 700; z-index: 60; display: none;
+max-width: 85vw; text-align: center; box-shadow: 0 8px 30px rgba(0,0,0,.45);
+align-items: center; gap: 14px;
 }
 .toast #toast-msg { flex: 1; text-align: left; }
 .toast-ok-btn {
-  flex-shrink: 0; background: #170b26; color: var(--purple); border: none; border-radius: 999px;
-  padding: 7px 16px; font-size: 13px; font-weight: 700; cursor: pointer;
+flex-shrink: 0; background: #ffffff; color: var(--purple); border: none; border-radius: 999px;
+padding: 7px 16px; font-size: 13px; font-weight: 700; cursor: pointer;
 }
 
 /* ---------- Database / reference mode ---------- */
 .db-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
 table.db-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-table.db-table th { position: sticky; top: 0; background: var(--card-2); color: var(--yellow); text-align: left; padding: 8px; white-space: nowrap; }
+table.db-table th { position: sticky; top: 0; background: var(--card-2); color: var(--text); text-align: left; padding: 8px; white-space: nowrap; }
 table.db-table td { padding: 7px 8px; border-top: 1px solid var(--border); color: var(--text-dim); white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
-table.db-table tr:hover td { background: rgba(255,255,255,.02); }
+table.db-table tr:hover td { background: var(--card-2); }
 
 .export-row { display: flex; gap: 8px; margin-bottom: 10px; }
 
 /* ---------- Tag manager ---------- */
 .tagmgr-row {
-  display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--card);
-  border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 8px;
+display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--card);
+border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 8px;
 }
 .tagmgr-click-area { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; cursor: pointer; }
 .tagmgr-name { flex: 1; font-size: 13.5px; color: var(--text); min-width: 0; }
@@ -738,54 +615,54 @@ table.db-table tr:hover td { background: rgba(255,255,255,.02); }
 
 .tagmgr-tabs { display: flex; gap: 8px; margin: 4px 0 12px; }
 .tagmgr-tab {
-  flex: 1; text-align: center; padding: 8px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 600;
-  background: var(--card); color: var(--text-dim); border: 1px solid var(--border); cursor: pointer;
+flex: 1; text-align: center; padding: 8px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 600;
+background: var(--card); color: var(--text-dim); border: 1px solid var(--border); cursor: pointer;
 }
 .tagmgr-tab.active { background: var(--yellow); color: #241c02; border-color: var(--yellow); }
 
 .tag-suggestion-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12.5px;
+display: flex; align-items: center; justify-content: space-between; gap: 10px;
+padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12.5px;
 }
 .tag-suggestion-row:last-child { border-bottom: none; }
 .tag-suggestion-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
 /* ---------- Similar-tag suggestions ---------- */
 .tag-similar-box {
-  margin-top: 6px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); font-size: 11.5px;
+margin-top: 6px; padding: 8px 10px; background: var(--card-2); border: 1px solid var(--border);
+border-radius: var(--radius-sm); font-size: 11.5px;
 }
-.tag-similar-box .label { color: var(--yellow); font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 5px; }
+.tag-similar-box .label { color: var(--text-dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 5px; }
 .tag-similar-chip {
-  display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; margin: 0 5px 5px 0;
-  background: var(--card); border: 1px solid var(--border); border-radius: 999px; font-size: 12px;
-  color: var(--text); cursor: pointer;
+display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; margin: 0 5px 5px 0;
+background: var(--card); border: 1px solid var(--border); border-radius: 999px; font-size: 12px;
+color: var(--text); cursor: pointer;
 }
 .tag-similar-chip:hover { border-color: var(--yellow); }
 
 @media (min-width: 640px) {
-  .cover-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+.cover-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
 }
 
 /* ---------- Auth screen (sign in / create account) ---------- */
 .auth-screen {
-  min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
+min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
 }
 .auth-card {
-  width: 100%; max-width: 340px; background: var(--card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 24px 20px;
+width: 100%; max-width: 340px; background: var(--card); border: 1px solid var(--border);
+border-radius: var(--radius); padding: 24px 20px;
 }
 .auth-title { font-size: 22px; font-weight: 700; text-align: center; margin-bottom: 6px; }
 .auth-sub { font-size: 12.5px; color: var(--text-dim); text-align: center; line-height: 1.4; margin-bottom: 18px; }
 .auth-tabs {
-  display: flex; background: var(--navy-2); border: 1px solid var(--border); border-radius: 999px;
-  padding: 3px; margin-bottom: 16px;
+display: flex; background: var(--navy-2); border: 1px solid var(--border); border-radius: 999px;
+padding: 3px; margin-bottom: 16px;
 }
 .auth-tab {
-  flex: 1; text-align: center; padding: 7px 0; font-size: 12.5px; font-weight: 700; color: var(--text-dim);
-  border-radius: 999px; cursor: pointer;
+flex: 1; text-align: center; padding: 7px 0; font-size: 12.5px; font-weight: 700; color: var(--text-dim);
+border-radius: 999px; cursor: pointer;
 }
-.auth-tab.active { background: linear-gradient(135deg, var(--purple), var(--pink)); color: #170b26; }
+.auth-tab.active { background: linear-gradient(135deg, var(--purple), var(--pink)); color: #ffffff; }
 .auth-error { color: var(--red-flag); font-size: 12px; margin: 4px 0 10px; line-height: 1.4; }
 .auth-submit-btn { width: 100%; margin-top: 6px; }
 .auth-submit-btn:disabled { opacity: .6; }
@@ -793,26 +670,21 @@ table.db-table tr:hover td { background: rgba(255,255,255,.02); }
 
 /* ---------- Account panel (Tags screen) ---------- */
 .account-panel {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm);
-  padding: 10px 12px; margin-bottom: 12px;
+display: flex; align-items: center; justify-content: space-between; gap: 10px;
+background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm);
+padding: 10px 12px; margin-bottom: 12px;
 }
 .account-label { font-size: 10.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
 .account-email { font-size: 13px; color: var(--text); margin-top: 2px; word-break: break-all; }
 .account-panel [data-sign-out] {
-  flex-shrink: 0; font-size: 12px; color: var(--text-dim); border: 1px solid var(--border);
-  border-radius: 999px; padding: 6px 12px;
+flex-shrink: 0; font-size: 12px; color: var(--text-dim); border: 1px solid var(--border);
+border-radius: 999px; padding: 6px 12px;
 }
 
-/* ---------- Mobile: prevent iOS Safari's auto-zoom-on-focus ----------
-   Several inputs/textareas were sized under 16px for a tighter desktop
-   look, but iOS Safari zooms the whole page in the moment any of them get
-   focus if their computed font-size is below 16px — and on a standalone
-   PWA that zoom can stick around instead of resetting on blur, which is
-   what "the journal is always zoomed in on my phone" was actually caused
-   by. Bumping just the small ones to 16px on narrow viewports fixes it
-   without changing the compact desktop sizing. (The viewport meta tag
-   also now locks the scale as a second layer of defense.) */
+/* ---------- Mobile: prevent iOS Safari's auto-zoom-on-focus ---------- */
 @media (max-width: 700px) {
-  input, textarea, select { font-size: 16px !important; }
+input, textarea, select { font-size: 16px !important; }
 }
+
+/* 5th rating block (WTF) spans both columns of the 2x2 rating grid. */
+.rating-grid > .rating-block:nth-child(5) { grid-column: 1 / -1; }
