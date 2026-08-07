@@ -6205,10 +6205,14 @@ function renderTagChipsInline(e) {
   const all = (e.tags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: false }))
     .concat((e.customTags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: true })));
   const chips = all.map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}" data-remove-tag="${escapeHtml(t)}" title="Click to remove">${escapeHtml(t)}</div>`).join('');
-  const addChip = TAG_ADD_MODE
-    ? `<input type="text" id="new-tag-input-inline" class="tag-chip add-tag-input" placeholder="Type a tag and press Enter..." autocomplete="off">`
-    : `<div class="tag-chip add-tag-chip" data-tag-add-toggle="1">+ NEW TAG</div>`;
+  const addChip = `<div class="tag-chip add-tag-chip ${TAG_ADD_MODE ? 'active' : ''}" data-tag-add-toggle="1">+ NEW TAG</div>`;
   return chips + addChip;
+}
+
+function renderDetailTagPool(e) {
+  const existingLower = new Set([...(e.tags || []), ...(e.customTags || [])].map((t) => t.toLowerCase()));
+  const all = Object.keys(allTagCounts()).filter((t) => !isHiddenTag(t)).sort((a, b) => a.localeCompare(b));
+  return all.map((t) => `<span class="tag-pool-chip ${existingLower.has(t.toLowerCase()) ? 'active' : ''}" data-toggle-detail-tag="${escapeHtml(t)}">${escapeHtml(t)}</span>`).join('');
 }
 
 // One-time, per-entry migration: the old per-character semi/uke note
@@ -6402,11 +6406,25 @@ function renderDetail(e) {
             ${matchColumnHtml}
           </div>
         </div>
-        <div class="details-divider details-divider-full"></div>
-        <div class="panel-title-row">
+        </div>
+
+      <!-- 1a2. Tags -->
+      <div class="panel">
+        <div class="panel-title-row" style="margin-bottom:10px;">
           <div class="panel-title" style="margin:0;">Tags</div>
+          <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
         </div>
         <div class="tag-cloud">${renderTagChipsInline(e)}</div>
+        ${TAG_ADD_MODE ? `
+        <div class="tag-ms-panel open" style="margin-top:10px;">
+          <div class="tag-picker-box">
+            <input type="text" id="new-tag-input-inline" class="tag-picker-input" placeholder="Type a tag and press Enter..." autocomplete="off">
+          </div>
+          <div class="tag-pool" id="detail-tag-pool">
+            ${renderDetailTagPool(e) || '<div style="color:var(--text-dim);font-size:12px;padding:4px;">No tags yet.</div>'}
+          </div>
+        </div>
+        ` : ''}
       </div>
       ${crossRefRowHtml}
 
@@ -7966,10 +7984,16 @@ function attachRootHandlers() {
     render();
   };
   const tagAddToggleBtn = root.querySelector('[data-tag-add-toggle]');
-  if (tagAddToggleBtn) tagAddToggleBtn.onclick = () => { TAG_ADD_MODE = true; render(); };
+  if (tagAddToggleBtn) tagAddToggleBtn.onclick = () => { TAG_ADD_MODE = !TAG_ADD_MODE; render(); };
   const newTagInputInline = root.querySelector('#new-tag-input-inline');
   if (newTagInputInline) {
     newTagInputInline.focus();
+    newTagInputInline.oninput = () => {
+      const q = newTagInputInline.value.toLowerCase();
+      root.querySelectorAll('#detail-tag-pool .tag-pool-chip').forEach((chip) => {
+        chip.style.display = chip.getAttribute('data-toggle-detail-tag').toLowerCase().includes(q) ? '' : 'none';
+      });
+    };
     newTagInputInline.onkeydown = async (ev) => {
       if (ev.key !== 'Enter') return;
       ev.preventDefault();
@@ -7983,17 +8007,32 @@ function attachRootHandlers() {
       const val = canonical || raw;
       if (existingTags.some((t) => t.toLowerCase() === val.toLowerCase())) {
         showToast('Already tagged with "' + val + '"');
-        TAG_ADD_MODE = false;
-        render();
         return;
       }
       e.customTags = [...(e.customTags || []), val];
       await saveEntry(e);
-      TAG_ADD_MODE = false;
       showToast('Tag added');
       render();
     };
   }
+  root.querySelectorAll('[data-toggle-detail-tag]').forEach((el) => {
+    el.onclick = async () => {
+      const t = el.getAttribute('data-toggle-detail-tag');
+      const e = getEntry(STATE.entryId);
+      const existingTags = [...(e.tags || []), ...(e.customTags || [])];
+      const match = existingTags.find((x) => x.toLowerCase() === t.toLowerCase());
+      if (match) {
+        e.tags = (e.tags || []).filter((x) => x !== match);
+        e.customTags = (e.customTags || []).filter((x) => x !== match);
+        showToast('Tag removed');
+      } else {
+        e.customTags = [...(e.customTags || []), t];
+        showToast('Tag added');
+      }
+      await saveEntry(e);
+      render();
+    };
+  });
   root.querySelectorAll('[data-remove-tag]').forEach((el) => {
     el.onclick = async () => {
       const t = el.getAttribute('data-remove-tag');
