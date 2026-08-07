@@ -333,7 +333,10 @@ display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
 display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; position: sticky; top: var(--global-header-h); z-index: 30;
 background: var(--bg-cyan); border-bottom: 3px solid var(--border);
 }
-.detail-header-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; row-gap: 10px; }
+.detail-header-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; row-gap: 10px; justify-content: center; position: relative; }
+.detail-header-row .back-btn { position: absolute; left: 0; }
+.detail-header-row h2 { flex: 0 1 auto; text-align: center; white-space: normal; margin: 0 44px; width: 100%; }
+.detail-actions-row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
 .back-btn { background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 0; padding: 7px 12px; font-size: 14px; flex-shrink: 0; }
 .detail-header h2 { font-size: 15px; margin: 0; flex: 1 1 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 70px; }
 .icon-btn { background: none; border: none; color: var(--text); width: auto; height: auto; font-size: 15px; flex-shrink: 0; padding: 0; box-shadow: none; }
@@ -373,13 +376,15 @@ border-bottom: 3px solid var(--border);
 .panel-title-row .icon-btn-inline { font-size: 15px; padding: 0; color: var(--text); }
 
 .panel-triangles { display: flex; align-items: center; gap: 5px; }
+.panel.panel-collapsed > *:not(.panel-title-row) { display: none !important; }
+.panel-triangles { cursor: pointer; }
 .tri-up, .tri-down { width: 0; height: 0; }
 .tri-up { border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 12px solid var(--yellow); }
 .tri-down { border-left: 8px solid transparent; border-right: 8px solid transparent; border-top: 12px solid var(--yellow); }
 
 .split-row { display: flex; gap: 12px; align-items: flex-start; }
 .split-row > div { flex: 1; min-width: 0; }
-.split-row > div:first-child { flex: 0 0 108px; }
+.split-row > div:first-child { flex: 0 0 50%; max-width: 50%; }
 @media (max-width: 420px) {
 .split-row > div:first-child { flex-basis: 84px; }
 }
