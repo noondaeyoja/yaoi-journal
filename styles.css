@@ -455,6 +455,24 @@ font-size: 22px; color: var(--text-dim);
 .char-photo-slot img { width: 100%; height: 100%; object-fit: cover; }
 .flag-picker { display: flex; justify-content: space-between; gap: 6px; width: 78%; margin: 0 auto 10px; }
 .flag-picker .flag-dot { flex: 1; }
+.notes-lead-cols { display: flex; gap: 20px; margin-bottom: 4px; }
+.notes-lead-col { flex: 1; text-align: center; }
+.notes-lead-head {
+display: inline-block; background: var(--pink); color: var(--text); border: 2px solid var(--border);
+font-size: 13px; font-weight: 800; letter-spacing: .03em; padding: 6px 14px; margin-bottom: 10px;
+}
+.char-photo-slot.polaroid-frame {
+background: #ffffff; border: 3px solid var(--yellow); border-radius: 0;
+padding: 8px 8px 26px; box-sizing: content-box;
+box-shadow: 3px 3px 0 rgba(11,15,43,.15);
+}
+.lead-name-input {
+width: 78%; margin: 0 auto 10px; display: block; box-sizing: border-box;
+background: var(--yellow-soft); color: var(--text); border: 2px solid var(--yellow);
+padding: 6px 10px; font-size: 12.5px; font-weight: 600; font-style: italic;
+text-align: center; font-family: inherit;
+}
+.lead-name-input::placeholder { color: var(--text-dim); font-style: italic; }
 .review-card-row { display: flex; gap: 10px; }
 .review-card-info { flex: 1; min-width: 0; font-size: 12.5px; }
 .review-card-info strong { display: block; font-size: 13.5px; margin-bottom: 2px; }
