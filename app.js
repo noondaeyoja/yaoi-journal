@@ -3914,7 +3914,7 @@ function renderReactionsLibrary() {
             <div class="panel-title" style="margin:0;">Mood Tags</div>
             <span class="panel-triangles" data-images-toggle-filters="1" style="cursor:pointer;"><span class="tri-up"></span><span class="tri-down"></span></span>
           </div>
-          <div class="filters-collapsible ${IMAGES_FILTERS_COLLAPSED ? 'collapsed' : ''}" id="images-filters-collapsible">
+          <div class="filters-collapsible" id="images-filters-collapsible">
             <div class="group-chip-row">
               <button class="mood-chip ${IMAGE_KIND_FILTER === 'semi' ? 'active' : ''}" data-images-kind-filter="semi">Semi only</button>
               <button class="mood-chip ${IMAGE_KIND_FILTER === 'uke' ? 'active' : ''}" data-images-kind-filter="uke">Uke only</button>
@@ -4466,7 +4466,7 @@ function renderMemeLibrary() {
             <div class="panel-title" style="margin:0;">Mood Tags</div>
             <span class="panel-triangles" data-meme-toggle-filters="1" style="cursor:pointer;"><span class="tri-up"></span><span class="tri-down"></span></span>
           </div>
-          <div class="filters-collapsible ${MEME_FILTERS_COLLAPSED ? 'collapsed' : ''}" id="meme-filters-collapsible">
+          <div class="filters-collapsible" id="meme-filters-collapsible">
             <div class="group-chip-row">
               ${moodChips}
               <button class="mood-chip" data-meme-add-mood="1">➕ New mood</button>
@@ -5800,7 +5800,7 @@ function renderHLibrary() {
             <div class="panel-title" style="margin:0;">Mood Tags</div>
             <span class="panel-triangles" data-h-toggle-filters="1" style="cursor:pointer;"><span class="tri-up"></span><span class="tri-down"></span></span>
           </div>
-          <div class="filters-collapsible ${H_FILTERS_COLLAPSED ? 'collapsed' : ''}" id="h-filters-collapsible">
+          <div class="filters-collapsible" id="h-filters-collapsible">
             <div class="group-chip-row">
               ${groupChips}
               <button class="mood-chip" data-h-add-group="1">➕ New group</button>
