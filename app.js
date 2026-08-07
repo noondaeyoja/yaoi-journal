@@ -3909,18 +3909,23 @@ function renderReactionsLibrary() {
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-images-manage-groups="1" title="Manage image groups (rename/delete)">✏️ Manage</button>
       </div>
       ${IMAGES_TAB !== 'duplicates' ? `
-        <button class="filters-toggle-btn" data-images-toggle-filters="1">${IMAGES_FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
-        <div class="filters-collapsible ${IMAGES_FILTERS_COLLAPSED ? 'collapsed' : ''}" id="images-filters-collapsible">
-          <div class="group-chip-row" style="margin-bottom:10px;">
-            <button class="mood-chip ${IMAGE_KIND_FILTER === 'semi' ? 'active' : ''}" data-images-kind-filter="semi">Semi only</button>
-            <button class="mood-chip ${IMAGE_KIND_FILTER === 'uke' ? 'active' : ''}" data-images-kind-filter="uke">Uke only</button>
-            ${groupChips}
-            <button class="mood-chip" data-images-add-group="1">➕ New group</button>
+        <div class="panel" style="margin-bottom:16px;">
+          <div class="panel-title-row" style="margin-bottom:12px;">
+            <div class="panel-title" style="margin:0;">Mood Tags</div>
+            <span class="panel-triangles" data-images-toggle-filters="1" style="cursor:pointer;"><span class="tri-up"></span><span class="tri-down"></span></span>
+          </div>
+          <div class="filters-collapsible ${IMAGES_FILTERS_COLLAPSED ? 'collapsed' : ''}" id="images-filters-collapsible">
+            <div class="group-chip-row">
+              <button class="mood-chip ${IMAGE_KIND_FILTER === 'semi' ? 'active' : ''}" data-images-kind-filter="semi">Semi only</button>
+              <button class="mood-chip ${IMAGE_KIND_FILTER === 'uke' ? 'active' : ''}" data-images-kind-filter="uke">Uke only</button>
+              ${groupChips}
+              <button class="mood-chip" data-images-add-group="1">➕ New group</button>
+            </div>
           </div>
         </div>
       ` : ''}
     </div>
-    <main class="gallery-dropzone">${tabBody}</main>
+    <div class="panel"><div class="panel-title-row" style="margin-bottom:10px;"><div class="panel-title" style="margin:0;">Images</div><span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span></div><main class="gallery-dropzone" style="margin:0;">${tabBody}</main></div>
     ${renderBottomNav('reactions')}
   `;
 }
@@ -4456,16 +4461,21 @@ function renderMemeLibrary() {
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-meme-manage-moods="1" title="Manage mood groups (rename/delete)">✏️ Manage</button>
       </div>
       ${!MEME_SHOWING_DUPLICATES ? `
-        <button class="filters-toggle-btn" data-meme-toggle-filters="1">${MEME_FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
-        <div class="filters-collapsible ${MEME_FILTERS_COLLAPSED ? 'collapsed' : ''}" id="meme-filters-collapsible">
-          <div class="group-chip-row">
-            ${moodChips}
-            <button class="mood-chip" data-meme-add-mood="1">➕ New mood</button>
+        <div class="panel" style="margin-bottom:16px;">
+          <div class="panel-title-row" style="margin-bottom:12px;">
+            <div class="panel-title" style="margin:0;">Mood Tags</div>
+            <span class="panel-triangles" data-meme-toggle-filters="1" style="cursor:pointer;"><span class="tri-up"></span><span class="tri-down"></span></span>
+          </div>
+          <div class="filters-collapsible ${MEME_FILTERS_COLLAPSED ? 'collapsed' : ''}" id="meme-filters-collapsible">
+            <div class="group-chip-row">
+              ${moodChips}
+              <button class="mood-chip" data-meme-add-mood="1">➕ New mood</button>
+            </div>
           </div>
         </div>
       ` : ''}
     </div>
-    <main class="gallery-dropzone">${memeMainBody()}</main>
+    <div class="panel"><div class="panel-title-row" style="margin-bottom:10px;"><div class="panel-title" style="margin:0;">Images</div><span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span></div><main class="gallery-dropzone" style="margin:0;">${memeMainBody()}</main></div>
     ${renderBottomNav('meme')}
   `;
 }
@@ -4522,8 +4532,7 @@ function attachMemeGridHandlers() {
     MEME_FILTERS_COLLAPSED = !MEME_FILTERS_COLLAPSED;
     const el = document.getElementById('meme-filters-collapsible');
     if (el) el.classList.toggle('collapsed', MEME_FILTERS_COLLAPSED);
-    memeFiltersToggleBtn.textContent = MEME_FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters';
-  };
+    };
   const tagSelectedMemesBtn = document.querySelector('[data-meme-tag-selected]');
   if (tagSelectedMemesBtn) tagSelectedMemesBtn.onclick = () => {
     if (MEME_SELECTED.size) openTagSelectedMemesModal(Array.from(MEME_SELECTED));
@@ -5786,16 +5795,21 @@ function renderHLibrary() {
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-h-manage-groups="1" title="Manage H groups (rename/delete)">✏️ Manage</button>
       </div>
       ${!H_SHOWING_DUPLICATES ? `
-        <button class="filters-toggle-btn" data-h-toggle-filters="1">${H_FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
-        <div class="filters-collapsible ${H_FILTERS_COLLAPSED ? 'collapsed' : ''}" id="h-filters-collapsible">
-          <div class="group-chip-row">
-            ${groupChips}
-            <button class="mood-chip" data-h-add-group="1">➕ New group</button>
+        <div class="panel" style="margin-bottom:16px;">
+          <div class="panel-title-row" style="margin-bottom:12px;">
+            <div class="panel-title" style="margin:0;">Mood Tags</div>
+            <span class="panel-triangles" data-h-toggle-filters="1" style="cursor:pointer;"><span class="tri-up"></span><span class="tri-down"></span></span>
+          </div>
+          <div class="filters-collapsible ${H_FILTERS_COLLAPSED ? 'collapsed' : ''}" id="h-filters-collapsible">
+            <div class="group-chip-row">
+              ${groupChips}
+              <button class="mood-chip" data-h-add-group="1">➕ New group</button>
+            </div>
           </div>
         </div>
       ` : ''}
     </div>
-    <main class="gallery-dropzone">${hMainBody()}</main>
+    <div class="panel"><div class="panel-title-row" style="margin-bottom:10px;"><div class="panel-title" style="margin:0;">Images</div><span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span></div><main class="gallery-dropzone" style="margin:0;">${hMainBody()}</main></div>
     ${renderBottomNav('h')}
   `;
 }
@@ -5931,8 +5945,7 @@ function attachHGridHandlers() {
     H_FILTERS_COLLAPSED = !H_FILTERS_COLLAPSED;
     const el = document.getElementById('h-filters-collapsible');
     if (el) el.classList.toggle('collapsed', H_FILTERS_COLLAPSED);
-    hFiltersToggleBtn.textContent = H_FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters';
-  };
+    };
   const tagSelectedHBtn = document.querySelector('[data-h-tag-selected]');
   if (tagSelectedHBtn) tagSelectedHBtn.onclick = () => {
     if (H_SELECTED.size) openTagSelectedHModal(Array.from(H_SELECTED));
@@ -8019,8 +8032,7 @@ function attachRootHandlers() {
     IMAGES_FILTERS_COLLAPSED = !IMAGES_FILTERS_COLLAPSED;
     const el = document.getElementById('images-filters-collapsible');
     if (el) el.classList.toggle('collapsed', IMAGES_FILTERS_COLLAPSED);
-    imagesFiltersToggleBtn.textContent = IMAGES_FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters';
-  };
+    };
   const attachSelectedBtn = root.querySelector('[data-images-attach-selected]');
   if (attachSelectedBtn) attachSelectedBtn.onclick = () => {
     if (IMAGE_SELECTED.size) openAttachImagesToEntryModal(Array.from(IMAGE_SELECTED));
