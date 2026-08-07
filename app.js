@@ -6554,19 +6554,26 @@ function renderDatabase() {
       </div>
     </div>
     <main>
-      <div class="account-panel">
+      <div class="panel" style="margin-bottom:14px;">
+        <div class="panel-title-row" style="margin-bottom:10px;">
+          <div class="panel-title" style="margin:0;">Account Information</div>
+          <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
+        </div>
+        <div class="account-panel" style="border:none;box-shadow:none;padding:0;background:none;">
         <div class="account-info">
           <div class="account-label">Synced account</div>
           <div class="account-email">${escapeHtml(CURRENT_USER ? CURRENT_USER.email : '')}</div>
         </div>
         <button class="icon-btn-inline" data-sign-out="1" title="Sign out">Sign Out</button>
       </div>
-      <div class="account-panel" style="flex-direction:column;align-items:stretch;gap:8px;margin-top:-6px;">
+      <div class="account-panel" style="border:none;box-shadow:none;padding:0;background:none;flex-direction:column;align-items:stretch;gap:8px;">
         <div class="account-label">Theme</div>
         ${THEME_MODE
           ? `<div style="font-size:14px;">${THEME_MODE === 'sfw' ? '💕 SFW' : '💦 NSFW'}</div>`
           : `<button class="ref-btn" data-open-theme-picker="1">🎨 Choose your theme (one-time)</button>`}
         ${isAdmin() ? `<button class="ref-btn" data-preview-theme-picker="1">🔍 Preview new-user theme screen</button>` : ''}
+      </div>
+      
       </div>
       <div class="panel" style="margin-bottom:14px;">
         <div class="panel-title">Data Cleanup Tools</div>
