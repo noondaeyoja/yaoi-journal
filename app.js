@@ -6285,16 +6285,12 @@ function renderDetail(e) {
     `;
   } else {
     topFieldsHtml = isReading ? `
-      <div class="field-row-2col">
-        <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)}</div></div>
-        <div class="field-row"><label>Alt title</label><div class="value plain">${escapeHtml(e.altTitle) || '—'}</div></div>
-      </div>
-      ${(e.isNovel || e.novelAuthor) ? `<div class="field-row"><label>Novel</label><div class="value plain">${escapeHtml(formatNames(e.novelAuthor)) || '—'}</div></div>` : ''}
-      <div class="field-row-2col">
-        <div class="field-row"><label>Author</label><div class="value plain">${escapeHtml(formatNames(e.author)) || '—'}</div></div>
-        <div class="field-row"><label>Artist</label><div class="value plain">${escapeHtml(formatNames(e.artist)) || '—'}</div></div>
-      </div>
-      <div class="field-row" style="margin-bottom:0;"><label class="status-pill-label">Format</label>${mediaFormatSelect}</div>
+      <div class="field-row"><label>Title</label><div class="value boxed">${escapeHtml(e.title)}</div></div>
+      <div class="field-row"><label>Alt title</label><div class="value boxed">${escapeHtml(e.altTitle) || '—'}</div></div>
+      ${(e.isNovel || e.novelAuthor) ? `<div class="field-row"><label>Novel</label><div class="value boxed">${escapeHtml(formatNames(e.novelAuthor)) || '—'}</div></div>` : ''}
+      <div class="field-row"><label>Author</label><div class="value boxed">${escapeHtml(formatNames(e.author)) || '—'}</div></div>
+      <div class="field-row"><label>Artist</label><div class="value boxed">${escapeHtml(formatNames(e.artist)) || '—'}</div></div>
+      <div class="field-row" style="margin-bottom:0"><label class="status-pill-label">Format</label>${mediaFormatSelect}</div>
       <div class="details-divider"></div>
       <div class="field-row-2col wide-gap">
         <div>
@@ -6312,11 +6308,9 @@ function renderDetail(e) {
         </div>
       </div>
     ` : `
-      <div class="field-row-2col">
-        <div class="field-row"><label>Title</label><div class="value plain">${escapeHtml(e.title)}</div></div>
-        <div class="field-row"><label>Alt title</label><div class="value plain">${escapeHtml(e.altTitle) || '—'}</div></div>
-      </div>
-      <div class="field-row" style="margin-bottom:0;"><label class="status-pill-label">Format</label>${mediaFormatSelect}</div>
+      <div class="field-row"><label>Title</label><div class="value boxed">${escapeHtml(e.title)}</div></div>
+      <div class="field-row"><label>Alt title</label><div class="value boxed">${escapeHtml(e.altTitle) || '—'}</div></div>
+      <div class="field-row" style="margin-bottom:0"><label class="status-pill-label">Format</label>${mediaFormatSelect}</div>
       <div class="details-divider"></div>
       <div class="field-row-2col wide-gap">
         <div>
@@ -6386,11 +6380,10 @@ function renderDetail(e) {
           </div>
           <div>
             ${topFieldsHtml}
+            ${confirmedSummaryHtml}
+            ${matchColumnHtml}
           </div>
         </div>
-        ${!DETAIL_EDIT_MODE ? `<div class="details-divider details-divider-full"></div>` : ''}
-        ${confirmedSummaryHtml}
-        ${matchColumnHtml}
         <div class="details-divider details-divider-full"></div>
         <div class="panel-title-row">
           <div class="panel-title" style="margin:0;">Tags</div>
@@ -6410,7 +6403,6 @@ function renderDetail(e) {
         ` : `
           <div class="tag-cloud">${renderTagCloudReadOnly(e)}</div>
         `}
-      </div>
       </div>
       ${crossRefRowHtml}
 
