@@ -148,6 +148,7 @@ padding: 2px; line-height: 1;
 .rating-pick-icon:not(.flag-filter-icon).active { background: var(--purple); opacity: 1; filter: none; }
 .filter-dropdown-row { display: flex; gap: 8px; margin-bottom: 4px; }
 .filter-dropdown-col { flex: 1; min-width: 0; }
+.filter-dropdown-title { text-align: center; font-size: 11px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 4px; }
 .filter-select {
 width: 100%; font-size: 13px; font-weight: 800; color: var(--text); font-family: inherit;
 background-color: var(--cyan-fill); border: 2px solid var(--border); border-radius: 0; padding: 6px 22px 6px 8px; box-sizing: border-box;
