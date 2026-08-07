@@ -7414,6 +7414,12 @@ async function confirmReference(entryId) {
   if (!e.artist && data.artist) e.artist = data.artist;
   if (!e.altTitle && data.altTitle) e.altTitle = data.altTitle;
   await saveEntry(e);
+  // #279: re-render the underlying view-root immediately so a Database >
+  // Review Missing Cover/Reference list this was opened from drops the item
+  // right away, instead of staying stale until the whole carousel finishes.
+  // render() only touches #view-root, so it's safe to call while the
+  // cross-reference modal (a separate #modal-sheet overlay) is still open.
+  render();
   showToast('Linked! Summary & cover pulled in.');
   if (CROSSREF_REVIEW_ACTIVE) {
     advanceCrossRefReview();
@@ -7676,6 +7682,20 @@ function attachRootHandlers() {
     btn.onclick = () => {
       saveBgMode(btn.getAttribute('data-bg-mode-pick'));
       render();
+    };
+  });
+  // #278: individual item modals (Details header icon actions, plus any other
+  // icon+label pairing) only had the tiny emoji <button> itself as the click
+  // target, with the text label sitting outside it as an inert sibling span.
+  // Make the whole pill (icon-action) container forward clicks to its inner
+  // button, so tapping the label works exactly like tapping the emoji.
+  root.querySelectorAll('.icon-action').forEach((action) => {
+    const innerBtn = action.querySelector('button');
+    if (!innerBtn) return;
+    action.style.cursor = 'pointer';
+    action.onclick = (ev) => {
+      if (ev.target === innerBtn || innerBtn.contains(ev.target)) return;
+      innerBtn.click();
     };
   });
 
