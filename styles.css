@@ -410,8 +410,9 @@ border-radius: 0; padding: 6px 8px; width: 100%; box-sizing: border-box; font-fa
 .field-row .value.plain { background: none; border: none; padding: 0; }
 .value.boxed { background: var(--purple-soft); border: 2px solid var(--border); padding: 6px 8px; font-weight: 600; }
 .field-row .status-pill-select {
-background: var(--cyan-fill); color: var(--text); font-weight: 800; border: 2px solid var(--border);
+background-color: var(--cyan-fill); color: var(--text); font-weight: 800; border: 2px solid var(--border);
 background-image: linear-gradient(45deg, transparent 50%, #0b0f2b 50%), linear-gradient(135deg, #0b0f2b 50%, transparent 50%);
+background-position: right 8px center, right 4px center; background-size: 4px 4px, 4px 4px; background-repeat: no-repeat;
 }
 
 .field-row-2col { display: flex; gap: 14px; }
