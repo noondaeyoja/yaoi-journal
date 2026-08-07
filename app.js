@@ -2783,19 +2783,17 @@ function renderHome() {
   // 'Completed' shelf), but per her direct correction that silently dropped
   // the whole Reading Status row out of the filter box, which she hadn't
   // asked for. Restored unconditionally.
-  const shelfChips = ['ALL', ...SHELVES_READING].map((s) => `<div class="chip ${STATE.shelf === s ? 'active' : ''}" data-shelf="${escapeHtml(s)}">${s === 'ALL' ? 'All' : escapeHtml(s)}</div>`).join('');
+  const shelfChips = `<select id="home-shelf-select" class="filter-select">${['ALL', ...SHELVES_READING].map((s) => `<option value="${escapeHtml(s)}" ${STATE.shelf === s ? 'selected' : ''}>${s === 'ALL' ? 'All' : escapeHtml(s)}</option>`).join('')}</select>`;
   // Story Status (WIP/Finished) — the story's own completion state, distinct
   // from Reading Status (her shelf: Currently Reading/Completed/etc, which is
   // about her progress through it, not whether the author's finished it).
-  const storyStatusChips = ['ALL', 'WIP', 'Finished'].map((s) => `<div class="chip ${(STATE.storyStatusFilter || 'ALL') === s ? 'active' : ''}" data-story-status-filter="${escapeHtml(s)}">${s === 'ALL' ? 'All' : escapeHtml(s)}</div>`).join('');
+  const storyStatusChips = `<select id="home-story-status-select" class="filter-select">${['ALL', 'WIP', 'Finished'].map((s) => `<option value="${escapeHtml(s)}" ${(STATE.storyStatusFilter || 'ALL') === s ? 'selected' : ''}>${s === 'ALL' ? 'All' : escapeHtml(s)}</option>`).join('')}</select>`;
   // Format filter row — replaces the old book/tv icon toggle (STATE.format)
-  // with a proper chip row covering every media type, same style as Reading
-  // Status/Story Status above it.
-  const mediaFormatChips = ['ALL', ...MEDIA_FORMATS.map((f) => f.value)].map((v) => {
+  // with a proper dropdown, same row as Shelf/Story Status above it.
+  const mediaFormatChips = `<select id="home-format-select" class="filter-select">${['ALL', ...MEDIA_FORMATS.map((f) => f.value)].map((v) => {
     const label = v === 'ALL' ? 'All' : mediaFormatLabel(v);
-    return `<div class="chip ${(STATE.mediaFormatFilter || 'ALL') === v ? 'active' : ''}" data-media-format-filter="${escapeHtml(v)}">${escapeHtml(label)}</div>`;
-  }).join('');
-
+    return `<option value="${escapeHtml(v)}" ${(STATE.mediaFormatFilter || 'ALL') === v ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+  }).join('')}</select>`;
   const tagMsPanel = tags.map((t) => `<span class="tag-pool-chip ${STATE.tagFilters.includes(t) ? 'active' : ''}" data-toggle-home-tag="${escapeHtml(t)}">${escapeHtml(t)}</span>`).join('');
   const tagMultiselect = `
     <div class="tag-multiselect">
@@ -2817,7 +2815,7 @@ function renderHome() {
   function ratingFilterSelect(field, current, icon, label) {
     const opts = [1, 2, 3, 4, 5].map((n) => `<option value="${n}" ${current === n ? 'selected' : ''}>${icon.repeat(n)}</option>`).join('');
     return `<select class="rating-filter-select" data-rating-filter-field="${field}" title="${label} filter">
-      <option value="" ${!current ? 'selected' : ''}>${icon} Any</option>
+      <option value="" ${!current ? 'selected' : ''}>${icon} ${label}</option>
       ${opts}
     </select>`;
   }
@@ -2834,28 +2832,24 @@ function renderHome() {
   // toggle chips here instead (same nav-filter mechanism the hentai chip
   // already used), so removing them from the bottom nav doesn't lose access.
   // Hidden entirely for SFW accounts, same as the H nav item/gallery.
-  const hentaiChip = isSFW() ? '' : `<span class="rating-pick-icon flag-filter-icon ${STATE.showHentaiOnly ? 'active' : ''}" data-nav-filter="${STATE.showHentaiOnly ? 'home' : 'hentai'}" title="NSFW only">💦</span>`;
-  const artworkChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showArtworkOnly ? 'active' : ''}" data-nav-filter="${STATE.showArtworkOnly ? 'home' : 'artwork'}" title="Artwork only">🖌️</span>`;
-  const favoritesChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showFavoritesOnly ? 'active' : ''}" data-nav-filter="${STATE.showFavoritesOnly ? 'home' : 'favorites'}" title="Favorites only">💜</span>`;
-  const onDriveChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.showOnDriveOnly ? 'active' : ''}" data-nav-filter="${STATE.showOnDriveOnly ? 'home' : 'onDrive'}" title="On HD only">💾</span>`;
+  const hentaiChip = isSFW() ? '' : `<span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.showHentaiOnly ? 'active' : ''}" data-nav-filter="${STATE.showHentaiOnly ? 'home' : 'hentai'}" title="NSFW only"><span class="ffb-icon">💦</span><span class="ffb-label">NSFW</span></span>`;
+  const artworkChip = `<span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.showArtworkOnly ? 'active' : ''}" data-nav-filter="${STATE.showArtworkOnly ? 'home' : 'artwork'}" title="Artwork only"><span class="ffb-icon">🖌️</span><span class="ffb-label">Artwork</span></span>`;
+  const favoritesChip = `<span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.showFavoritesOnly ? 'active' : ''}" data-nav-filter="${STATE.showFavoritesOnly ? 'home' : 'favorites'}" title="Favorites only"><span class="ffb-icon">💜</span><span class="ffb-label">Favorite</span></span>`;
+  const onDriveChip = `<span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.showOnDriveOnly ? 'active' : ''}" data-nav-filter="${STATE.showOnDriveOnly ? 'home' : 'onDrive'}" title="On HD only"><span class="ffb-icon">💾</span><span class="ffb-label">On HD</span></span>`;
   // Reading-link chip — unlike favorites/on-HD/hentai this doesn't replace
   // the whole shelf, it's an additive AND-filter like smut/quality/flag, so
   // it stacks with whatever else is already filtered.
-  const linkChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.linkFilter ? 'active' : ''}" data-link-filter="1" title="Has a reading link attached">🔗</span>`;
+  const linkChip = `<span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.linkFilter ? 'active' : ''}" data-link-filter="1" title="Has a reading link attached"><span class="ffb-icon">🔗</span><span class="ffb-label">Linked</span></span>`;
   // Inverse of linkChip — same additive AND-filter mechanism, just for
   // entries with NO reading link attached instead of ones that have one.
-  const noLinkChip = `<span class="rating-pick-icon flag-filter-icon ${STATE.noLinkFilter ? 'active' : ''}" data-no-link-filter="1" title="No reading link attached">⛓️‍💥</span>`;
+  const noLinkChip = `<span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.noLinkFilter ? 'active' : ''}" data-no-link-filter="1" title="No reading link attached"><span class="ffb-icon">⛓️‍💥</span><span class="ffb-label">Unlinked</span></span>`;
 
   return `
     <div class="app-header">
       <button class="filters-toggle-btn" data-toggle-filters="1">${FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
       <div class="filters-collapsible ${FILTERS_COLLAPSED ? 'collapsed' : ''}" id="filters-collapsible">
-        <div class="filter-section-label">Shelf</div>
-        <div class="shelf-row">${shelfChips}</div>
-        <div class="filter-section-label">Story Status</div>
-        <div class="shelf-row">${storyStatusChips}</div>
-        <div class="filter-section-label">Format</div>
-        <div class="shelf-row">${mediaFormatChips}</div>
+        <div class="filter-section-label">Shelf / Story Status / Format</div>
+        <div class="filter-dropdown-row">${shelfChips}${storyStatusChips}${mediaFormatChips}</div>
         <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
         <div class="filter-section-label">Ratings &amp; Flags</div>
@@ -7640,6 +7634,20 @@ function attachRootHandlers() {
       render();
     };
   });
+  const homeShelfSelect = root.querySelector('#home-shelf-select');
+  if (homeShelfSelect) homeShelfSelect.onchange = () => { STATE.shelf = homeShelfSelect.value; render(); };
+  const homeStoryStatusSelect = root.querySelector('#home-story-status-select');
+  if (homeStoryStatusSelect) homeStoryStatusSelect.onchange = () => {
+    const val = homeStoryStatusSelect.value;
+    STATE.storyStatusFilter = val === 'ALL' ? null : val;
+    render();
+  };
+  const homeFormatSelect = root.querySelector('#home-format-select');
+  if (homeFormatSelect) homeFormatSelect.onchange = () => {
+    const val = homeFormatSelect.value;
+    STATE.mediaFormatFilter = val === 'ALL' ? null : val;
+    render();
+  };
   const tagMsToggle = root.querySelector('[data-tag-ms-toggle]');
   if (tagMsToggle) tagMsToggle.onclick = () => { TAG_FILTER_OPEN = !TAG_FILTER_OPEN; render(); };
   root.querySelectorAll('[data-toggle-home-tag]').forEach((el) => {
