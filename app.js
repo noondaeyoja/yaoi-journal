@@ -14,7 +14,7 @@ const STORE_META = 'meta';
 const STORE_REACTIONS = 'reactions';
 const STORE_H_IMAGES = 'hImages';
 
-const SHELVES_READING = ['Currently Reading', 'Completed', 'Plan to Read', 'Discontinued'];
+const SHELVES_READING = ['Currently Reading', 'On Hold', 'Completed', 'Plan to Read', 'Discontinued'];
 const FLAG_COLORS = ['green', 'red', 'black'];
 const FLAG_HEX = { green: '#4ade80', red: '#f87171', black: '#6b6b7a' };
 
@@ -6213,7 +6213,7 @@ function renderDetail(e) {
   let crossRefRowHtml = '';
   if (e.referenceUrl && e.referenceStatus === 'confirmed') {
     confirmedSummaryHtml = `
-      <div class="field-row" style="margin-top:12px;">
+      <div class="field-row" style="margin-top:12px;margin-bottom:18px;">
         <label>Summary</label>
         <div class="summary-text">${escapeHtml(e.summaryCache) || '<em>No summary cached — tap refresh.</em>'}</div>
       </div>`;
@@ -6277,8 +6277,7 @@ function renderDetail(e) {
   // Display vs. edit mode for the top fields (Title, Alt Title, Novel, Author,
   // Artist, Chapters/Seasons, Status) — toggled by the pencil icon.
   let topFieldsHtml;
-  if (DETAIL_EDIT_MODE) {
-    topFieldsHtml = isReading ? `
+  topFieldsHtml = isReading ? `
       <div class="field-row"><label>Title</label><input type="text" id="edit-title" value="${escapeHtml(e.title)}"></div>
       <div class="field-row"><label>Alt title</label><input type="text" id="edit-altTitle" placeholder="Other names this goes by..." value="${escapeHtml(e.altTitle || '')}"></div>
       <div class="field-row"><label>Novel (author)</label><input type="text" id="edit-novelAuthor" placeholder="Original novel's author, if adapted" value="${escapeHtml(e.novelAuthor || '')}"></div>
@@ -6313,40 +6312,7 @@ function renderDetail(e) {
         <button class="btn-primary" data-save-edit="1">Save</button>
       </div>
     `;
-  } else {
-    topFieldsHtml = isReading ? `
-      <div class="field-row"><label>Title</label><div class="value boxed">${escapeHtml(e.title)}</div></div>
-      <div class="field-row"><label>Alt title</label><div class="value boxed">${escapeHtml(e.altTitle) || '—'}</div></div>
-      ${(e.isNovel || e.novelAuthor) ? `<div class="field-row"><label>Novel</label><div class="value boxed">${escapeHtml(formatNames(e.novelAuthor)) || '—'}</div></div>` : ''}
-      <div class="field-row"><label>Author</label><div class="value boxed">${escapeHtml(formatNames(e.author)) || '—'}</div></div>
-      <div class="field-row"><label>Artist</label><div class="value boxed">${escapeHtml(formatNames(e.artist)) || '—'}</div></div>
-      <div class="field-row" style="margin-bottom:0"><label class="status-pill-label">Format</label>${mediaFormatSelect}</div>
-      <div class="details-divider"></div>
-      <div class="field-row" style="margin-bottom:0;">
-          <label class="status-pill-label">Story Status</label>
-          <select class="shelf-select status-pill-select" data-status-select="1">
-            <option value="" ${!e.status ? 'selected' : ''}>—</option>
-            <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
-            <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
-          </select>
-          <div style="margin-top:8px;"><label class="status-pill-label">Reading Status</label>${shelfSelect}</div>
-        </div>
-    ` : `
-      <div class="field-row"><label>Title</label><div class="value boxed">${escapeHtml(e.title)}</div></div>
-      <div class="field-row"><label>Alt title</label><div class="value boxed">${escapeHtml(e.altTitle) || '—'}</div></div>
-      <div class="field-row" style="margin-bottom:0"><label class="status-pill-label">Format</label>${mediaFormatSelect}</div>
-      <div class="details-divider"></div>
-      <div class="field-row" style="margin-bottom:0;">
-          <label class="status-pill-label">Story Status</label>
-          <select class="shelf-select status-pill-select" data-status-select="1">
-            <option value="" ${!e.status ? 'selected' : ''}>—</option>
-            <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
-            <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
-          </select>
-          <div style="margin-top:8px;"><label class="status-pill-label">Viewing Status</label>${shelfSelect}</div>
-        </div>
-    `;
-  }
+  
 
   return `
     <div class="detail-header">
@@ -6388,7 +6354,6 @@ function renderDetail(e) {
         <div class="panel-title-row" style="margin-bottom:8px;">
           <div class="panel-title" style="margin:0;">Details</div>
           <span style="display:flex;align-items:center;gap:10px;">
-            ${!DETAIL_EDIT_MODE ? `<button class="icon-btn-inline" data-edit-toggle="1" title="Edit details">✏️</button>` : ''}
             <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
           </span>
         </div>
