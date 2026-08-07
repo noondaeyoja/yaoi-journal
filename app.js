@@ -3776,9 +3776,9 @@ function dismissImageDupGroup(idx) {
 }
 // Clears every "Not duplicates" dismissal so the next scan re-judges
 // everything from scratch — the only way back once a group's been dismissed.
-function resetDismissedImageDupGroups() {
+async function resetDismissedImageDupGroups() {
   if (!IGNORED_IMAGE_DUP_GROUPS.size) return;
-  if (!confirm(`Forget ${IGNORED_IMAGE_DUP_GROUPS.size} dismissed duplicate pair(s)? They'll be re-checked (and may reappear) the next time you scan.`)) return;
+  if (!await confirmModal(`Forget ${IGNORED_IMAGE_DUP_GROUPS.size} dismissed duplicate pair(s)? They'll be re-checked (and may reappear) the next time you scan.`)) return;
   IGNORED_IMAGE_DUP_GROUPS = new Set();
   persistIgnoredImageDupGroups();
   showToast('Dismissed duplicates forgotten — scan again to re-check them.');
@@ -4402,9 +4402,9 @@ function dismissMemeDupGroup(idx) {
   MEME_DUP_GROUPS = MEME_DUP_GROUPS.filter((_, i) => i !== idx);
   render();
 }
-function resetDismissedMemeDupGroups() {
+async function resetDismissedMemeDupGroups() {
   if (!IGNORED_MEME_DUP_GROUPS.size) return;
-  if (!confirm(`Forget ${IGNORED_MEME_DUP_GROUPS.size} dismissed duplicate pair(s)? They'll be re-checked (and may reappear) the next time you scan.`)) return;
+  if (!await confirmModal(`Forget ${IGNORED_MEME_DUP_GROUPS.size} dismissed duplicate pair(s)? They'll be re-checked (and may reappear) the next time you scan.`)) return;
   IGNORED_MEME_DUP_GROUPS = new Set();
   persistIgnoredMemeDupGroups();
   showToast('Dismissed duplicates forgotten — scan again to re-check them.');
@@ -4541,7 +4541,7 @@ function attachMemeGridHandlers() {
         render();
       } else if (MEME_SHOWING_DUPLICATES) {
         // Same fast-triage tap-to-delete flow as the Images duplicates tab.
-        if (!confirm('Delete this image from your library? Any entries it\'s already attached to keep their own copy.')) return;
+        if (!await confirmModal('Delete this image from your library? Any entries it\'s already attached to keep their own copy.')) return;
         const deletedRec = ALL_REACTIONS.find((r) => r.id === id);
         const memeDupGroup = (MEME_DUP_GROUPS || []).find((g) => g.some((r) => r.id === id));
         if (deletedRec && memeDupGroup) {
@@ -4605,7 +4605,7 @@ function attachMemeGridHandlers() {
   const deleteSelectedMemeBtn = document.querySelector('[data-meme-delete-selected]');
   if (deleteSelectedMemeBtn) deleteSelectedMemeBtn.onclick = async () => {
     if (!MEME_SELECTED.size) return;
-    if (!confirm(`Delete ${MEME_SELECTED.size} reaction(s)? This can't be undone.`)) return;
+    if (!await confirmModal(`Delete ${MEME_SELECTED.size} reaction(s)? This can't be undone.`)) return;
     const ids = Array.from(MEME_SELECTED);
     for (const id of ids) await deleteReaction(id);
     // Same as the single-item delete — drop the deleted ones from whichever
@@ -5743,9 +5743,9 @@ function dismissHDupGroup(idx) {
   H_DUP_GROUPS = H_DUP_GROUPS.filter((_, i) => i !== idx);
   render();
 }
-function resetDismissedHDupGroups() {
+async function resetDismissedHDupGroups() {
   if (!IGNORED_H_DUP_GROUPS.size) return;
-  if (!confirm(`Forget ${IGNORED_H_DUP_GROUPS.size} dismissed duplicate pair(s)? They'll be re-checked (and may reappear) the next time you scan.`)) return;
+  if (!await confirmModal(`Forget ${IGNORED_H_DUP_GROUPS.size} dismissed duplicate pair(s)? They'll be re-checked (and may reappear) the next time you scan.`)) return;
   IGNORED_H_DUP_GROUPS = new Set();
   persistIgnoredHDupGroups();
   showToast('Dismissed duplicates forgotten — scan again to re-check them.');
@@ -5969,7 +5969,7 @@ function attachHGridHandlers() {
         render();
       } else if (H_SHOWING_DUPLICATES) {
         // Same fast tap-to-delete triage flow as Images/Reactions duplicates.
-        if (!confirm('Delete this image?')) return;
+        if (!await confirmModal('Delete this image?')) return;
         const hDupGroup = (H_DUP_GROUPS || []).find((g) => g.some((i) => i.dataUrl === url));
         if (hDupGroup) {
           const survivorHUrls = hDupGroup.filter((i) => i.dataUrl !== url).map((i) => i.dataUrl);
@@ -6008,7 +6008,7 @@ function attachHGridHandlers() {
   if (deleteSelectedHBtn) deleteSelectedHBtn.onclick = async () => {
     const urls = Array.from(H_SELECTED);
     if (!urls.length) return;
-    if (!confirm(`Delete ${urls.length} image${urls.length === 1 ? '' : 's'}? This can't be undone.`)) return;
+    if (!await confirmModal(`Delete ${urls.length} image${urls.length === 1 ? '' : 's'}? This can't be undone.`)) return;
     for (const url of urls) await removeFromH(url);
     if (H_DUP_GROUPS) {
       H_DUP_GROUPS = H_DUP_GROUPS
@@ -6889,7 +6889,7 @@ async function mergeDuplicateGroupItem(sourceId, targetId) {
   const source = getEntry(sourceId);
   const target = getEntry(targetId);
   if (!source || !target) return;
-  if (!confirm(`Merge "${source.title}" into "${target.title}"? Its notes/ratings/tags/images are combined in, then "${source.title}" is deleted.`)) return;
+  if (!await confirmModal(`Merge "${source.title}" into "${target.title}"? Its notes/ratings/tags/images are combined in, then "${source.title}" is deleted.`)) return;
   mergeEntryData(target, source);
   await saveEntry(target);
   await deleteEntry(sourceId);
@@ -7559,8 +7559,8 @@ function attachRootHandlers() {
   });
 
   const signOutBtn = root.querySelector('[data-sign-out]');
-  if (signOutBtn) signOutBtn.onclick = () => {
-    if (confirm('Sign out of this account on this device?')) signOutOfAccount();
+  if (signOutBtn) signOutBtn.onclick = async () => {
+    if (await confirmModal('Sign out of this account on this device?')) signOutOfAccount();
   };
 
   const reconnectDriveBtn = root.querySelector('[data-reconnect-drive]');
@@ -7807,7 +7807,7 @@ function attachRootHandlers() {
     const id = deleteBtn.getAttribute('data-delete-entry');
     const e = getEntry(id);
     if (!e) return;
-    if (!confirm(`Delete "${e.title}" for good? This can't be undone.`)) return;
+    if (!await confirmModal(`Delete "${e.title}" for good? This can't be undone.`)) return;
     await deleteEntry(id);
     showToast('Deleted');
     navigate('home');
@@ -8131,7 +8131,7 @@ function attachRootHandlers() {
         // Possible Duplicates is a fast triage screen — tapping a copy
         // deletes it outright (still behind a confirm as the safety net)
         // instead of opening the full edit modal.
-        if (!confirm('Delete this image? It will be removed from any read it\'s attached to.')) return;
+        if (!await confirmModal('Delete this image? It will be removed from any read it\'s attached to.')) return;
         // Bug fix: this used to always pass reactionId: null, so a
         // standalone Images-tab upload (which is actually backed by an
         // ALL_REACTIONS record, source: 'images') never got deleted at
@@ -8224,7 +8224,7 @@ function attachRootHandlers() {
   if (deleteSelectedImagesBtn) deleteSelectedImagesBtn.onclick = async () => {
     const urls = Array.from(IMAGE_SELECTED);
     if (!urls.length) return;
-    if (!confirm(`Delete ${urls.length} image${urls.length === 1 ? '' : 's'}? They'll be removed from any read they're attached to. This can't be undone.`)) return;
+    if (!await confirmModal(`Delete ${urls.length} image${urls.length === 1 ? '' : 's'}? They'll be removed from any read they're attached to. This can't be undone.`)) return;
     // Same reactionId lookup fix as the single-tap duplicates delete above.
     const allImgs = allAppImages();
     for (const url of urls) {
@@ -8432,7 +8432,7 @@ function attachRootHandlers() {
   root.querySelectorAll('[data-tagmgr-delete]').forEach((el) => {
     el.onclick = async () => {
       const name = el.getAttribute('data-tagmgr-delete');
-      if (!confirm('Delete tag "' + name + '" from every entry? This can\'t be undone.')) return;
+      if (!await confirmModal('Delete tag "' + name + '" from every entry? This can\'t be undone.')) return;
       for (const e of ALL_ENTRIES) {
         let changed = false;
         if ((e.tags || []).includes(name)) { e.tags = e.tags.filter((t) => t !== name); changed = true; }
@@ -8594,7 +8594,7 @@ function attachRootHandlers() {
       const id = el.getAttribute('data-dup-delete');
       const e = getEntry(id);
       if (!e) return;
-      if (!confirm(`Delete "${e.title}"? Its data will be merged into the other duplicate(s) first, then this one is removed for good.`)) return;
+      if (!await confirmModal(`Delete "${e.title}"? Its data will be merged into the other duplicate(s) first, then this one is removed for good.`)) return;
       // Find any other entries in this duplicate group and fold this
       // entry's data into them before it's gone.
       const group = findDuplicateGroups().find((g) => g.some((ge) => ge.id === id));
@@ -8711,7 +8711,7 @@ document.addEventListener('click', async (ev) => {
     const targetId = t.getAttribute('data-merge-pick-target');
     const source = getEntry(MERGE_SOURCE_ID);
     const target = getEntry(targetId);
-    if (source && target && confirm(`Merge "${source.title}" into "${target.title}"? "${source.title}" will be deleted after its data is copied over.`)) {
+    if (source && target && await confirmModal(`Merge "${source.title}" into "${target.title}"? "${source.title}" will be deleted after its data is copied over.`)) {
       mergeIntoTarget(MERGE_SOURCE_ID, targetId);
     }
   }
@@ -8781,7 +8781,7 @@ document.addEventListener('click', async (ev) => {
   }
   if (t.matches('[data-groupmgr-delete]')) {
     const key = t.getAttribute('data-groupmgr-delete');
-    if (confirm(`Delete the "${key}" group? This removes it from every image/reaction — the items themselves are kept. It won't reappear (by hand or future import) until restored from the Hidden tab.`)) {
+    if (await confirmModal(`Delete the "${key}" group? This removes it from every image/reaction — the items themselves are kept. It won't reappear (by hand or future import) until restored from the Hidden tab.`)) {
       deleteImageGroup(key);
       render();
       renderSharedGroupManagerModal(GROUP_MGR_MODAL_TITLE);
@@ -8835,7 +8835,7 @@ document.addEventListener('click', async (ev) => {
   }
   if (t.matches('[data-hgroupmgr-delete]')) {
     const key = t.getAttribute('data-hgroupmgr-delete');
-    if (confirm(`Delete the "${key}" group? This removes it from every image — the images themselves are kept. It won't reappear until restored from the Hidden tab.`)) {
+    if (await confirmModal(`Delete the "${key}" group? This removes it from every image — the images themselves are kept. It won't reappear until restored from the Hidden tab.`)) {
       deleteHGroup(key);
       render();
       renderHGroupManagerModal();
@@ -8896,7 +8896,7 @@ document.addEventListener('click', async (ev) => {
   }
   if (t.matches('[data-delete-h-image]')) {
     const url = t.getAttribute('data-delete-h-image');
-    if (confirm('Delete this H image?')) {
+    if (await confirmModal('Delete this H image?')) {
       // Awaited — removeFromH's upload branch is itself async (awaits an
       // IndexedDB delete before mutating ALL_H_IMAGES), so firing render()
       // without waiting on it used to re-render against the still-stale
@@ -8938,7 +8938,7 @@ document.addEventListener('click', async (ev) => {
   }
   if (t.matches('[data-delete-meme]')) {
     const id = t.getAttribute('data-delete-meme');
-    if (confirm('Delete this reaction from your library for good?')) {
+    if (await confirmModal('Delete this reaction from your library for good?')) {
       // Awaited for the same reason as data-delete-h-image above — deleteReaction
       // awaits an IndexedDB delete before splicing ALL_REACTIONS, so the
       // immediately-following render() used to run against the pre-delete array.
@@ -8951,7 +8951,7 @@ document.addEventListener('click', async (ev) => {
   if (t.matches('[data-delete-image-attachment]')) {
     const dataUrl = t.getAttribute('data-delete-image-attachment');
     const reactionId = t.getAttribute('data-delete-image-reaction-id') || null;
-    if (confirm('Delete this image? Any reads it\'s attached to lose their copy.')) {
+    if (await confirmModal('Delete this image? Any reads it\'s attached to lose their copy.')) {
       await deleteImageFromGalleryEverywhere({ dataUrl, reactionId });
       if (IMAGE_DUP_GROUPS) IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS.filter((g) => !g.some((img) => img.dataUrl === dataUrl));
       closeModal();
