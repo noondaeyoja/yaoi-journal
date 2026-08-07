@@ -709,3 +709,5 @@ input, textarea, select { font-size: 16px !important; }
 
 /* 5th rating block (WTF) spans both columns of the 2x2 rating grid. */
 .rating-grid > .rating-block:nth-child(5) { grid-column: 1 / -1; }
+
+/* deploy-trigger: force fresh Pages build after GitHub Actions outage */
