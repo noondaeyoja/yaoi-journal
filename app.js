@@ -6342,8 +6342,6 @@ function renderDetail(e) {
       <div class="field-row"><label>Novel (author)</label><input type="text" id="edit-novelAuthor" placeholder="Original novel's author, if adapted" value="${escapeHtml(e.novelAuthor || '')}"></div>
       <div class="field-row"><label>Author</label><input type="text" id="edit-author" value="${escapeHtml(e.author || '')}"></div>
       <div class="field-row"><label>Artist</label><input type="text" id="edit-artist" value="${escapeHtml(e.artist || '')}"></div>
-      <div class="field-row"><label>Chapters</label><input type="number" id="edit-chapters" value="${e.totalChapters || ''}"></div>
-      <div class="field-row"><label>Seasons</label><input type="number" id="edit-seasons" value="${e.totalSeasons || ''}"></div>
       <div class="field-row"><label>Story Status</label>
         <select id="edit-status">
           <option value="" ${!e.status ? 'selected' : ''}>—</option>
