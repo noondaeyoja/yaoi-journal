@@ -6394,16 +6394,27 @@ function renderDetail(e) {
 
       <!-- 1b. Reading link -->
       <div class="panel">
+        <div class="panel-title-row" style="margin-bottom:10px;">
+          <div class="panel-title" style="margin:0;">Link</div>
+          <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
+        </div>
+        <div class="reading-link-top-row">
+          <div class="reading-link-shelf-col">
+            <label>Shelf</label>
+            <select class="shelf-select status-pill-select" data-shelf-select="1">
+              ${SHELVES_READING.map((s) => `<option value="${escapeHtml(s)}" ${e.shelf === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="reading-chapter-col">
+            <label>Chapter</label>
+            <input type="text" class="chapter-pill-input" id="current-chapter-input" placeholder="—" value="${escapeHtml(e.currentChapter || '')}">
+          </div>
+        </div>
         <div class="reading-link-row">
           <div class="field-row" style="flex:1;min-width:0;margin-bottom:0;">
-            <label>${isReading ? 'Reading Link' : 'Viewing Link'}</label>
             ${e.readingLink
               ? `<a href="${escapeHtml(e.readingLink)}" target="_blank" rel="noopener noreferrer" class="reading-link-value">${escapeHtml(e.readingLink)}</a>`
               : `<input type="text" id="reading-link-input" placeholder="Paste the link where you're ${isReading ? 'reading' : 'viewing'} this...">`}
-          </div>
-          <div class="reading-chapter-col">
-            <label>Current Chapter</label>
-            <input type="text" class="chapter-pill-input" id="current-chapter-input" placeholder="—" value="${escapeHtml(e.currentChapter || '')}">
           </div>
           ${e.readingLink ? `<button class="icon-btn-inline reading-link-clear" data-clear-reading-link="1" title="Remove link">✕</button>` : ''}
         </div>
