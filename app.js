@@ -2826,7 +2826,7 @@ function renderHome() {
     <div class="app-header">
       <button class="filters-toggle-btn" data-toggle-filters="1">${FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
       <div class="filters-collapsible ${FILTERS_COLLAPSED ? 'collapsed' : ''}" id="filters-collapsible">
-        <div class="filter-section-label">Reading Status</div>
+        <div class="filter-section-label">Shelf</div>
         <div class="shelf-row">${shelfChips}</div>
         <div class="filter-section-label">Story Status</div>
         <div class="shelf-row">${storyStatusChips}</div>
@@ -2835,7 +2835,7 @@ function renderHome() {
         <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
         <div class="filter-section-label">Ratings &amp; Flags</div>
-        <div class="rating-pick-row">${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${lolChips}<span class="rating-pick-divider"></span>${cryChips}<span class="rating-pick-divider"></span>${wtfChips}${flagChips ? `<span class="rating-pick-divider"></span>${flagChips}` : ''}</div>
+        <div class="rating-pick-row">${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${lolChips}<span class="rating-pick-divider"></span>${cryChips}<span class="rating-pick-divider"></span>${wtfChips}</div>
       </div>
     </div>
     <main>${body}</main>
