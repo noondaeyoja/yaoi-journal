@@ -3898,6 +3898,7 @@ function renderReactionsLibrary() {
   const groupChips = allMoodOptions().map((m) => `<button class="mood-chip ${IMAGE_GROUP_FILTER === m.key ? 'active' : ''}" data-images-group-filter="${escapeHtml(m.key)}" title="${escapeHtml(m.label)}">${m.emoji ? m.emoji + ' ' : ''}${escapeHtml(m.label)}</button>`).join('');
 
   return `
+    <main>
     <div class="app-header">
       <div class="brand-row"><h1>🖼️ Images</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${items.length} image${items.length === 1 ? '' : 's'} across the app. Tap one to see which reads it's attached to.</div>
@@ -3940,7 +3941,8 @@ function renderReactionsLibrary() {
         </div>
       ` : ''}
     </div>
-    <div class="panel"><div class="panel-title-row" style="margin-bottom:10px;"><div class="panel-title" style="margin:0;">Images</div><span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span></div><main class="gallery-dropzone" style="margin:0;">${tabBody}</main></div>
+    <div class="panel"><div class="panel-title-row" style="margin-bottom:10px;"><div class="panel-title" style="margin:0;">Images</div><span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span></div><div class="gallery-dropzone" style="margin:0;">${tabBody}</div></div>
+    </main>
     ${renderBottomNav('reactions')}
   `;
 }
@@ -4463,6 +4465,7 @@ function renderMemeLibrary() {
   // "Manage moods" button next to the Possible Duplicates tab instead.
   const moodChips = allMoodOptions().map((m) => `<button class="mood-chip ${MEME_STATE.moodFilter === m.key ? 'active' : ''}" data-meme-mood-filter="${escapeHtml(m.key)}" title="${escapeHtml(m.label)}">${m.emoji ? m.emoji + ' ' : ''}${escapeHtml(m.label)}</button>`).join('');
   return `
+    <main>
     <div class="app-header">
       <div class="brand-row"><h1>🎭 Reactions</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${reactionsPool.length} meme${reactionsPool.length === 1 ? '' : 's'} saved${untaggedCount ? ` · ${untaggedCount} untagged` : ''}.</div>
@@ -4499,7 +4502,8 @@ function renderMemeLibrary() {
         </div>
       ` : ''}
     </div>
-    <div class="panel"><div class="panel-title-row" style="margin-bottom:10px;"><div class="panel-title" style="margin:0;">Images</div><span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span></div><main class="gallery-dropzone" style="margin:0;">${memeMainBody()}</main></div>
+    <div class="panel"><div class="panel-title-row" style="margin-bottom:10px;"><div class="panel-title" style="margin:0;">Reactions</div><span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span></div><div class="gallery-dropzone" style="margin:0;">${memeMainBody()}</div></div>
+    </main>
     ${renderBottomNav('meme')}
   `;
 }
@@ -5798,6 +5802,7 @@ function renderHLibrary() {
   // she wanted the top controls of H to read like the Reactions tab's.
   const groupChips = groupList.map((name) => `<button class="mood-chip ${H_GROUP_FILTER === name ? 'active' : ''}" data-h-group-filter="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join('');
   return `
+    <main>
     <div class="app-header">
       <div class="brand-row"><h1>💦 NSFW</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${allHImages().length} image${allHImages().length === 1 ? '' : 's'} saved${untaggedCount ? ` · ${untaggedCount} untagged` : ''} — kept separate from the rest of the app.</div>
@@ -5833,7 +5838,8 @@ function renderHLibrary() {
         </div>
       ` : ''}
     </div>
-    <div class="panel"><div class="panel-title-row" style="margin-bottom:10px;"><div class="panel-title" style="margin:0;">Images</div><span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span></div><main class="gallery-dropzone" style="margin:0;">${hMainBody()}</main></div>
+    <div class="panel"><div class="panel-title-row" style="margin-bottom:10px;"><div class="panel-title" style="margin:0;">NSFW</div><span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span></div><div class="gallery-dropzone" style="margin:0;">${hMainBody()}</div></div>
+    </main>
     ${renderBottomNav('h')}
   `;
 }
@@ -7503,7 +7509,7 @@ function attachRootHandlers() {
   // Whole-gallery drag-and-drop for Images/Reactions/H — drop anywhere in
   // the masonry area (not just onto the small upload label) to upload a
   // batch of files at once.
-  const galleryDropzone = root.querySelector('main.gallery-dropzone');
+  const galleryDropzone = root.querySelector('.gallery-dropzone');
   if (galleryDropzone && (STATE.view === 'reactions' || STATE.view === 'meme' || STATE.view === 'h')) {
     wireMultiFileDropZone(galleryDropzone, async (files) => {
       if (STATE.view === 'h') await addHImageFiles(files);
