@@ -4228,7 +4228,8 @@ const MOOD_OPTIONS = [
 function allMoodOptions() {
   // No emoji prefix on custom moods — they read cleaner as plain labels,
   // and it avoids every custom mood looking visually identical (all 🏷️).
-  return [...MOOD_OPTIONS, ...visibleGroupList().map((name) => ({ key: name, emoji: '', label: name }))];
+  const combined = [...MOOD_OPTIONS, ...visibleGroupList().map((name) => ({ key: name, emoji: '', label: name }))];
+  return combined.slice().sort((a, b) => a.label.localeCompare(b.label));
 }
 function addCustomMood(rawName) {
   const name = String(rawName || '').trim();
@@ -7051,7 +7052,7 @@ function openCrossRefModal(entryId, reviewInfo) {
   const proxy = getProxyUrl();
   const apSearchUrl = 'https://www.anime-planet.com/manga/all?name=' + encodeURIComponent(e.title);
   const mgSearchUrl = 'https://www.mangago.me/r/l_search/?name=' + encodeURIComponent(e.title);
-  openModal(`
+  openModal(`<div class="crossref-modal-title">Cross-Reference</div><div class="crossref-modal-body">
     ${reviewInfo ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em;">Reviewing missing cover/reference — ${reviewInfo.index + 1} of ${reviewInfo.total}</div>` : ''}
     <h3>Cross-reference "${escapeHtml(e.title)}"</h3>
     ${proxy ? '' : `<div style="background:var(--pink-soft);color:var(--pink);padding:8px 10px;border-radius:8px;font-size:12px;margin-bottom:10px;">No proxy URL set yet. Add one in the Settings panel (Database mode) to enable live fetching — see the setup notes I gave you.</div>`}
@@ -7076,7 +7077,7 @@ function openCrossRefModal(entryId, reviewInfo) {
         <button class="ref-btn" data-crossref-review-skip="1">Skip ›</button>
       </div>
     ` : ''}
-  `);
+  </div>`);
 }
 
 /* Cross-reference review carousel — same "step through one at a time" idea
