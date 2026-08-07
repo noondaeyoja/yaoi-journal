@@ -6180,18 +6180,18 @@ function renderDetail(e) {
   // block and moves into the head/details column instead.
   let matchColumnHtml = '';
   let confirmedSummaryHtml = '';
+  let crossRefRowHtml = '';
   if (e.referenceUrl && e.referenceStatus === 'confirmed') {
     confirmedSummaryHtml = `
       <div class="field-row" style="margin-top:12px;">
         <label>Summary</label>
         <div class="summary-text">${escapeHtml(e.summaryCache) || '<em>No summary cached — tap refresh.</em>'}</div>
-        <div class="summary-source">
-          <a href="${escapeHtml(e.referenceUrl)}" target="_blank">${escapeHtml(e.referenceSite || 'source')} ↗</a>
+      </div>`;
+  
+    crossRefRowHtml = `<div class="cross-ref-row"><a href="${escapeHtml(e.referenceUrl)}" target="_blank">${escapeHtml(e.referenceSite || 'source')} ↗</a>
           &nbsp;·&nbsp;
           <button class="ref-btn" data-refresh-ref="1">↻ Refresh</button>
-          <button class="ref-btn" data-open-crossref="1">Change link</button>
-        </div>
-      </div>`;
+          <button class="ref-btn" data-open-crossref="1">Change link</button></div>`;
   } else if (e.suggestedMatch) {
     const sm = e.suggestedMatch;
     matchColumnHtml = `
@@ -6391,7 +6391,28 @@ function renderDetail(e) {
         ${!DETAIL_EDIT_MODE ? `<div class="details-divider details-divider-full"></div>` : ''}
         ${confirmedSummaryHtml}
         ${matchColumnHtml}
+        <div class="details-divider details-divider-full"></div>
+        <div class="panel-title-row">
+          <div class="panel-title" style="margin:0;">Tags</div>
+          ${!TAG_EDIT_MODE ? `<button class="icon-btn-inline" data-tag-edit-toggle="1" title="Edit tags">✏️</button>` : ''}
+        </div>
+        ${TAG_EDIT_MODE ? `
+          <div style="color:var(--text-dim);font-size:11px;margin-bottom:6px;">Tap a tag to mark it for removal, add new ones below, then Save.</div>
+          <div class="tag-picker-box">
+            <div class="tag-picker-selected">${renderTagCloud(e)}</div>
+            <input type="text" id="new-tag-input" class="tag-picker-input" placeholder="Type a tag and press Enter..." autocomplete="off">
+          </div>
+          <div class="tag-pool">${renderTagPool(e)}</div>
+          <div class="modal-actions" style="margin-top:10px;">
+            <button class="btn-ghost" data-cancel-tag-edit="1">Cancel</button>
+            <button class="btn-primary" data-save-tags="1">Save Tags</button>
+          </div>
+        ` : `
+          <div class="tag-cloud">${renderTagCloudReadOnly(e)}</div>
+        `}
       </div>
+      </div>
+      ${crossRefRowHtml}
 
       <!-- 1b. Reading link -->
       <div class="panel">
@@ -6466,28 +6487,6 @@ function renderDetail(e) {
             <textarea placeholder="Notes on the uke..." data-char-notes="uke">${escapeHtml(e.uke.notes)}</textarea>
           </div>
         </div>
-      </div>
-
-      <!-- 4. Tags -->
-      <div class="panel">
-        <div class="panel-title-row">
-          <div class="panel-title" style="margin:0;">Tags</div>
-          ${!TAG_EDIT_MODE ? `<button class="icon-btn-inline" data-tag-edit-toggle="1" title="Edit tags">✏️</button>` : ''}
-        </div>
-        ${TAG_EDIT_MODE ? `
-          <div style="color:var(--text-dim);font-size:11px;margin-bottom:6px;">Tap a tag to mark it for removal, add new ones below, then Save.</div>
-          <div class="tag-picker-box">
-            <div class="tag-picker-selected">${renderTagCloud(e)}</div>
-            <input type="text" id="new-tag-input" class="tag-picker-input" placeholder="Type a tag and press Enter..." autocomplete="off">
-          </div>
-          <div class="tag-pool">${renderTagPool(e)}</div>
-          <div class="modal-actions" style="margin-top:10px;">
-            <button class="btn-ghost" data-cancel-tag-edit="1">Cancel</button>
-            <button class="btn-primary" data-save-tags="1">Save Tags</button>
-          </div>
-        ` : `
-          <div class="tag-cloud">${renderTagCloudReadOnly(e)}</div>
-        `}
       </div>
 
       <!-- 6. User notes -->
