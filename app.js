@@ -163,7 +163,8 @@ let ALL_ENTRIES = [];              // in-memory cache, synced with IndexedDB
 let ALL_REACTIONS = [];            // meme/reaction image library, in-memory cache
 let ALL_H_IMAGES = [];             // standalone H-tab uploads (not pulled from an entry), in-memory cache
 let DETAIL_EDIT_MODE = false;      // whether the detail page's top fields are in edit mode
-let TAG_EDIT_MODE = false;         // whether the Tags panel is showing its editable (toggle/add/save) UI
+let TAG_EDIT_MODE = false;
+let TAG_ADD_MODE = false;       // whether the inline "+ NEW TAG" input is showing         // whether the Tags panel is showing its editable (toggle/add/save) UI
 let TAG_ENTRIES_FILTER = null;     // which tag name the "view entries with this tag" screen is showing
 let TAG_FILTER_OPEN = false;       // whether the homepage tag multi-select dropdown panel is open
 let FILTERS_COLLAPSED = false;     // whether the homepage search/tabs/format/Status/Tags/Ratings&Flags block is tucked away
@@ -6200,6 +6201,16 @@ function renderTagCloudReadOnly(e) {
   return all.map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}">${escapeHtml(t)}</div>`).join('');
 }
 
+function renderTagChipsInline(e) {
+  const all = (e.tags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: false }))
+    .concat((e.customTags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: true })));
+  const chips = all.map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}" data-remove-tag="${escapeHtml(t)}" title="Click to remove">${escapeHtml(t)}</div>`).join('');
+  const addChip = TAG_ADD_MODE
+    ? `<input type="text" id="new-tag-input-inline" class="tag-chip add-tag-input" placeholder="Type a tag and press Enter..." autocomplete="off">`
+    : `<div class="tag-chip add-tag-chip" data-tag-add-toggle="1">+ NEW TAG</div>`;
+  return chips + addChip;
+}
+
 function renderDetail(e) {
   if (!e) return `<div class="empty-state">Entry not found.</div>${renderBottomNav('home')}`;
   const isReading = e.format === 'reading';
@@ -6373,22 +6384,8 @@ function renderDetail(e) {
         <div class="details-divider details-divider-full"></div>
         <div class="panel-title-row">
           <div class="panel-title" style="margin:0;">Tags</div>
-          ${!TAG_EDIT_MODE ? `<button class="icon-btn-inline" data-tag-edit-toggle="1" title="Edit tags">✏️</button>` : ''}
         </div>
-        ${TAG_EDIT_MODE ? `
-          <div style="color:var(--text-dim);font-size:11px;margin-bottom:6px;">Tap a tag to mark it for removal, add new ones below, then Save.</div>
-          <div class="tag-picker-box">
-            <div class="tag-picker-selected">${renderTagCloud(e)}</div>
-            <input type="text" id="new-tag-input" class="tag-picker-input" placeholder="Type a tag and press Enter..." autocomplete="off">
-          </div>
-          <div class="tag-pool">${renderTagPool(e)}</div>
-          <div class="modal-actions" style="margin-top:10px;">
-            <button class="btn-ghost" data-cancel-tag-edit="1">Cancel</button>
-            <button class="btn-primary" data-save-tags="1">Save Tags</button>
-          </div>
-        ` : `
-          <div class="tag-cloud">${renderTagCloudReadOnly(e)}</div>
-        `}
+        <div class="tag-cloud">${renderTagChipsInline(e)}</div>
       </div>
       ${crossRefRowHtml}
 
@@ -7944,6 +7941,46 @@ function attachRootHandlers() {
     showToast('Tags saved!');
     render();
   };
+  const tagAddToggleBtn = root.querySelector('[data-tag-add-toggle]');
+  if (tagAddToggleBtn) tagAddToggleBtn.onclick = () => { TAG_ADD_MODE = true; render(); };
+  const newTagInputInline = root.querySelector('#new-tag-input-inline');
+  if (newTagInputInline) {
+    newTagInputInline.focus();
+    newTagInputInline.onkeydown = async (ev) => {
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      const raw = newTagInputInline.value.trim();
+      if (!raw) { TAG_ADD_MODE = false; render(); return; }
+      if (isHiddenTag(raw)) { showToast("That tag is blocked or was deleted before — it's hidden on purpose"); return; }
+      const e = getEntry(STATE.entryId);
+      const existingTags = [...(e.tags || []), ...(e.customTags || [])];
+      const allGlobalTags = Object.keys(allTagCounts());
+      const canonical = [...existingTags, ...allGlobalTags].find((t) => t.toLowerCase() === raw.toLowerCase());
+      const val = canonical || raw;
+      if (existingTags.some((t) => t.toLowerCase() === val.toLowerCase())) {
+        showToast('Already tagged with "' + val + '"');
+        TAG_ADD_MODE = false;
+        render();
+        return;
+      }
+      e.customTags = [...(e.customTags || []), val];
+      await saveEntry(e);
+      TAG_ADD_MODE = false;
+      showToast('Tag added');
+      render();
+    };
+  }
+  root.querySelectorAll('[data-remove-tag]').forEach((el) => {
+    el.onclick = async () => {
+      const t = el.getAttribute('data-remove-tag');
+      const e = getEntry(STATE.entryId);
+      e.tags = (e.tags || []).filter((x) => x !== t);
+      e.customTags = (e.customTags || []).filter((x) => x !== t);
+      await saveEntry(e);
+      showToast('Tag removed');
+      render();
+    };
+  });
   const legacyNoteInput = root.querySelector('#legacy-note-input');
   if (legacyNoteInput) legacyNoteInput.onblur = async () => {
     const e = getEntry(STATE.entryId); e.legacyNote = legacyNoteInput.value.trim(); await saveEntry(e);
