@@ -79,13 +79,14 @@ padding: 5px 12px; font-size: 12px; font-weight: 700; cursor: pointer; flex-shri
 
 .app-header {
 position: sticky; top: var(--global-header-h); z-index: 30;
-background: rgba(11,15,43,0.92);
+background: var(--bg-cyan);
 backdrop-filter: blur(10px);
 border-bottom: 1px solid var(--border);
 padding: 10px 12px 8px;
 transform: translateY(0);
 transition: transform .22s ease;
 }
+body[data-bg="pink"] .app-header { background: var(--bg-pink); }
 .app-header.header-hidden { transform: translateY(-100%); }
 .brand-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .brand-row h1 { font-size: 18px; margin: 0; letter-spacing: .01em; }
