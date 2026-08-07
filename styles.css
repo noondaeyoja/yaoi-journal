@@ -481,7 +481,12 @@ padding: 4px 10px; font-size: 12px; display: flex; align-items: center; gap: 5px
 }
 .tag-chip.custom { background: var(--pink-soft); color: var(--pink); border-color: var(--pink); }
 .tag-chip.tag-removed { opacity: .35; text-decoration: line-through; }
-.tag-chip.readonly { cursor: default; }
+.tag-chip.readonly { cursor: pointer; }
+.tag-chip.readonly:hover { background: var(--pink); color: #fff; }
+.tag-chip.readonly.custom:hover { background: var(--pink); color: #fff; border-color: var(--pink); }
+.add-tag-chip { background: var(--yellow-soft); color: var(--text); border: 2px dashed var(--border); border-radius: 0; padding: 4px 10px; font-size: 12px; font-weight: 800; cursor: pointer; display: flex; align-items: center; white-space: nowrap; }
+.add-tag-chip:hover { background: var(--yellow); }
+.add-tag-input { background: var(--card); color: var(--text); border: 2px solid var(--border); border-radius: 0; padding: 4px 10px; font-size: 12px; font-weight: 600; font-family: inherit; outline: none; min-width: 140px; }
 .tag-chip button { background: none; border: none; color: inherit; font-size: 13px; cursor: pointer; padding: 0; }
 .add-tag-row { display: flex; gap: 6px; }
 .add-tag-row input { flex: 1; }
