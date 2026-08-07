@@ -146,6 +146,23 @@ padding: 2px; line-height: 1;
 .rating-pick-icon.flag-filter-icon.active { opacity: 1; filter: none; text-shadow: 0 0 8px currentColor; }
 .rating-pick-icon:not(.flag-filter-icon) { width: 16px; height: 20px; font-size: 0; border-radius: 0; background: var(--pink-soft); border: 1.5px solid var(--border); opacity: 1; filter: none; display: inline-block; }
 .rating-pick-icon:not(.flag-filter-icon).active { background: var(--purple); opacity: 1; filter: none; }
+.filter-dropdown-row { display: flex; gap: 8px; margin-bottom: 4px; }
+.filter-dropdown-col { flex: 1; min-width: 0; }
+.filter-select {
+width: 100%; font-size: 13px; font-weight: 800; color: var(--text); font-family: inherit;
+background-color: var(--cyan-fill); border: 2px solid var(--border); border-radius: 0; padding: 6px 22px 6px 8px; box-sizing: border-box;
+appearance: none; -webkit-appearance: none; cursor: pointer;
+background-image: linear-gradient(45deg, transparent 50%, #0b0f2b 50%), linear-gradient(135deg, #0b0f2b 50%, transparent 50%);
+background-position: right 10px center, right 5px center; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+}
+.rating-pick-icon.flag-filter-btn {
+display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 700; font-family: inherit;
+background: var(--pink-soft); color: var(--text); border: 1.5px solid var(--border); padding: 4px 8px; border-radius: 0;
+opacity: .6; filter: none; text-shadow: none;
+}
+.rating-pick-icon.flag-filter-btn .ffb-icon { font-size: 16px; line-height: 1; }
+.rating-pick-icon.flag-filter-btn .ffb-label { white-space: nowrap; }
+.rating-pick-icon.flag-filter-btn.active { opacity: 1; background: var(--pink); text-shadow: none; }
 .rating-pick-divider { width: 1px; align-self: stretch; background: var(--border); margin: 2px 6px; }
 .rating-filter-select {
 appearance: none; -webkit-appearance: none; background: var(--pink); color: var(--text);
