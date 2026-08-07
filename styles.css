@@ -314,10 +314,11 @@ letter-spacing: .4px; text-align: center; pointer-events: none; z-index: 2;
 }
 
 .mood-chip {
-padding: 7px 14px; border-radius: 999px; font-size: 13px; font-weight: 600;
-background: var(--card); color: var(--text-dim); border: 1px solid var(--border); cursor: pointer;
+padding: 7px 14px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 700;
+background: var(--pink-soft); color: var(--text); border: 2px solid var(--border); cursor: pointer;
+transition: background .12s ease;
 }
-.mood-chip.active { background: var(--purple); color: #fff; border-color: var(--purple); }
+.mood-chip.active { background: var(--pink); color: var(--text); border-color: var(--border); box-shadow: 3px 3px 0 var(--border); }
 .mood-chip.small { padding: 5px 10px; font-size: 12px; }
 
 .group-chip-row {
@@ -495,9 +496,10 @@ border-radius: 8px; padding: 8px; font-size: 13.5px; resize: vertical; min-heigh
 .summary-text { font-size: 13px; color: var(--text-dim); line-height: 1.5; }
 .summary-source { font-size: 11px; margin-top: 6px; }
 .ref-btn {
-background: var(--purple-soft); color: var(--purple); border: 1px solid var(--purple); border-radius: 999px;
-padding: 7px 14px; font-size: 12.5px; font-weight: 700;
+background: var(--pink-soft); color: var(--text); border: 2px solid var(--border); border-radius: var(--radius-sm);
+padding: 7px 14px; font-size: 12.5px; font-weight: 700; cursor: pointer;
 }
+.ref-btn.active { background: var(--pink); color: var(--text); box-shadow: 3px 3px 0 var(--border); }
 
 .screencap-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
 .screencap-thumb { position: relative; aspect-ratio: 1/1; border-radius: 8px; overflow: hidden; background: var(--navy-2); border: 1px solid var(--border); }
@@ -658,10 +660,10 @@ border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom:
 
 .tagmgr-tabs { display: flex; gap: 8px; margin: 4px 0 12px; }
 .tagmgr-tab {
-flex: 1; text-align: center; padding: 8px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 600;
-background: var(--card); color: var(--text-dim); border: 1px solid var(--border); cursor: pointer;
+flex: 1; text-align: center; padding: 8px 10px; border-radius: var(--radius-sm); font-size: 12.5px; font-weight: 700;
+background: var(--pink-soft); color: var(--text); border: 2px solid var(--border); cursor: pointer;
 }
-.tagmgr-tab.active { background: var(--yellow); color: #241c02; border-color: var(--yellow); }
+.tagmgr-tab.active { background: var(--pink); color: var(--text); border-color: var(--border); box-shadow: 3px 3px 0 var(--border); }
 
 .tag-suggestion-row {
 display: flex; align-items: center; justify-content: space-between; gap: 10px;
