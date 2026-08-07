@@ -1577,7 +1577,7 @@ function escapeHtml(s) {
 // Notes fields on the detail page (semi/uke notes, character notes) act like
 // a bullet list: every line starts with a 💦, and hitting Enter starts a
 // fresh bulleted line automatically instead of a plain blank line.
-const NOTE_BULLET = '💦 ';
+const NOTE_BULLET = '› ';
 function attachBulletTextarea(el) {
   if (!el || el._bulletWired) return;
   el._bulletWired = true;
@@ -6211,9 +6211,30 @@ function renderTagChipsInline(e) {
   return chips + addChip;
 }
 
+// One-time, per-entry migration: the old per-character semi/uke note
+// fields are gone (replaced by a simple name text field under each lead's
+// photo in the new combined Notes panel) -- any notes already typed into
+// them get folded into the single combined Notes textarea (semi's lines,
+// then uke's, then whatever was already in the combined box), each
+// re-bulleted with the new "›" marker instead of the old 💦 one. Runs
+// silently the first time this entry is opened after the redesign; a
+// harmless no-op on every render after that (both old fields are blank).
+function migrateCharNotesToCombined(e) {
+  const oldSemi = (e.semi && e.semi.notes) ? e.semi.notes.trim() : '';
+  const oldUke = (e.uke && e.uke.notes) ? e.uke.notes.trim() : '';
+  if (!oldSemi && !oldUke) return;
+  const toLines = (s) => s.split('\n').map((l) => l.replace(/^[💦›]\s*/u, '').trim()).filter(Boolean);
+  const merged = [...toLines(oldSemi), ...toLines(oldUke), ...toLines(e.notes || '')];
+  e.notes = merged.map((l) => '› ' + l).join('\n');
+  if (e.semi) e.semi.notes = '';
+  if (e.uke) e.uke.notes = '';
+  saveEntry(e);
+}
+
 function renderDetail(e) {
   if (!e) return `<div class="empty-state">Entry not found.</div>${renderBottomNav('home')}`;
   const isReading = e.format === 'reading';
+  migrateCharNotesToCombined(e);
 
   // Unconfirmed matching workflow (suggested-match preview, or the plain
   // "not linked yet" cross-reference prompt) lives with the cover image.
@@ -6447,37 +6468,32 @@ function renderDetail(e) {
         </div>
       </div>
 
-      <!-- 3. Uke / Semi -->
+      <!-- 3. Notes -->
       <div class="panel">
-        <div class="char-cols">
-          <div class="char-col">
-            <div class="char-col-head">
-              <h4>Semi (Top)</h4>
-            </div>
-            <label class="char-photo-slot" style="cursor:pointer;">
+        <div class="panel-title-row" style="margin-bottom:10px;">
+          <div class="panel-title" style="margin:0;">Notes</div>
+          <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
+        </div>
+        <div class="notes-lead-cols">
+          <div class="notes-lead-col">
+            <div class="notes-lead-head">LEAD #1</div>
+            <label class="char-photo-slot polaroid-frame" style="cursor:pointer;">
               ${renderCharPhoto(e.semi.photo)}
               <input type="file" accept="image/*" style="display:none" data-char-photo="semi">
             </label>
+            <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="semi" value="${escapeHtml(e.semi.name || '')}">
             ${!isSFW() ? `<div class="flag-picker">${renderFlagPicker(e.semi.flag, 'semi')}</div>` : ''}
-            <textarea placeholder="Notes on the semi..." data-char-notes="semi">${escapeHtml(e.semi.notes)}</textarea>
           </div>
-          <div class="char-col">
-            <div class="char-col-head">
-              <h4>Uke (Bottom)</h4>
-            </div>
-            <label class="char-photo-slot" style="cursor:pointer;">
+          <div class="notes-lead-col">
+            <div class="notes-lead-head">LEAD #2</div>
+            <label class="char-photo-slot polaroid-frame" style="cursor:pointer;">
               ${renderCharPhoto(e.uke.photo)}
               <input type="file" accept="image/*" style="display:none" data-char-photo="uke">
             </label>
+            <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="uke" value="${escapeHtml(e.uke.name || '')}">
             ${!isSFW() ? `<div class="flag-picker">${renderFlagPicker(e.uke.flag, 'uke')}</div>` : ''}
-            <textarea placeholder="Notes on the uke..." data-char-notes="uke">${escapeHtml(e.uke.notes)}</textarea>
           </div>
         </div>
-      </div>
-
-      <!-- 6. User notes -->
-      <div class="panel">
-        <div class="panel-title">Your Notes / Review</div>
         ${!isReading ? `<div class="field-row"><label>Notes (legacy)</label><input type="text" id="legacy-note-input" value="${escapeHtml(e.legacyNote || '')}"></div>` : ''}
         <textarea id="user-notes" placeholder="Your thoughts...">${escapeHtml(e.notes)}</textarea>
       </div>
@@ -7840,6 +7856,14 @@ function attachRootHandlers() {
   });
   root.querySelectorAll('[data-char-photo]').forEach((el) => {
     el.onchange = () => applyCharPhotoFile(el.getAttribute('data-char-photo'), el.files[0]);
+  });
+  root.querySelectorAll('[data-lead-name]').forEach((el) => {
+    el.onblur = async () => {
+      const who = el.getAttribute('data-lead-name');
+      const e = getEntry(STATE.entryId);
+      e[who].name = el.value.trim();
+      await saveEntry(e);
+    };
   });
   const coverUploadInput = root.querySelector('#cover-upload-input');
   if (coverUploadInput) coverUploadInput.onchange = () => applyCoverFile(coverUploadInput.files[0]);
