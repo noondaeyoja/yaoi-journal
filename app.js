@@ -1709,6 +1709,21 @@ function wireThemePickerModal(opts) {
   };
 }
 
+// Admin-only static preview of the cyan/yellow cross-reference-style modal
+// (see openCrossRefModal), so she can sanity-check the popup styling without
+// needing an entry that's actually mid-review.
+function previewCrossRefModalStyle() {
+  openModal(`
+    <div class="crossref-modal-title">Cross-Reference</div>
+    <div class="crossref-modal-body">
+      <div style="font-weight:800;margin-bottom:8px;">ENTER LINK</div>
+      <input type="text" style="width:100%;box-sizing:border-box;padding:9px;border:2px solid var(--border);margin-bottom:16px;font-size:13px;" placeholder="https://..." readonly>
+      <div style="text-align:center;">
+        <button class="btn-primary" data-close-modal="1">OK</button>
+      </div>
+    </div>
+  `);
+}
 function openModal(html, opts) {
   document.getElementById('modal-sheet').innerHTML = html;
   // Individual Images/Reactions/H file modals always want to open dead
@@ -3347,7 +3362,7 @@ function groupUsageCount(key) {
 // Chip rows (filter bars, tag-toggle lists) only ever show non-hidden
 // groups — same rule Tag Manager already applies to hidden tags.
 function visibleGroupList() {
-  return Array.from(IMAGE_GROUPS).filter((k) => !isHiddenGroup(k)).sort((a, b) => a.localeCompare(b));
+  return Array.from(IMAGE_GROUPS).filter((k) => !isHiddenGroup(k)).sort((a, b) => moodSortKey(a).localeCompare(moodSortKey(b)));
 }
 function addImageGroup(rawName) {
   const name = String(rawName || '').trim();
@@ -4225,11 +4240,19 @@ const MOOD_OPTIONS = [
 // editing this array in code. This layers user-created custom moods (synced
 // via CUSTOM_MOODS, see pullMetaState()/boot()) on top, everywhere the fixed
 // list used to be used directly.
+function moodSortKey(label) {
+  // Custom mood/group names are free text the user typed themselves, and
+  // some have an emoji baked right into the name (e.g. "🍆Dick") rather
+  // than stored as a separate emoji field. Strip any leading run of
+  // non-letter/non-number characters (emoji, symbols, whitespace) so
+  // alphabetical sort goes by the actual text, not by emoji code point.
+  return String(label || '').replace(/^[^\p{L}\p{N}]+/u, '').toLowerCase();
+}
 function allMoodOptions() {
   // No emoji prefix on custom moods — they read cleaner as plain labels,
   // and it avoids every custom mood looking visually identical (all 🏷️).
   const combined = [...MOOD_OPTIONS, ...visibleGroupList().map((name) => ({ key: name, emoji: '', label: name }))];
-  return combined.slice().sort((a, b) => a.label.localeCompare(b.label));
+  return combined.slice().sort((a, b) => moodSortKey(a.label).localeCompare(moodSortKey(b.label)));
 }
 function addCustomMood(rawName) {
   const name = String(rawName || '').trim();
@@ -5452,7 +5475,7 @@ function hGroupUsageCount(key) {
   return urls.size;
 }
 function visibleHGroupList() {
-  return Array.from(H_GROUPS).filter((k) => !isHiddenHGroup(k)).sort((a, b) => a.localeCompare(b));
+  return Array.from(H_GROUPS).filter((k) => !isHiddenHGroup(k)).sort((a, b) => moodSortKey(a).localeCompare(moodSortKey(b)));
 }
 function addHGroup(rawName) {
   const name = String(rawName || '').trim();
@@ -6293,12 +6316,7 @@ function renderDetail(e) {
       <div class="field-row"><label>Artist</label><div class="value boxed">${escapeHtml(formatNames(e.artist)) || '—'}</div></div>
       <div class="field-row" style="margin-bottom:0"><label class="status-pill-label">Format</label>${mediaFormatSelect}</div>
       <div class="details-divider"></div>
-      <div class="field-row-2col wide-gap">
-        <div>
-          <div class="field-row"><label>Total Seasons</label><div class="value plain">${e.totalSeasons || '—'}</div></div>
-          <div class="field-row" style="margin-bottom:0;"><label>Total Chapters</label><div class="value plain">${e.totalChapters || '—'}</div></div>
-        </div>
-        <div class="field-row" style="margin-bottom:0;">
+      <div class="field-row" style="margin-bottom:0;">
           <label class="status-pill-label">Story Status</label>
           <select class="shelf-select status-pill-select" data-status-select="1">
             <option value="" ${!e.status ? 'selected' : ''}>—</option>
@@ -6307,17 +6325,12 @@ function renderDetail(e) {
           </select>
           <div style="margin-top:8px;"><label class="status-pill-label">Reading Status</label>${shelfSelect}</div>
         </div>
-      </div>
     ` : `
       <div class="field-row"><label>Title</label><div class="value boxed">${escapeHtml(e.title)}</div></div>
       <div class="field-row"><label>Alt title</label><div class="value boxed">${escapeHtml(e.altTitle) || '—'}</div></div>
       <div class="field-row" style="margin-bottom:0"><label class="status-pill-label">Format</label>${mediaFormatSelect}</div>
       <div class="details-divider"></div>
-      <div class="field-row-2col wide-gap">
-        <div>
-          <div class="field-row" style="margin-bottom:0;"><label>Total Episodes</label><div class="value plain">${e.totalChapters || '—'}</div></div>
-        </div>
-        <div class="field-row" style="margin-bottom:0;">
+      <div class="field-row" style="margin-bottom:0;">
           <label class="status-pill-label">Story Status</label>
           <select class="shelf-select status-pill-select" data-status-select="1">
             <option value="" ${!e.status ? 'selected' : ''}>—</option>
@@ -6326,7 +6339,6 @@ function renderDetail(e) {
           </select>
           <div style="margin-top:8px;"><label class="status-pill-label">Viewing Status</label>${shelfSelect}</div>
         </div>
-      </div>
     `;
   }
 
@@ -6335,6 +6347,8 @@ function renderDetail(e) {
       <div class="detail-header-row">
         <button class="back-btn" data-nav-back="1">← Back</button>
         <h2>${escapeHtml(e.title)}</h2>
+      </div>
+      <div class="detail-actions-row">
         <div class="icon-action">
           <button class="icon-btn save" data-force-save="1" title="Save now">✅</button>
           <span class="icon-label">Save</span>
@@ -6564,6 +6578,14 @@ function renderDatabase() {
           ? `<div style="font-size:14px;">${THEME_MODE === 'sfw' ? '💕 SFW' : '💦 NSFW'}</div>`
           : `<button class="ref-btn" data-open-theme-picker="1">🎨 Choose your theme (one-time)</button>`}
         ${isAdmin() ? `<button class="ref-btn" data-preview-theme-picker="1">🔍 Preview new-user theme screen</button>` : ''}
+        ${isAdmin() ? `<button class="ref-btn" data-preview-crossref-modal="1">🔍 Preview cross-reference popup</button>` : ''}
+        <div class="field-row">
+        <label>Page Background</label>
+        <div style="display:flex;gap:8px;">
+          <button type="button" data-bg-mode-pick="cyan" class="chip ${BG_MODE !== 'pink' ? 'active' : ''}" style="flex:1;">Cyan</button>
+          <button type="button" data-bg-mode-pick="pink" class="chip ${BG_MODE === 'pink' ? 'active' : ''}" style="flex:1;">Pink</button>
+        </div>
+      </div>
       </div>
       
       </div>
@@ -6637,13 +6659,7 @@ function renderSettingsPanel() {
   return `
     <div class="panel" style="margin-bottom:14px;">
       <div class="panel-title">⚙️ Settings</div>
-      <div class="field-row">
-        <label>Page Background</label>
-        <div style="display:flex;gap:8px;">
-          <button type="button" data-bg-mode-pick="cyan" class="chip ${BG_MODE !== 'pink' ? 'active' : ''}" style="flex:1;">Cyan</button>
-          <button type="button" data-bg-mode-pick="pink" class="chip ${BG_MODE === 'pink' ? 'active' : ''}" style="flex:1;">Pink</button>
-        </div>
-      </div>
+      
       <div class="field-row">
         <label>Cross-reference proxy URL (your Apps Script web app URL)</label>
         <input type="text" id="proxy-url-input" value="${escapeHtml(getProxyUrl())}" placeholder="https://script.google.com/macros/s/.../exec">
@@ -7464,6 +7480,19 @@ async function submitAdd() {
 
 function attachRootHandlers() {
   const root = document.getElementById('view-root');
+
+  // Generic panel collapse (Vice City card style): any .panel-triangles
+  // pair that ISN'T one of the dedicated mood/group filter toggles above
+  // collapses the whole surrounding .panel when clicked. The two triangles
+  // act as one button visually, so the whole element is the click target.
+  root.querySelectorAll('.panel-triangles').forEach((tri) => {
+    if (tri.hasAttribute('data-images-toggle-filters') || tri.hasAttribute('data-meme-toggle-filters') || tri.hasAttribute('data-h-toggle-filters')) return;
+    tri.style.cursor = 'pointer';
+    tri.onclick = () => {
+      const panel = tri.closest('.panel');
+      if (panel) panel.classList.toggle('panel-collapsed');
+    };
+  });
 
   // Whole-gallery drag-and-drop for Images/Reactions/H — drop anywhere in
   // the masonry area (not just onto the small upload label) to upload a
@@ -8377,6 +8406,8 @@ function attachRootHandlers() {
   if (openThemeBtn) openThemeBtn.onclick = () => openThemePickerModal({ autoForced: false });
   const previewThemeBtn = root.querySelector('[data-preview-theme-picker]');
   if (previewThemeBtn) previewThemeBtn.onclick = () => openThemePickerModal({ preview: true });
+  const previewCrossRefBtn = root.querySelector('[data-preview-crossref-modal]');
+  if (previewCrossRefBtn) previewCrossRefBtn.onclick = () => previewCrossRefModalStyle();
   root.querySelectorAll('[data-retry-failed-upload]').forEach((el) => {
     el.onclick = async () => {
       el.disabled = true;
