@@ -7669,15 +7669,15 @@ function attachRootHandlers() {
   const proxyUrlInput = root.querySelector('#proxy-url-input');
   if (proxyUrlInput) proxyUrlInput.onblur = () => {
     setProxyUrl(proxyUrlInput.value);
-    const bgModeBtns = root.querySelectorAll('[data-bg-mode-pick]');
+    showToast('Settings saved');
+  };
+  const bgModeBtns = root.querySelectorAll('[data-bg-mode-pick]');
   bgModeBtns.forEach((btn) => {
     btn.onclick = () => {
       saveBgMode(btn.getAttribute('data-bg-mode-pick'));
       render();
     };
   });
-    showToast('Settings saved');
-  };
 
   // Detail view handlers
   const forceSaveBtn = root.querySelector('[data-force-save]');
