@@ -2783,17 +2783,17 @@ function renderHome() {
   // 'Completed' shelf), but per her direct correction that silently dropped
   // the whole Reading Status row out of the filter box, which she hadn't
   // asked for. Restored unconditionally.
-  const shelfChips = `<select id="home-shelf-select" class="filter-select">${['ALL', ...SHELVES_READING].map((s) => `<option value="${escapeHtml(s)}" ${STATE.shelf === s ? 'selected' : ''}>${s === 'ALL' ? 'All' : escapeHtml(s)}</option>`).join('')}</select>`;
+  const shelfChips = `<div class="filter-dropdown-col"><div class="filter-dropdown-title">Shelf</div><select id="home-shelf-select" class="filter-select">${['ALL', ...SHELVES_READING].map((s) => `<option value="${escapeHtml(s)}" ${STATE.shelf === s ? 'selected' : ''}>${s === 'ALL' ? 'All' : escapeHtml(s)}</option>`).join('')}</select></div>`;
   // Story Status (WIP/Finished) — the story's own completion state, distinct
   // from Reading Status (her shelf: Currently Reading/Completed/etc, which is
   // about her progress through it, not whether the author's finished it).
-  const storyStatusChips = `<select id="home-story-status-select" class="filter-select">${['ALL', 'WIP', 'Finished'].map((s) => `<option value="${escapeHtml(s)}" ${(STATE.storyStatusFilter || 'ALL') === s ? 'selected' : ''}>${s === 'ALL' ? 'All' : escapeHtml(s)}</option>`).join('')}</select>`;
+  const storyStatusChips = `<div class="filter-dropdown-col"><div class="filter-dropdown-title">Story Status</div><select id="home-story-status-select" class="filter-select">${['ALL', 'WIP', 'Finished'].map((s) => `<option value="${escapeHtml(s)}" ${(STATE.storyStatusFilter || 'ALL') === s ? 'selected' : ''}>${s === 'ALL' ? 'All' : escapeHtml(s)}</option>`).join('')}</select></div>`;
   // Format filter row — replaces the old book/tv icon toggle (STATE.format)
   // with a proper dropdown, same row as Shelf/Story Status above it.
-  const mediaFormatChips = `<select id="home-format-select" class="filter-select">${['ALL', ...MEDIA_FORMATS.map((f) => f.value)].map((v) => {
+  const mediaFormatChips = `<div class="filter-dropdown-col"><div class="filter-dropdown-title">Format</div><select id="home-format-select" class="filter-select">${['ALL', ...MEDIA_FORMATS.map((f) => f.value)].map((v) => {
     const label = v === 'ALL' ? 'All' : mediaFormatLabel(v);
     return `<option value="${escapeHtml(v)}" ${(STATE.mediaFormatFilter || 'ALL') === v ? 'selected' : ''}>${escapeHtml(label)}</option>`;
-  }).join('')}</select>`;
+  }).join('')}</select></div>`;
   const tagMsPanel = tags.map((t) => `<span class="tag-pool-chip ${STATE.tagFilters.includes(t) ? 'active' : ''}" data-toggle-home-tag="${escapeHtml(t)}">${escapeHtml(t)}</span>`).join('');
   const tagMultiselect = `
     <div class="tag-multiselect">
@@ -2814,10 +2814,10 @@ function renderHome() {
   // shows the emoji repeated N times so "3+" reads as an at-a-glance count.
   function ratingFilterSelect(field, current, icon, label) {
     const opts = [1, 2, 3, 4, 5].map((n) => `<option value="${n}" ${current === n ? 'selected' : ''}>${icon.repeat(n)}</option>`).join('');
-    return `<select class="rating-filter-select" data-rating-filter-field="${field}" title="${label} filter">
+    return `<div class="filter-dropdown-col"><div class="filter-dropdown-title">${label}</div><select class="rating-filter-select" data-rating-filter-field="${field}" title="${label} filter">
       <option value="" ${!current ? 'selected' : ''}>${icon} ${label}</option>
       ${opts}
-    </select>`;
+    </select></div>`;
   }
   const smutChips = ratingFilterSelect('smutFilter', STATE.smutFilter, themeIcon(), isSFW() ? 'Cute' : 'Smut');
   const qualityChips = ratingFilterSelect('qualityFilter', STATE.qualityFilter, '❤️', 'Overall');
@@ -2853,7 +2853,8 @@ function renderHome() {
         <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
         <div class="filter-section-label">Ratings &amp; Flags</div>
-        <div class="rating-pick-row">${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}<span class="rating-pick-divider"></span>${smutChips}<span class="rating-pick-divider"></span>${qualityChips}<span class="rating-pick-divider"></span>${lolChips}<span class="rating-pick-divider"></span>${cryChips}<span class="rating-pick-divider"></span>${wtfChips}</div>
+        <div class="rating-pick-row">${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}</div>
+        <div class="filter-dropdown-row rating-emoji-row">${smutChips}${qualityChips}${lolChips}${cryChips}${wtfChips}</div>
       </div>
     </div>
     <main>${body}</main>
