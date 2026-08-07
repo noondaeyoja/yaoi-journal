@@ -131,10 +131,10 @@ display: flex; flex-wrap: wrap; gap: 6px; max-height: none; overflow-y: visible;
 }
 .chip {
 white-space: nowrap; padding: 8px 14px; border-radius: 0; font-size: 13px; font-weight: 600;
-background: var(--card); color: var(--yellow); border: 1px solid var(--yellow-soft);
+background: var(--pink); color: #ffffff; border: 1px solid var(--border); opacity: .55;
 flex: 0 1 auto; text-align: center;
 }
-.chip.active { background: var(--yellow); color: #241c02; border-color: var(--yellow); }
+.chip.active { background: var(--pink); color: #ffffff; border-color: var(--border); opacity: 1; box-shadow: 0 0 0 2px var(--yellow) inset; }
 
 .rating-pick-row { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; flex-wrap: wrap; }
 .rating-pick-icon {
@@ -185,7 +185,7 @@ transition: max-height .25s ease, opacity .2s ease, margin .2s ease;
 
 .tag-multiselect { margin-bottom: 4px; }
 .tag-ms-toggle {
-width: 100%; text-align: left; background: var(--card); color: var(--yellow); border: 1px solid var(--yellow-soft);
+width: 100%; text-align: left; background: var(--pink); color: #ffffff; border: 1px solid var(--border);
 border-radius: 0; padding: 7px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer;
 display: flex; align-items: center; justify-content: space-between;
 }
