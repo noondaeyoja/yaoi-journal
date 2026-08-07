@@ -2720,7 +2720,12 @@ function renderHome() {
     // restriction would just hide a Watching entry from the homepage the
     // moment she picks anything other than Completed — so it's grouped the
     // same way regardless of format now.
-    const shelvesToShow = SHELVES_READING;
+    // Homepage default view shows 3 shelf sections in this order (matching
+    // the Vice City mockup's Current/Pending/Completed layout); Discontinued
+    // is intentionally left out of the default view but stays fully reachable
+    // via the Reading Status filter chip above (that path renders a flat
+    // grid from filteredEntries(), not this shelf loop).
+    const shelvesToShow = ['Currently Reading', 'Plan to Read', 'Completed'];
     shelvesToShow.forEach((shelf) => {
       const group = entries.filter((e) => e.shelf === shelf);
       if (group.length === 0) return;
