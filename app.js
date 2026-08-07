@@ -2772,11 +2772,21 @@ function renderHome() {
       </div>
     </div>`;
 
-  const smutChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.smutFilter && n <= STATE.smutFilter ? 'active' : ''}" data-smut-filter="${n}" title="${n}+ ${isSFW() ? 'hearts' : 'eggplants'}">${themeIcon()}</span>`).join('');
-  const qualityChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.qualityFilter && n <= STATE.qualityFilter ? 'active' : ''}" data-quality-filter="${n}" title="${n}+ hearts">❤️</span>`).join('');
-  const lolChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.lolFilter && n <= STATE.lolFilter ? 'active' : ''}" data-lol-filter="${n}" title="${n}+ laughs">😂</span>`).join('');
-  const cryChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.cryFilter && n <= STATE.cryFilter ? 'active' : ''}" data-cry-filter="${n}" title="${n}+ cries">😭</span>`).join('');
-  const wtfChips = [1, 2, 3, 4, 5].map((n) => `<span class="rating-pick-icon ${STATE.wtfFilter && n <= STATE.wtfFilter ? 'active' : ''}" data-wtf-filter="${n}" title="${n}+ WTFs">🤯</span>`).join('');
+  // Rating filters render as real <select> dropdowns (not clickable chip rows) —
+  // per the Vice City mockup's "emojis only in drop down" note: each option
+  // shows the emoji repeated N times so "3+" reads as an at-a-glance count.
+  function ratingFilterSelect(field, current, icon, label) {
+    const opts = [1, 2, 3, 4, 5].map((n) => `<option value="${n}" ${current === n ? 'selected' : ''}>${icon.repeat(n)}</option>`).join('');
+    return `<select class="rating-filter-select" data-rating-filter-field="${field}" title="${label} filter">
+      <option value="" ${!current ? 'selected' : ''}>${icon} Any</option>
+      ${opts}
+    </select>`;
+  }
+  const smutChips = ratingFilterSelect('smutFilter', STATE.smutFilter, themeIcon(), isSFW() ? 'Cute' : 'Smut');
+  const qualityChips = ratingFilterSelect('qualityFilter', STATE.qualityFilter, '❤️', 'Overall');
+  const lolChips = ratingFilterSelect('lolFilter', STATE.lolFilter, '😂', 'Laughing');
+  const cryChips = ratingFilterSelect('cryFilter', STATE.cryFilter, '😭', 'Crying');
+  const wtfChips = ratingFilterSelect('wtfFilter', STATE.wtfFilter, '🤯', 'WTF');
   // Semi/Uke green/red/black flags are hidden entirely for SFW accounts —
   // her explicit call: this is a general relationship-dynamic marker, not
   // just a hentai-adjacent thing, but it's still part of the SFW cut.
@@ -6349,7 +6359,10 @@ function renderDetail(e) {
       <div class="panel">
         <div class="panel-title-row" style="margin-bottom:8px;">
           <div class="panel-title" style="margin:0;">Details</div>
-          ${!DETAIL_EDIT_MODE ? `<button class="icon-btn-inline" data-edit-toggle="1" title="Edit details">✏️</button>` : ''}
+          <span style="display:flex;align-items:center;gap:10px;">
+            ${!DETAIL_EDIT_MODE ? `<button class="icon-btn-inline" data-edit-toggle="1" title="Edit details">✏️</button>` : ''}
+            <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
+          </span>
         </div>
         <div class="split-row">
           <div>
@@ -6386,6 +6399,10 @@ function renderDetail(e) {
 
       <!-- 2. Ratings -->
       <div class="panel">
+        <div class="panel-title-row" style="margin-bottom:14px;">
+          <div class="panel-title" style="margin:0;">Rating</div>
+          <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
+        </div>
         <div class="rating-grid">
           <div class="rating-block">
             <div class="label">Overall</div>
@@ -7579,31 +7596,11 @@ function attachRootHandlers() {
       if (chevron) chevron.textContent = collapsed ? '▸' : '▾';
     };
   });
-  root.querySelectorAll('[data-smut-filter]').forEach((el) => {
-    el.onclick = () => {
-      const n = Number(el.getAttribute('data-smut-filter'));
-      STATE.smutFilter = STATE.smutFilter === n ? null : n;
-      render();
-    };
-  });
-  root.querySelectorAll('[data-quality-filter]').forEach((el) => {
-    el.onclick = () => {
-      const n = Number(el.getAttribute('data-quality-filter'));
-      STATE.qualityFilter = STATE.qualityFilter === n ? null : n;
-      render();
-    };
-  });
-  root.querySelectorAll('[data-lol-filter]').forEach((el) => {
-    el.onclick = () => {
-      const n = Number(el.getAttribute('data-lol-filter'));
-      STATE.lolFilter = STATE.lolFilter === n ? null : n;
-      render();
-    };
-  });
-  root.querySelectorAll('[data-cry-filter]').forEach((el) => {
-    el.onclick = () => {
-      const n = Number(el.getAttribute('data-cry-filter'));
-      STATE.cryFilter = STATE.cryFilter === n ? null : n;
+  root.querySelectorAll('[data-rating-filter-field]').forEach((el) => {
+    el.onchange = () => {
+      const field = el.getAttribute('data-rating-filter-field');
+      const val = el.value;
+      STATE[field] = val ? Number(val) : null;
       render();
     };
   });
