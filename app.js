@@ -1618,11 +1618,34 @@ function showToast(msg) {
   if (msgEl) msgEl.textContent = msg; else t.textContent = msg;
   t.style.display = 'flex';
   clearTimeout(showToast._t);
-  showToast._t = setTimeout(() => { t.style.display = 'none'; }, 8000);
+  const requiresClick = /error|fail|invalid|please|must not|must be|must have|cannot|can.t\b|couldn.t\b|unable|reconnect|too (big|large)|not found|not available|missing|warning|try again|network|blocked|hidden on purpose/i.test(msg);
+  if (!requiresClick) {
+    showToast._t = setTimeout(() => { t.style.display = 'none'; }, 1500);
+  }
 }
 function hideToast() {
   document.getElementById('toast').style.display = 'none';
   clearTimeout(showToast._t);
+}
+function confirmModal(msg, okLabel, cancelLabel) {
+  return new Promise((resolve) => {
+    const m = document.getElementById('confirm-modal');
+    const msgEl = document.getElementById('confirm-msg');
+    const okBtn = document.getElementById('confirm-ok');
+    const cancelBtn = document.getElementById('confirm-cancel');
+    msgEl.textContent = msg;
+    okBtn.textContent = okLabel || 'OK';
+    cancelBtn.textContent = cancelLabel || 'CANCEL';
+    m.style.display = 'flex';
+    const cleanup = (val) => {
+      m.style.display = 'none';
+      okBtn.onclick = null;
+      cancelBtn.onclick = null;
+      resolve(val);
+    };
+    okBtn.onclick = () => cleanup(true);
+    cancelBtn.onclick = () => cleanup(false);
+  });
 }
 
 function uid(prefix) {
