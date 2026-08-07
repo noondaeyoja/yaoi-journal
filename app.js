@@ -3661,7 +3661,13 @@ async function addImageAsReaction(dataUrl) {
   // "Add as reactions" (Images gallery -> Reactions library) — the resulting
   // record is meant to live and be organized by mood tag from here on, so it
   // gets source: 'reactions' just like a direct Reactions-tab upload would.
-  const reaction = { id: uid('reaction'), dataUrl, hash, moodTags: [], note: '', source: 'reactions', createdAt: new Date().toISOString() };
+    // #295: carry over any mood already tagged on the Images side, but
+  // only ones that still exist as a valid mood in Reactions right now --
+  // avoids re-tagging the exact same mood twice when pulling an Images
+  // item into the Reactions gallery.
+  const validMoodKeys295 = new Set(allMoodOptions().map((m) => m.key));
+  const carriedMoodTags295 = (IMAGE_TAG_MAP[imageKey(dataUrl)] || []).filter((t) => validMoodKeys295.has(t));
+  const reaction = { id: uid('reaction'), dataUrl, hash, moodTags: carriedMoodTags295, note: '', source: 'reactions', createdAt: new Date().toISOString() };
   await saveReaction(reaction);
   tryUploadImageToDrive(dataUrl, `reaction-${reaction.id}.jpg`, 'reaction').then((fileId) => {
     if (!fileId) return;
