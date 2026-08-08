@@ -1957,7 +1957,13 @@ function compressDataUrlHarder(dataUrl, maxDim = 800, quality = 0.7) {
 // sync (compress → save locally → Drive upload in the background).
 async function applyCoverFile(file) {
   if (!file) return;
-  const dataUrl = await fileToCompressedDataUrl(file, 700);
+  let dataUrl;
+  try {
+    dataUrl = await fileToCompressedDataUrl(file, 700);
+  } catch (err) {
+    showToast(`Couldn't read "${file.name}" — try saving it as a JPG or PNG and uploading again.`);
+    return;
+  }
   const e = getEntry(STATE.entryId);
   if (!e) return;
   e.coverUrl = dataUrl;
@@ -1979,7 +1985,13 @@ async function applyCoverFile(file) {
 }
 async function applyCharPhotoFile(who, file) {
   if (!file) return;
-  const dataUrl = await fileToCompressedDataUrl(file, 500);
+  let dataUrl;
+  try {
+    dataUrl = await fileToCompressedDataUrl(file, 500);
+  } catch (err) {
+    showToast(`Couldn't read "${file.name}" — try saving it as a JPG or PNG and uploading again.`);
+    return;
+  }
   const e = getEntry(STATE.entryId);
   if (!e) return;
   const prevPhoto = e[who].photo;
@@ -2021,11 +2033,20 @@ async function applyScreencapFiles(fileList) {
   e.screencaps = e.screencaps || [];
   e.screencapDriveIds = e.screencapDriveIds || [];
   const newDataUrls = [];
+  const failedFiles298 = [];
   for (const file of fileList) {
-    const dataUrl = await fileToCompressedDataUrl(file, 900);
+    let dataUrl;
+    try {
+      dataUrl = await fileToCompressedDataUrl(file, 900);
+    } catch (err) {
+      failedFiles298.push(file.name);
+      continue;
+    }
     e.screencaps.push(dataUrl);
     newDataUrls.push(dataUrl);
   }
+  if (failedFiles298.length) showToast(`Couldn't read ${failedFiles298.join(', ')} — try saving as JPG or PNG and re-uploading.`);
+  if (!newDataUrls.length) return;
   await saveEntry(e);
   render();
   // Upload each new screencap to Drive in the background and append its id
@@ -5210,6 +5231,7 @@ function showOversizedFilesModal(oversizedFiles) {
 async function addReactionFiles(fileList, source = 'images') {
   const added = [];
   const oversized = [];
+  const failedFiles299 = [];
   for (const file of fileList) {
     if (file.size > MAX_REACTION_FILE_BYTES) { oversized.push(file); continue; }
     // GIFs (and animated WebP) lose their animation the moment they get
@@ -5224,7 +5246,13 @@ async function addReactionFiles(fileList, source = 'images') {
     // animated GIF/WebP — canvas re-encoding only makes sense for a static
     // image, and would silently mangle a video into a single frame.
     const isVideo = file.type.startsWith('video/');
-    const dataUrl = (isAnimated || isVideo) ? await fileToDataUrl(file) : await fileToCompressedDataUrl(file, 800);
+    let dataUrl;
+    try {
+      dataUrl = (isAnimated || isVideo) ? await fileToDataUrl(file) : await fileToCompressedDataUrl(file, 800);
+    } catch (err) {
+      failedFiles299.push(file.name);
+      continue;
+    }
     // Used to block here with a confirm() popup on a possible-duplicate
     // hash match — per her request, uploads always go through now instead;
     // the Possible Duplicates scan (scanForMemeDuplicates/etc.) is the
@@ -5243,6 +5271,7 @@ async function addReactionFiles(fileList, source = 'images') {
     });
   }
   if (oversized.length) showOversizedFilesModal(oversized);
+  if (failedFiles299.length) showToast(`Couldn't read ${failedFiles299.join(', ')} — try saving as JPG or PNG and re-uploading.`);
   return added;
 }
 
