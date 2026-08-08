@@ -2496,7 +2496,8 @@ document.body.dataset.bg = BG_MODE;
    bring it back as soon as the user scrolls up even a little. The
    always-visible .global-header (logo/search) is left alone on purpose --
    it stays reachable even while a list's own header is tucked away. */
-let SCROLL_HIDE_Y = 0;
+let SCROLL_HIDE_LAST_Y = 0;
+let SCROLL_HIDE_ACCUM = 0;
 let SCROLL_HIDE_ON = false;
 function setHeaderScrollCollapsed(header, collapsed) {
   if (!header) return;
@@ -2522,21 +2523,32 @@ function setHeaderScrollCollapsed(header, collapsed) {
     }, 280);
   }
 }
+// Accumulates scroll distance in the current direction (instead of just
+// comparing to the previous event's Y) so slow/smooth scrolling -- which
+// fires many tiny-delta scroll events -- still adds up to a hide/reveal
+// instead of getting reset away by each small step.
 function handleHeaderScrollHide() {
   const header = document.querySelector('.app-header, .detail-header');
   if (!header) return;
   const y = window.scrollY || document.documentElement.scrollTop || 0;
-  const delta = y - SCROLL_HIDE_Y;
+  const diff = y - SCROLL_HIDE_LAST_Y;
+  SCROLL_HIDE_LAST_Y = y;
   if (y < 30) {
     if (SCROLL_HIDE_ON) { setHeaderScrollCollapsed(header, false); SCROLL_HIDE_ON = false; }
-  } else if (delta > 10 && !SCROLL_HIDE_ON) {
+    SCROLL_HIDE_ACCUM = 0;
+    return;
+  }
+  if ((diff > 0) !== (SCROLL_HIDE_ACCUM > 0)) SCROLL_HIDE_ACCUM = 0;
+  SCROLL_HIDE_ACCUM += diff;
+  if (SCROLL_HIDE_ACCUM > 40 && !SCROLL_HIDE_ON) {
     setHeaderScrollCollapsed(header, true);
     SCROLL_HIDE_ON = true;
-  } else if (delta < -10 && SCROLL_HIDE_ON) {
+    SCROLL_HIDE_ACCUM = 0;
+  } else if (SCROLL_HIDE_ACCUM < -24 && SCROLL_HIDE_ON) {
     setHeaderScrollCollapsed(header, false);
     SCROLL_HIDE_ON = false;
+    SCROLL_HIDE_ACCUM = 0;
   }
-  if (Math.abs(delta) > 4) SCROLL_HIDE_Y = y;
 }
 let SCROLL_HIDE_TICKING = false;
 window.addEventListener('scroll', () => {
@@ -2545,7 +2557,8 @@ window.addEventListener('scroll', () => {
   requestAnimationFrame(() => { handleHeaderScrollHide(); SCROLL_HIDE_TICKING = false; });
 }, { passive: true });
 function resetHeaderScrollHide() {
-  SCROLL_HIDE_Y = window.scrollY || document.documentElement.scrollTop || 0;
+  SCROLL_HIDE_LAST_Y = window.scrollY || document.documentElement.scrollTop || 0;
+  SCROLL_HIDE_ACCUM = 0;
   SCROLL_HIDE_ON = false;
 }
 
