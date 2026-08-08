@@ -2939,7 +2939,7 @@ function renderHome() {
   // shows the emoji repeated N times so "3+" reads as an at-a-glance count.
   function ratingFilterSelect(field, current, icon, label) {
     const opts = [1, 2, 3, 4, 5].map((n) => `<option value="${n}" ${current === n ? 'selected' : ''}>${icon.repeat(n)}</option>`).join('');
-    return `<div class="filter-dropdown-col"><div class="filter-dropdown-title">${label}</div><select class="rating-filter-select" data-rating-filter-field="${field}" title="${label} filter">
+    return `<div class="filter-dropdown-col"><select class="rating-filter-select" data-rating-filter-field="${field}" title="${label} filter">
       <option value="" ${!current ? 'selected' : ''}>${icon} ${label}</option>
       ${opts}
     </select></div>`;
@@ -2973,13 +2973,10 @@ function renderHome() {
     <div class="app-header">
       <button class="filters-toggle-btn" data-toggle-filters="1">${FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
       <div class="filters-collapsible ${FILTERS_COLLAPSED ? 'collapsed' : ''}" id="filters-collapsible">
-        <div class="filter-section-label">Shelf / Story Status / Format</div>
         <div class="filter-dropdown-row">${shelfChips}${storyStatusChips}${mediaFormatChips}</div>
-        <div class="filter-section-label">Tags</div>
         ${tagMultiselect}
-        <div class="filter-section-label">Ratings &amp; Flags</div>
         <div class="rating-pick-row">${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}</div>
-        <div class="filter-dropdown-row rating-emoji-row">${smutChips}${qualityChips}${lolChips}${cryChips}${wtfChips}</div>
+        <div class="filter-dropdown-row rating-emoji-row">${qualityChips}${smutChips}${lolChips}${cryChips}${wtfChips}</div>
       </div>
     </div>
     <main>${body}</main>
