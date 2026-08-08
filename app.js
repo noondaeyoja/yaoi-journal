@@ -2908,14 +2908,14 @@ function renderHome() {
   // 'Completed' shelf), but per her direct correction that silently dropped
   // the whole Reading Status row out of the filter box, which she hadn't
   // asked for. Restored unconditionally.
-  const shelfChips = `<div class="filter-dropdown-col"><div class="filter-dropdown-title">Shelf</div><select id="home-shelf-select" class="filter-select">${['ALL', ...SHELVES_READING].map((s) => `<option value="${escapeHtml(s)}" ${STATE.shelf === s ? 'selected' : ''}>${s === 'ALL' ? 'All' : escapeHtml(shelfLabel(s))}</option>`).join('')}</select></div>`;
+  const shelfChips = `<div class="filter-dropdown-col"><select id="home-shelf-select" class="filter-select">${['ALL', ...SHELVES_READING].map((s) => `<option value="${escapeHtml(s)}" ${STATE.shelf === s ? 'selected' : ''}>${s === 'ALL' ? 'All' : escapeHtml(shelfLabel(s))}</option>`).join('')}</select></div>`;
   // Story Status (WIP/Finished) — the story's own completion state, distinct
   // from Reading Status (her shelf: Currently Reading/Completed/etc, which is
   // about her progress through it, not whether the author's finished it).
-  const storyStatusChips = `<div class="filter-dropdown-col"><div class="filter-dropdown-title">Story Status</div><select id="home-story-status-select" class="filter-select">${['ALL', 'WIP', 'Finished'].map((s) => `<option value="${escapeHtml(s)}" ${(STATE.storyStatusFilter || 'ALL') === s ? 'selected' : ''}>${s === 'ALL' ? 'All' : escapeHtml(s)}</option>`).join('')}</select></div>`;
+  const storyStatusChips = `<div class="filter-dropdown-col"><select id="home-story-status-select" class="filter-select">${['ALL', 'WIP', 'Finished'].map((s) => `<option value="${escapeHtml(s)}" ${(STATE.storyStatusFilter || 'ALL') === s ? 'selected' : ''}>${s === 'ALL' ? 'All' : escapeHtml(s)}</option>`).join('')}</select></div>`;
   // Format filter row — replaces the old book/tv icon toggle (STATE.format)
   // with a proper dropdown, same row as Shelf/Story Status above it.
-  const mediaFormatChips = `<div class="filter-dropdown-col"><div class="filter-dropdown-title">Format</div><select id="home-format-select" class="filter-select">${['ALL', ...MEDIA_FORMATS.map((f) => f.value)].map((v) => {
+  const mediaFormatChips = `<div class="filter-dropdown-col"><select id="home-format-select" class="filter-select">${['ALL', ...MEDIA_FORMATS.map((f) => f.value)].map((v) => {
     const label = v === 'ALL' ? 'All' : mediaFormatLabel(v);
     return `<option value="${escapeHtml(v)}" ${(STATE.mediaFormatFilter || 'ALL') === v ? 'selected' : ''}>${escapeHtml(label)}</option>`;
   }).join('')}</select></div>`;
