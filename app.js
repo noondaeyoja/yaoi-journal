@@ -2488,6 +2488,65 @@ document.body.dataset.bg = BG_MODE;
   else if (STATE.view === 'duplicates') body = renderDuplicates();
   root.innerHTML = renderGlobalHeader() + body;
   attachRootHandlers();
+  resetHeaderScrollHide();
+}
+
+/* #296: hide the page's sub-header (.app-header on most screens, or
+   .detail-header on the read/watch detail page) while scrolling down, and
+   bring it back as soon as the user scrolls up even a little. The
+   always-visible .global-header (logo/search) is left alone on purpose --
+   it stays reachable even while a list's own header is tucked away. */
+let SCROLL_HIDE_Y = 0;
+let SCROLL_HIDE_ON = false;
+function setHeaderScrollCollapsed(header, collapsed) {
+  if (!header) return;
+  if (collapsed) {
+    header.style.maxHeight = header.scrollHeight + 'px';
+    void header.offsetHeight;
+    requestAnimationFrame(() => {
+      header.style.maxHeight = '0px';
+      header.style.opacity = '0';
+      header.style.paddingTop = '0px';
+      header.style.paddingBottom = '0px';
+      header.style.borderBottomWidth = '0px';
+    });
+  } else {
+    header.style.paddingTop = '';
+    header.style.paddingBottom = '';
+    header.style.borderBottomWidth = '';
+    header.style.opacity = '1';
+    header.style.maxHeight = header.scrollHeight + 'px';
+    clearTimeout(header._scrollHideT);
+    header._scrollHideT = setTimeout(() => {
+      if (header.style.opacity !== '0') header.style.maxHeight = '';
+    }, 280);
+  }
+}
+function handleHeaderScrollHide() {
+  const header = document.querySelector('.app-header, .detail-header');
+  if (!header) return;
+  const y = window.scrollY || document.documentElement.scrollTop || 0;
+  const delta = y - SCROLL_HIDE_Y;
+  if (y < 30) {
+    if (SCROLL_HIDE_ON) { setHeaderScrollCollapsed(header, false); SCROLL_HIDE_ON = false; }
+  } else if (delta > 10 && !SCROLL_HIDE_ON) {
+    setHeaderScrollCollapsed(header, true);
+    SCROLL_HIDE_ON = true;
+  } else if (delta < -10 && SCROLL_HIDE_ON) {
+    setHeaderScrollCollapsed(header, false);
+    SCROLL_HIDE_ON = false;
+  }
+  if (Math.abs(delta) > 4) SCROLL_HIDE_Y = y;
+}
+let SCROLL_HIDE_TICKING = false;
+window.addEventListener('scroll', () => {
+  if (SCROLL_HIDE_TICKING) return;
+  SCROLL_HIDE_TICKING = true;
+  requestAnimationFrame(() => { handleHeaderScrollHide(); SCROLL_HIDE_TICKING = false; });
+}, { passive: true });
+function resetHeaderScrollHide() {
+  SCROLL_HIDE_Y = window.scrollY || document.documentElement.scrollTop || 0;
+  SCROLL_HIDE_ON = false;
 }
 
 /* ---------------------------------------------------------------------- */
