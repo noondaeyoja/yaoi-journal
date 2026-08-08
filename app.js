@@ -15,6 +15,23 @@ const STORE_REACTIONS = 'reactions';
 const STORE_H_IMAGES = 'hImages';
 
 const SHELVES_READING = ['Currently Reading', 'On Hold', 'Completed', 'Plan to Read', 'Discontinued'];
+function shelfLabel(value) {
+  // Display-only rename: 'On Hold' shows as 'Let it Cook' everywhere, but the
+  // stored value stays 'On Hold' so existing entries/filters/sync don't need
+  // a data migration.
+  return value === 'On Hold' ? 'Let it Cook' : value;
+}
+function shelfLabelForEntry(value, isReadingFmt) {
+  // Per-entry variant used where we know a single entry's format (detail
+  // page): watching-format entries see 'Currently Watching'/'Plan to Watch'
+  // instead of the Reading-flavored text, for the exact same underlying
+  // shelf value -- no new data values, just a relabel by format.
+  const withHoldRename = shelfLabel(value);
+  if (isReadingFmt) return withHoldRename;
+  if (value === 'Currently Reading') return 'Currently Watching';
+  if (value === 'Plan to Read') return 'Plan to Watch';
+  return withHoldRename;
+}
 const FLAG_COLORS = ['green', 'red', 'black'];
 const FLAG_HEX = { green: '#4ade80', red: '#f87171', black: '#6b6b7a' };
 
@@ -2836,12 +2853,12 @@ function renderHome() {
     // is intentionally left out of the default view but stays fully reachable
     // via the Reading Status filter chip above (that path renders a flat
     // grid from filteredEntries(), not this shelf loop).
-    const shelvesToShow = ['Currently Reading', 'Plan to Read', 'Completed'];
+    const shelvesToShow = SHELVES_READING;
     shelvesToShow.forEach((shelf) => {
       const group = entries.filter((e) => e.shelf === shelf);
       if (group.length === 0) return;
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
-      body += homeSectionHtml(rowId, shelf, group.length, group.map((e) => renderCoverCard(e)).join(''));
+      body += homeSectionHtml(rowId, shelfLabel(shelf), group.length, group.map((e) => renderCoverCard(e)).join(''));
     });
     if (!body) body = `<div class="empty-state">Nothing here yet. Tap + to add a ${STATE.format === 'reading' ? 'manhwa/manga' : STATE.format === 'watching' ? 'anime' : 'title'}.</div>`;
   } else {
@@ -2855,7 +2872,7 @@ function renderHome() {
   // 'Completed' shelf), but per her direct correction that silently dropped
   // the whole Reading Status row out of the filter box, which she hadn't
   // asked for. Restored unconditionally.
-  const shelfChips = `<div class="filter-dropdown-col"><div class="filter-dropdown-title">Shelf</div><select id="home-shelf-select" class="filter-select">${['ALL', ...SHELVES_READING].map((s) => `<option value="${escapeHtml(s)}" ${STATE.shelf === s ? 'selected' : ''}>${s === 'ALL' ? 'All' : escapeHtml(s)}</option>`).join('')}</select></div>`;
+  const shelfChips = `<div class="filter-dropdown-col"><div class="filter-dropdown-title">Shelf</div><select id="home-shelf-select" class="filter-select">${['ALL', ...SHELVES_READING].map((s) => `<option value="${escapeHtml(s)}" ${STATE.shelf === s ? 'selected' : ''}>${s === 'ALL' ? 'All' : escapeHtml(shelfLabel(s))}</option>`).join('')}</select></div>`;
   // Story Status (WIP/Finished) — the story's own completion state, distinct
   // from Reading Status (her shelf: Currently Reading/Completed/etc, which is
   // about her progress through it, not whether the author's finished it).
@@ -6531,8 +6548,8 @@ function renderDetail(e) {
         <div class="reading-link-top-row">
           <div class="reading-link-shelf-col">
             <label>Shelf</label>
-            <select class="shelf-select status-pill-select" data-shelf-select="1">
-              ${SHELVES_READING.map((s) => `<option value="${escapeHtml(s)}" ${e.shelf === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+            <select class='shelf-select status-pill-select' data-shelf-select='1'>
+              ${SHELVES_READING.map((s) => `<option value='${escapeHtml(s)}' ${e.shelf === s ? 'selected' : ''}>${escapeHtml(shelfLabelForEntry(s, isReading))}</option>`).join('')}
             </select>
           </div>
           <div class="reading-chapter-col">
@@ -8718,12 +8735,12 @@ function renderHomeInPlace() {
       body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)).join(''));
     }
     body += recentsSectionHtml(entries);
-    const shelvesToShow = STATE.format === 'watching' ? ['Completed'] : SHELVES_READING;
+    const shelvesToShow = SHELVES_READING;
     shelvesToShow.forEach((shelf) => {
       const group = entries.filter((e) => e.shelf === shelf);
       if (group.length === 0) return;
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
-      body += homeSectionHtml(rowId, shelf, group.length, group.map((e) => renderCoverCard(e)).join(''));
+      body += homeSectionHtml(rowId, shelfLabel(shelf), group.length, group.map((e) => renderCoverCard(e)).join(''));
     });
     if (!body) body = `<div class="empty-state">Nothing here yet.</div>`;
   } else {
