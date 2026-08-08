@@ -6197,9 +6197,9 @@ function renderRatingIcons(value, icon, max = 5) {
 }
 
 function renderFlagPicker(current, who) {
-  // Use the monochrome "⚑" glyph (not the colored 🚩 emoji) so CSS color actually
-  // tints it per flag-color choice, instead of always rendering red.
-  return FLAG_COLORS.map((c) => `<div class="flag-dot ${current === c ? 'selected' : ''}" data-flag-pick="${who}:${c}" title="${c[0].toUpperCase()}${c.slice(1)} flag"><span class="flag-glyph" style="color:${FLAG_HEX[c]}">&#9873;</span></div>`).join('');
+  // Labeled pink buttons (Black/Red/Green) instead of low-contrast dot icons —
+  // easier to see at a glance, single-select toggle same as before.
+  return FLAG_COLORS.map((c) => `<button type="button" class="lead-flag-btn ${current === c ? 'active' : ''}" data-flag-pick="${who}:${c}" title="${c[0].toUpperCase()}${c.slice(1)} flag">${c[0].toUpperCase()}${c.slice(1)}</button>`).join('');
 }
 
 function renderCharPhoto(photo) {
@@ -6640,7 +6640,7 @@ function renderDetail(e) {
         </div>
         <div class="notes-lead-cols">
           <div class="notes-lead-col">
-            <div class="notes-lead-head">LEAD #1</div>
+            <div class="notes-lead-head">MAIN LEAD</div>
             <label class="char-photo-slot polaroid-frame" style="cursor:pointer;">
               ${renderCharPhoto(e.semi.photo)}
               <input type="file" accept="image/*" style="display:none" data-char-photo="semi">
@@ -6649,7 +6649,7 @@ function renderDetail(e) {
             ${!isSFW() ? `<div class="flag-picker">${renderFlagPicker(e.semi.flag, 'semi')}</div>` : ''}
           </div>
           <div class="notes-lead-col">
-            <div class="notes-lead-head">LEAD #2</div>
+            <div class="notes-lead-head">MAIN CHARACTER</div>
             <label class="char-photo-slot polaroid-frame" style="cursor:pointer;">
               ${renderCharPhoto(e.uke.photo)}
               <input type="file" accept="image/*" style="display:none" data-char-photo="uke">
