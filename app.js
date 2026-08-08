@@ -754,18 +754,26 @@ async function applyMetaSnapshot(data) {
     IGNORED_IMAGE_DUP_GROUPS = new Set([...IGNORED_IMAGE_DUP_GROUPS, ...data.ignoredImageDupGroups]);
     if (IGNORED_IMAGE_DUP_GROUPS.size !== before) changed = true;
     await idbPut(STORE_META, { key: 'ignoredImageDupGroups', value: Array.from(IGNORED_IMAGE_DUP_GROUPS) });
+    // #299: a dismissal synced in from another device should immediately drop that
+    // group from an already-computed scan sitting on screen here too -- otherwise
+    // it keeps showing until the next manual rescan, looking like it 'came back'.
+    if (IMAGE_DUP_GROUPS) IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS.filter((g) => !IGNORED_IMAGE_DUP_GROUPS.has(imageDupSignature(g)));
   }
   if (Array.isArray(data.ignoredMemeDupGroups) && data.ignoredMemeDupGroups.length) {
     const before = IGNORED_MEME_DUP_GROUPS.size;
     IGNORED_MEME_DUP_GROUPS = new Set([...IGNORED_MEME_DUP_GROUPS, ...data.ignoredMemeDupGroups]);
     if (IGNORED_MEME_DUP_GROUPS.size !== before) changed = true;
     await idbPut(STORE_META, { key: 'ignoredMemeDupGroups', value: Array.from(IGNORED_MEME_DUP_GROUPS) });
+    // #299: same fix as IMAGE_DUP_GROUPS above, for the Reactions duplicate scanner.
+    if (MEME_DUP_GROUPS) MEME_DUP_GROUPS = MEME_DUP_GROUPS.filter((g) => !IGNORED_MEME_DUP_GROUPS.has(reactionDupSignature(g)));
   }
   if (Array.isArray(data.ignoredHDupGroups) && data.ignoredHDupGroups.length) {
     const before = IGNORED_H_DUP_GROUPS.size;
     IGNORED_H_DUP_GROUPS = new Set([...IGNORED_H_DUP_GROUPS, ...data.ignoredHDupGroups]);
     if (IGNORED_H_DUP_GROUPS.size !== before) changed = true;
     await idbPut(STORE_META, { key: 'ignoredHDupGroups', value: Array.from(IGNORED_H_DUP_GROUPS) });
+    // #299: same fix as IMAGE_DUP_GROUPS above, for the H duplicate scanner.
+    if (H_DUP_GROUPS) H_DUP_GROUPS = H_DUP_GROUPS.filter((g) => !IGNORED_H_DUP_GROUPS.has(hDupSignature(g)));
   }
   if (Array.isArray(data.hImageKeys) && data.hImageKeys.length) {
     const before = H_IMAGE_KEYS.size;
@@ -831,7 +839,12 @@ async function pullMetaState() {
   try {
     const snap = await ref.get({ source: 'server' }).catch(() => ref.get());
     if (!snap.exists) return;
-    await applyMetaSnapshot(snap.data());
+    // #299: this used to discard the return value entirely, so a dismissed-duplicate
+    // sync that arrived via this boot-time pull (as opposed to the live listener)
+    // never repainted the already-open gallery -- the stale, since-resolved group
+    // just sat there looking unresolved until something else happened to re-render.
+    const changed299 = await applyMetaSnapshot(snap.data());
+    if (changed299 && ['reactions', 'meme', 'h', 'tags', 'tagEntries', 'home'].includes(STATE.view)) render();
   } catch (err) {
     console.error('Meta pull failed:', err);
   }
