@@ -2835,11 +2835,13 @@ function renderCoverCard(e, reviewMode) {
 function homeSectionHtml(rowId, title, count, innerHtml) {
   const collapsed = HOME_COLLAPSED_SECTIONS.has(rowId);
   return `
-    <div class="section-title home-section-title" data-toggle-home-section="${rowId}">
-      <span class="home-section-chevron">${collapsed ? '▸' : '▾'}</span> ${escapeHtml(title)} <span style="opacity:.6">(${count})</span>
-    </div>
-    <div class="home-section-body ${collapsed ? 'collapsed' : ''}" id="${rowId}">
-      <div class="cover-grid">${innerHtml}</div>
+    <div class='panel home-section-panel'>
+      <div class='panel-title-row home-section-title' data-toggle-home-section='${rowId}' style='cursor:pointer;'>
+        <div class='panel-title'><span class='home-section-chevron'>${collapsed ? '▸' : '▾'}</span> ${escapeHtml(title)} <span style='opacity:.7;font-weight:600;'>(${count})</span></div>
+      </div>
+      <div class='home-section-body ${collapsed ? 'collapsed' : ''}' id='${rowId}'>
+        <div class='cover-grid'>${innerHtml}</div>
+      </div>
     </div>`;
 }
 
