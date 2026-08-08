@@ -6480,10 +6480,7 @@ function renderDetail(e) {
           <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
         </select>
       </div>
-      <div class="modal-actions" style="margin-top:6px;">
-        <button class="btn-ghost" data-cancel-edit="1">Cancel</button>
-        <button class="btn-primary" data-save-edit="1">Save</button>
-      </div>
+      <div class="field-row"><label>Format</label>${mediaFormatSelect}</div>
     ` : `
       <div class="field-row"><label>Title</label><input type="text" id="edit-title" value="${escapeHtml(e.title)}"></div>
       <div class="field-row"><label>Alt title</label><input type="text" id="edit-altTitle" placeholder="Other names this goes by..." value="${escapeHtml(e.altTitle || '')}"></div>
@@ -6495,10 +6492,7 @@ function renderDetail(e) {
           <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
         </select>
       </div>
-      <div class="modal-actions" style="margin-top:6px;">
-        <button class="btn-ghost" data-cancel-edit="1">Cancel</button>
-        <button class="btn-primary" data-save-edit="1">Save</button>
-      </div>
+      <div class="field-row"><label>Format</label>${mediaFormatSelect}</div>
     `;
   
 
@@ -8061,28 +8055,34 @@ function attachRootHandlers() {
     const who = input.getAttribute('data-char-photo');
     wireImageDropZone(slotEl, (file) => applyCharPhotoFile(who, file));
   });
-  const editToggleBtn = root.querySelector('[data-edit-toggle]');
-  if (editToggleBtn) editToggleBtn.onclick = () => { DETAIL_EDIT_MODE = true; render(); };
-  const cancelEditBtn = root.querySelector('[data-cancel-edit]');
-  if (cancelEditBtn) cancelEditBtn.onclick = () => { DETAIL_EDIT_MODE = false; render(); };
-  const saveEditBtn = root.querySelector('[data-save-edit]');
-  if (saveEditBtn) saveEditBtn.onclick = async () => {
-    const e = getEntry(STATE.entryId);
-    const grab = (id) => document.getElementById(id);
-    if (grab('edit-title')) e.title = grab('edit-title').value.trim() || e.title;
-    if (grab('edit-altTitle')) e.altTitle = grab('edit-altTitle').value.trim();
-    if (grab('edit-novelAuthor')) e.novelAuthor = grab('edit-novelAuthor').value.trim();
-    if (grab('edit-author')) e.author = grab('edit-author').value.trim();
-    if (grab('edit-artist')) e.artist = grab('edit-artist').value.trim();
-    if (grab('edit-chapters')) e.totalChapters = grab('edit-chapters').value ? Number(grab('edit-chapters').value) : null;
-    if (grab('edit-seasons')) e.totalSeasons = grab('edit-seasons').value ? Number(grab('edit-seasons').value) : null;
-    if (grab('edit-status')) e.status = grab('edit-status').value.trim();
-    await saveEntry(e);
-    DETAIL_EDIT_MODE = false;
-    showToast('Saved!');
-    render();
-  };
-  const tagEditToggleBtn = root.querySelector('[data-tag-edit-toggle]');
+  const autoSaveDetailFields = [
+      ['edit-title', 'title', (v) => v.trim() || null],
+      ['edit-altTitle', 'altTitle', (v) => v.trim()],
+      ['edit-novelAuthor', 'novelAuthor', (v) => v.trim()],
+      ['edit-author', 'author', (v) => v.trim()],
+      ['edit-artist', 'artist', (v) => v.trim()],
+      ['edit-chapters', 'totalChapters', (v) => (v ? Number(v) : null)],
+      ['edit-seasons', 'totalSeasons', (v) => (v ? Number(v) : null)],
+    ];
+    autoSaveDetailFields.forEach(([id, field, transform]) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.onblur = async () => {
+        const e = getEntry(STATE.entryId);
+        const val = transform(el.value);
+        e[field] = (field === 'title' && !val) ? e.title : val;
+        await saveEntry(e);
+      };
+    });
+    const statusSelectDetailEl = document.getElementById('edit-status');
+    if (statusSelectDetailEl) statusSelectDetailEl.onchange = async () => {
+      const e = getEntry(STATE.entryId);
+      e.status = statusSelectDetailEl.value.trim();
+      await saveEntry(e);
+      showToast('Saved!');
+      render();
+    };
+    const tagEditToggleBtn = root.querySelector('[data-tag-edit-toggle]');
   if (tagEditToggleBtn) tagEditToggleBtn.onclick = () => { TAG_EDIT_MODE = true; render(); };
   const cancelTagEditBtn = root.querySelector('[data-cancel-tag-edit]');
   if (cancelTagEditBtn) cancelTagEditBtn.onclick = () => {
