@@ -135,7 +135,7 @@ flex: 0 1 auto; text-align: center;
 }
 .chip.active { background: var(--pink); color: #ffffff; border-color: var(--border); opacity: 1; box-shadow: 0 0 0 2px var(--yellow) inset; }
 
-.rating-pick-row { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; flex-wrap: wrap; }
+.rating-pick-row { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-bottom: 6px; flex-wrap: wrap; }
 .rating-pick-icon {
 font-size: 20px; opacity: .35; cursor: pointer; filter: grayscale(.6);
 padding: 2px; line-height: 1;
@@ -506,7 +506,7 @@ text-align: center; font-family: inherit;
 .dup-diff-label { color: var(--text-dim); font-weight: 600; }
 
 .flag-dot { width: 44px; height: 44px; border-radius: 0; border: 2px solid var(--border); background: var(--card); cursor: pointer; display:flex; align-items:center; justify-content:center; }
-.flag-dot .flag-glyph { font-size: 30px; line-height: 1; opacity: .8; filter: brightness(1.35) saturate(1.4); }
+.flag-dot .flag-glyph { font-size: 30px; line-height: 1; opacity: .5; filter: brightness(1.35) saturate(1.4); }
 .flag-dot.selected { border-color: var(--text); box-shadow: 0 0 0 2px rgba(255,255,255,.15); }
 .flag-dot.selected .flag-glyph { opacity: 1; filter: brightness(1.6) saturate(1.6); text-shadow: 0 0 6px currentColor; }
 .char-col textarea { width: 100%; min-height: 96px; font-size: 12.5px; }
