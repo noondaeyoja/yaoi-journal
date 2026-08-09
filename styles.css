@@ -398,6 +398,17 @@ border-bottom: 3px solid var(--border);
 
 .panel-triangles { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
 .panel.panel-collapsed > *:not(.panel-title-row) { display: none !important; }
+/* #266: a collapsed panel still had .panel's own 14px bottom padding (and
+   the title row's 12px bottom margin) left over below the header, showing
+   as a visible sliver of body/border. Zero both when collapsed so it's
+   header-only, flush to the panel's outer border. Also covers the
+   Images/Reactions/H "Mood Tags" filter boxes, which collapse via
+   .filters-collapsible.collapsed on a child rather than .panel-collapsed
+   on the panel itself. */
+.panel.panel-collapsed { padding-bottom: 0; }
+.panel.panel-collapsed > .panel-title-row { margin-bottom: 0; }
+.panel:has(> .filters-collapsible.collapsed) { padding-bottom: 0; }
+.panel:has(> .filters-collapsible.collapsed) > .panel-title-row { margin-bottom: 0; }
 .panel-triangles { cursor: pointer; }
 .tri-up, .tri-down { width: 0; height: 0; }
 .tri-up { border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 12px solid var(--yellow); }
