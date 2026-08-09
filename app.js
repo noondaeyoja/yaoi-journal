@@ -987,7 +987,15 @@ function firestoreSafeEntry(entry) {
     candidate = { ...candidate, coverUrl: null, coverTooLargeForSync: true };
   }
   if (candidate.screencapDriveIds && candidate.screencapDriveIds.length && candidate.screencaps && candidate.screencaps.length) {
-    candidate = { ...candidate, screencaps: [], screencapsTooLargeForSync: true };
+    // #189 fix: only drop the Drive-backed portion (the first
+    // screencapDriveIds.length entries, per the same prefix convention
+    // restoreLocallyKeptImages() relies on via its pendingNew slice) since
+    // Drive is the source of truth for those. Anything past that point is a
+    // brand-new, not-yet-uploaded local image (e.g. from "Attach to a
+    // read") and must stay in the write or it never reaches Firestore at
+    // all -- this was the actual cause of "attach to a read" never sticking.
+    const pendingNewScreencaps = candidate.screencaps.slice(candidate.screencapDriveIds.length);
+    candidate = { ...candidate, screencaps: pendingNewScreencaps, screencapsTooLargeForSync: true };
   }
   if (candidate.semi && candidate.semi.photoDriveId && candidate.semi.photo) {
     candidate = { ...candidate, semi: { ...candidate.semi, photo: null }, semiPhotoTooLargeForSync: true };
