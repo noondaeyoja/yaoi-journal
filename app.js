@@ -416,6 +416,17 @@ async function ensureSeeded() {
 function normalizeEntry(e) {
   if (!e.semi) e.semi = { flag: null, notes: '', photo: null };
   if (!e.uke) e.uke = { flag: null, notes: '', photo: null };
+  // Repair sparse (hole-containing) screencapDriveIds arrays. A hole (as
+  // opposed to an explicit null) makes Firestore's WriteBatch.set() reject
+  // the WHOLE document with "Unsupported field value: undefined" the
+  // instant this entry tries to sync -- silently blocking every future
+  // save (images or otherwise) until the array is densified. Holes can
+  // sneak in from old data / partial upload runs; converting them to
+  // explicit null here (which already means "not yet uploaded" elsewhere
+  // in this file) heals it automatically on every load, local or remote.
+  if (Array.isArray(e.screencapDriveIds)) {
+    e.screencapDriveIds = e.screencapDriveIds.map((id) => (id === undefined ? null : id));
+  }
   return e;
 }
 
