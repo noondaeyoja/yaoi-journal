@@ -4893,11 +4893,15 @@ function attachMemeGridHandlers() {
   const toggleMemeSelectBtn = document.querySelector('[data-meme-toggle-select]');
   if (toggleMemeSelectBtn) toggleMemeSelectBtn.onclick = () => { MEME_SELECT_MODE = !MEME_SELECT_MODE; MEME_SELECTED = new Set(); render(); };
   const memeFiltersToggleBtn = document.querySelector('[data-meme-toggle-filters]');
-  if (memeFiltersToggleBtn) memeFiltersToggleBtn.onclick = () => {
+  const memeFiltersToggleRow = memeFiltersToggleBtn ? memeFiltersToggleBtn.closest('.panel-title-row') : null;
+  if (memeFiltersToggleRow) {
+    memeFiltersToggleRow.style.cursor = 'pointer';
+    memeFiltersToggleRow.onclick = () => {
     MEME_FILTERS_COLLAPSED = !MEME_FILTERS_COLLAPSED;
     const el = document.getElementById('meme-filters-collapsible');
     if (el) el.classList.toggle('collapsed', MEME_FILTERS_COLLAPSED);
     };
+  }
   const tagSelectedMemesBtn = document.querySelector('[data-meme-tag-selected]');
   if (tagSelectedMemesBtn) tagSelectedMemesBtn.onclick = () => {
     if (MEME_SELECTED.size) openTagSelectedMemesModal(Array.from(MEME_SELECTED));
@@ -6330,11 +6334,15 @@ function attachHGridHandlers() {
   const toggleHSelectBtn = document.querySelector('[data-h-toggle-select]');
   if (toggleHSelectBtn) toggleHSelectBtn.onclick = () => { H_SELECT_MODE = !H_SELECT_MODE; H_SELECTED = new Set(); render(); };
   const hFiltersToggleBtn = document.querySelector('[data-h-toggle-filters]');
-  if (hFiltersToggleBtn) hFiltersToggleBtn.onclick = () => {
+  const hFiltersToggleRow = hFiltersToggleBtn ? hFiltersToggleBtn.closest('.panel-title-row') : null;
+  if (hFiltersToggleRow) {
+    hFiltersToggleRow.style.cursor = 'pointer';
+    hFiltersToggleRow.onclick = () => {
     H_FILTERS_COLLAPSED = !H_FILTERS_COLLAPSED;
     const el = document.getElementById('h-filters-collapsible');
     if (el) el.classList.toggle('collapsed', H_FILTERS_COLLAPSED);
     };
+  }
   const tagSelectedHBtn = document.querySelector('[data-h-tag-selected]');
   if (tagSelectedHBtn) tagSelectedHBtn.onclick = () => {
     if (H_SELECTED.size) openTagSelectedHModal(Array.from(H_SELECTED));
@@ -7865,8 +7873,12 @@ function attachRootHandlers() {
   // act as one button visually, so the whole element is the click target.
   root.querySelectorAll('.panel-triangles').forEach((tri) => {
     if (tri.hasAttribute('data-images-toggle-filters') || tri.hasAttribute('data-meme-toggle-filters') || tri.hasAttribute('data-h-toggle-filters')) return;
-    tri.style.cursor = 'pointer';
-    tri.onclick = () => {
+    // Triangles are purely visual -- the whole pink header row is the
+    // click target, consistent with the app-wide container aesthetic.
+    const row = tri.closest('.panel-title-row');
+    if (!row) return;
+    row.style.cursor = 'pointer';
+    row.onclick = () => {
       const panel = tri.closest('.panel');
       if (panel) panel.classList.toggle('panel-collapsed');
     };
@@ -8547,11 +8559,15 @@ function attachRootHandlers() {
   // Same in-place DOM toggle the homepage's Hide/Show Filters button uses —
   // no full render() needed, just flip the class and button label.
   const imagesFiltersToggleBtn = root.querySelector('[data-images-toggle-filters]');
-  if (imagesFiltersToggleBtn) imagesFiltersToggleBtn.onclick = () => {
+  const imagesFiltersToggleRow = imagesFiltersToggleBtn ? imagesFiltersToggleBtn.closest('.panel-title-row') : null;
+  if (imagesFiltersToggleRow) {
+    imagesFiltersToggleRow.style.cursor = 'pointer';
+    imagesFiltersToggleRow.onclick = () => {
     IMAGES_FILTERS_COLLAPSED = !IMAGES_FILTERS_COLLAPSED;
     const el = document.getElementById('images-filters-collapsible');
     if (el) el.classList.toggle('collapsed', IMAGES_FILTERS_COLLAPSED);
     };
+  }
   const attachSelectedBtn = root.querySelector('[data-images-attach-selected]');
   if (attachSelectedBtn) attachSelectedBtn.onclick = () => {
     if (IMAGE_SELECTED.size) openAttachImagesToEntryModal(Array.from(IMAGE_SELECTED));
