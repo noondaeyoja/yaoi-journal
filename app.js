@@ -1619,6 +1619,39 @@ function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// The Notes field on the detail page used to be a plain <textarea> that
+// auto-inserted a "› " bullet on every Enter press, with no way to turn
+// that off or add real bold/italic/underline formatting. It's now a
+// contenteditable rich-text box (bold/italic/underline/bullet-list toolbar,
+// plain line breaks on Enter) — which means e.notes now stores HTML instead
+// of plain text going forward. These two helpers keep everything reading
+// that field working across BOTH eras of data: the ~1000+ existing entries
+// whose notes are still plain text with literal "\n" line breaks, and any
+// newly-edited entry whose notes are now real HTML.
+function notesToEditorHtml(raw) {
+  const s = raw || '';
+  if (!s) return '';
+  // Already rich-text HTML (has a formatting tag anywhere) — trust it as-is.
+  // (.notes-editor has white-space:pre-wrap, so any stray literal "\n"
+  // mixed in — e.g. from a merge separator — still renders as a line break
+  // even though this branch skips the escape+<br> conversion below.)
+  if (/<(b|strong|i|em|u|ul|ol|li|br|div)[\s>]/i.test(s)) return s;
+  // Legacy plain text — escape it and turn real line breaks into <br> so it
+  // displays exactly as it used to, the first time it's opened in the new
+  // editor.
+  return escapeHtml(s).replace(/\n/g, '<br>');
+}
+
+// Plain-text rendering of notes (for the Possible-Duplicates comparison
+// table and CSV export, where raw HTML tags would just be visual noise).
+function notesToPlainText(raw) {
+  const s = raw || '';
+  if (!/<[a-z][\s\S]*>/i.test(s)) return s; // already plain text, nothing to strip
+  const div = document.createElement('div');
+  div.innerHTML = s.replace(/<\/(div|p)>/gi, '\n').replace(/<br\s*\/?>/gi, '\n').replace(/<li>/gi, '• ');
+  return (div.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 // Notes fields on the detail page (semi/uke notes, character notes) act like
 // a bullet list: every line starts with a 💦, and hitting Enter starts a
 // fresh bulleted line automatically instead of a plain blank line.
@@ -6674,12 +6707,21 @@ function renderDetail(e) {
           </div>
         </div>
         ${!isReading ? `<div class="field-row"><label>Notes (legacy)</label><input type="text" id="legacy-note-input" value="${escapeHtml(e.legacyNote || '')}"></div>` : ''}
-        <textarea id="user-notes" placeholder="Your thoughts...">${escapeHtml(e.notes)}</textarea>
+        <div class="notes-toolbar">
+          <button type="button" class="notes-fmt-btn" data-notes-cmd="bold" title="Bold"><b>B</b></button>
+          <button type="button" class="notes-fmt-btn" data-notes-cmd="italic" title="Italic"><i>I</i></button>
+          <button type="button" class="notes-fmt-btn" data-notes-cmd="underline" title="Underline"><u>U</u></button>
+          <button type="button" class="notes-fmt-btn" data-notes-cmd="insertUnorderedList" title="Bullet list">• List</button>
+        </div>
+        <div id="user-notes" class="notes-editor" contenteditable="true" data-placeholder="Your thoughts...">${notesToEditorHtml(e.notes)}</div>
       </div>
 
       <!-- 7. Images (screencaps, character photos — always attached to this read) -->
       <div class="panel">
-        <div class="panel-title">Images</div>
+        <div class="panel-title-row" style="margin-bottom:10px;">
+          <div class="panel-title" style="margin:0;">Images</div>
+          <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
+        </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
           <label class="upload-btn" style="flex:1;">📎 Add photo(s)<input type="file" accept="image/*" multiple id="screencap-input"></label>
         </div>
@@ -6724,7 +6766,7 @@ function renderDatabase() {
       <td>${e.smutRating || 0}</td>
       <td>${e.qualityRating || 0}</td>
       <td>${e.favorite ? 'Yes' : ''}</td>
-      <td>${escapeHtml(e.notes)}</td>
+      <td>${escapeHtml(notesToPlainText(e.notes))}</td>
     </tr>`).join('');
 
   return `
@@ -7069,7 +7111,7 @@ function duplicateFieldDiffs(group) {
     ]),
     { label: 'Cover image', get: (e) => (e.coverUrl ? 'Yes' : 'No') },
     { label: 'Reference link', get: (e) => (e.referenceStatus === 'confirmed' ? (e.referenceSite || 'Linked') : 'Not linked') },
-    { label: 'Notes', get: (e) => (e.notes || '').trim() || '—' },
+    { label: 'Notes', get: (e) => notesToPlainText(e.notes).trim() || '—' },
   ];
   return fields
     .map((f) => ({ label: f.label, values: group.map((e) => f.get(e)) }))
@@ -7148,7 +7190,7 @@ function exportCsv() {
       e.title, e.altTitle, e.format, e.mediaFormat, e.shelf, e.author, e.artist, e.isNovel, e.status,
       (e.tags || []).concat(e.customTags || []).join('; '),
       e.semi && e.semi.flag, e.semi && e.semi.notes, e.uke && e.uke.flag, e.uke && e.uke.notes,
-      e.smutRating, e.qualityRating, e.wtfRating, e.favorite, e.notes, e.referenceUrl, e.pdfLink
+      e.smutRating, e.qualityRating, e.wtfRating, e.favorite, notesToPlainText(e.notes), e.referenceUrl, e.pdfLink
     ].map(esc).join(','));
   });
   const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
@@ -8231,23 +8273,33 @@ function attachRootHandlers() {
   };
   const notesArea = root.querySelector('#user-notes');
   if (notesArea) {
-    attachBulletTextarea(notesArea);
-    // Resetting height to 'auto' before remeasuring momentarily collapses the
-    // box, which shifts the Images panel sitting right below it — the
-    // browser's scroll-anchoring logic was fighting that shift on every
-    // keystroke and visibly yanking the page toward Images (or to the top).
-    // A full collapse-and-remeasure is only needed once up front and again
-    // once typing has stopped (on blur); while actively typing, only grow in
-    // place when content actually overflows, which never collapses anything.
-    const fullAutoGrow = () => { notesArea.style.height = 'auto'; notesArea.style.height = (notesArea.scrollHeight + 2) + 'px'; };
-    const growIfNeeded = () => {
-      if (notesArea.scrollHeight > notesArea.clientHeight) notesArea.style.height = (notesArea.scrollHeight + 2) + 'px';
+    // Plain Enter should insert a line break, not a new paragraph block —
+    // this is what makes hitting Enter behave like a normal text box
+    // instead of auto-bulleting (the old behavior). Only affects THIS
+    // contenteditable's own editing session; doesn't touch the semi/uke
+    // character-notes fields, which still auto-bullet as before.
+    try { document.execCommand('defaultParagraphSeparator', false, 'br'); } catch (err) {}
+    const updateToolbarState = () => {
+      root.querySelectorAll('.notes-fmt-btn[data-notes-cmd]').forEach((btn) => {
+        const cmd = btn.getAttribute('data-notes-cmd');
+        try { btn.classList.toggle('active', document.queryCommandState(cmd)); } catch (err) {}
+      });
     };
-    fullAutoGrow();
-    notesArea.oninput = growIfNeeded;
+    notesArea.addEventListener('keyup', updateToolbarState);
+    notesArea.addEventListener('mouseup', updateToolbarState);
+    notesArea.addEventListener('focus', updateToolbarState);
+    root.querySelectorAll('.notes-fmt-btn[data-notes-cmd]').forEach((btn) => {
+      // mousedown (not click) so the notes editor's text selection isn't
+      // lost to the button stealing focus before the command runs.
+      btn.onmousedown = (ev) => {
+        ev.preventDefault();
+        notesArea.focus();
+        document.execCommand(btn.getAttribute('data-notes-cmd'), false, null);
+        updateToolbarState();
+      };
+    });
     notesArea.onblur = async () => {
-      fullAutoGrow();
-      const e = getEntry(STATE.entryId); e.notes = notesArea.value; await saveEntry(e);
+      const e = getEntry(STATE.entryId); e.notes = notesArea.innerHTML; await saveEntry(e);
     };
   }
   const screencapInput = root.querySelector('#screencap-input');
