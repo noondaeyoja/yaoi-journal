@@ -425,7 +425,13 @@ function normalizeEntry(e) {
   // explicit null here (which already means "not yet uploaded" elsewhere
   // in this file) heals it automatically on every load, local or remote.
   if (Array.isArray(e.screencapDriveIds)) {
-    e.screencapDriveIds = e.screencapDriveIds.map((id) => (id === undefined ? null : id));
+    // Array.prototype.map() skips holes and PRESERVES them in its output,
+    // so a sparse array survived the first pass at this fix untouched.
+    // Array.from() visits every index (0..length-1) via a plain Get, which
+    // returns undefined for a hole same as a missing property access would
+    // -- so this actually densifies the array instead of just re-wrapping
+    // the same holes.
+    e.screencapDriveIds = Array.from(e.screencapDriveIds, (id) => (id === undefined ? null : id));
   }
   return e;
 }
