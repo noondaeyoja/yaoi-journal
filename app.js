@@ -1482,11 +1482,26 @@ async function syncWithFirestore(user) {
     }
     localById.delete(re.id);
   });
-  // Anything left in localById exists only on this device — push it up.
-  localById.forEach((le) => { merged.push(le); toRemote.push(le); });
+  // Anything left in localById exists only on this device (not present in
+  // the remote snapshot at all) — normally that means it's new local data
+  // to push up. BUT it can also mean this device just has a stale cached
+  // copy of something that was deleted elsewhere (e.g. merged away as a
+  // duplicate on another device before this one ever synced back). Without
+  // this check, that stale local copy gets silently resurrected in
+  // Firestore with its old pre-merge data — this was the actual cause of
+  // "merged" duplicates reappearing with old notes on a second device.
+  const toDeleteLocally = [];
+  localById.forEach((le) => {
+    if (DELETED_ENTRY_IDS.has(le.id)) { toDeleteLocally.push(le.id); return; }
+    merged.push(le);
+    toRemote.push(le);
+  });
 
   if (toLocal.length) await idbBulkPut(STORE_ENTRIES, toLocal);
   if (toRemote.length) await firestoreBulkWrite(col, toRemote);
+  if (toDeleteLocally.length) {
+    await Promise.all(toDeleteLocally.map((id) => idbDelete(STORE_ENTRIES, id).catch(() => {})));
+  }
   ALL_ENTRIES = merged;
   // Fire-and-forget: pull actual image bytes down from Drive for anything
   // that arrived from another device with a Drive id but no local copy yet.
@@ -9600,10 +9615,15 @@ async function boot() {
       if (user) {
         SYNC_BUSY = true;
         try {
+          // Pull meta (deletedEntryIds tombstones, ignored-dup decisions,
+          // etc.) BEFORE entries sync — otherwise a device syncing back
+          // after a merge/delete happened on another device doesn't find
+          // out about the deletion until after it's already decided to
+          // push its own stale local copy back up as "new" data.
+          await pullMetaState();
           await syncWithFirestore(user);
           await syncReactionsWithFirestore(user);
           await syncHImagesWithFirestore(user);
-          await pullMetaState();
           startFirestoreListener(user);
           startReactionsFirestoreListener(user);
           startHImagesFirestoreListener(user);
