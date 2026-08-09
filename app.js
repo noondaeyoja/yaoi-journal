@@ -145,6 +145,15 @@ let IGNORED_DUP_GROUPS = new Set();
 // duplicates kept coming back. Anything in here is skipped on re-sync and its
 // remote delete is retried instead of being treated as new.
 let DELETED_ENTRY_IDS = new Set();
+// Same idea, for Reactions. Reactions are each their own Firestore doc
+// (deleted via deleteReactionFromFirestore()), so they were exposed to the
+// exact same resurrection bug entries had before DELETED_ENTRY_IDS existed:
+// a device that still has a deleted reaction cached locally, syncing back
+// after the deletion happened elsewhere, would see "a reaction that exists
+// locally but not in the remote snapshot" and — with nothing telling it
+// otherwise — treat that as a brand-new local-only reaction and push it
+// straight back up, undoing the deletion everywhere.
+let DELETED_REACTION_IDS = new Set();
 // Same idea as IGNORED_DUP_GROUPS above but for the perceptual-hash-based
 // "Possible Duplicates" scanners in the Images and Reactions tabs — those
 // scanners used to have zero memory (every scan recomputed from nothing),
@@ -434,6 +443,13 @@ async function recordDeletedEntryId(id) {
   pushMetaField('deletedEntryIds', arr);
 }
 
+async function recordDeletedReactionId(id) {
+  DELETED_REACTION_IDS.add(id);
+  const arr = Array.from(DELETED_REACTION_IDS);
+  await idbPut(STORE_META, { key: 'deletedReactionIds', value: arr });
+  pushMetaField('deletedReactionIds', arr);
+}
+
 async function deleteEntry(id) {
   await idbDelete(STORE_ENTRIES, id);
   ALL_ENTRIES = ALL_ENTRIES.filter((e) => e.id !== id);
@@ -485,6 +501,7 @@ async function saveReaction(reaction) {
 async function deleteReaction(id) {
   await idbDelete(STORE_REACTIONS, id);
   ALL_REACTIONS = ALL_REACTIONS.filter((r) => r.id !== id);
+  await recordDeletedReactionId(id);
   deleteReactionFromFirestore(id);
 }
 
@@ -546,7 +563,16 @@ async function syncReactionsWithFirestore(user) {
   const toRemote = [];
   remote.forEach((rr) => {
     const lr = localById.get(rr.id);
-    if (!lr) { merged.push(rr); toLocal.push(rr); }
+    if (!lr) {
+      if (DELETED_REACTION_IDS.has(rr.id)) {
+        // Deleted already (on this device or another) but the Firestore
+        // delete never actually landed — retry it instead of resurrecting
+        // the reaction locally.
+        deleteReactionFromFirestore(rr.id);
+        return;
+      }
+      merged.push(rr); toLocal.push(rr);
+    }
     else {
       const rt = new Date(rr.updatedAt || 0).getTime();
       const lt = new Date(lr.updatedAt || 0).getTime();
@@ -560,9 +586,19 @@ async function syncReactionsWithFirestore(user) {
   // that only existed locally (e.g. its very first upload never made it up,
   // whether from being offline, an oversized image, or a dropped request)
   // stayed local-only forever, because nothing ever retried the push on a
-  // later sync. Now every local-only reaction gets pushed up again here too.
-  localById.forEach((lr) => { merged.push(lr); toRemote.push(lr); });
+  // later sync. Now every local-only reaction gets pushed up again here too
+  // — EXCEPT anything this device has already tombstoned (deleted here or
+  // told about from another device), which would otherwise get treated as
+  // "new" and pushed straight back up, resurrecting a deletion everywhere.
+  const toDeleteLocally = [];
+  localById.forEach((lr) => {
+    if (DELETED_REACTION_IDS.has(lr.id)) { toDeleteLocally.push(lr.id); return; }
+    merged.push(lr); toRemote.push(lr);
+  });
   if (toLocal.length) await idbBulkPut(STORE_REACTIONS, toLocal);
+  if (toDeleteLocally.length) {
+    await Promise.all(toDeleteLocally.map((id) => idbDelete(STORE_REACTIONS, id).catch(() => {})));
+  }
   if (toRemote.length) {
     const batch = fbStore.batch();
     let anySkipped = false;
@@ -678,6 +714,12 @@ async function applyMetaSnapshot(data) {
     if (DELETED_ENTRY_IDS.size !== before) changed = true;
     await idbPut(STORE_META, { key: 'deletedEntryIds', value: Array.from(DELETED_ENTRY_IDS) });
   }
+  if (Array.isArray(data.deletedReactionIds) && data.deletedReactionIds.length) {
+    const before = DELETED_REACTION_IDS.size;
+    DELETED_REACTION_IDS = new Set([...DELETED_REACTION_IDS, ...data.deletedReactionIds]);
+    if (DELETED_REACTION_IDS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'deletedReactionIds', value: Array.from(DELETED_REACTION_IDS) });
+  }
   if (Array.isArray(data.userHiddenTagKeys) && data.userHiddenTagKeys.length) {
     const before = USER_HIDDEN_TAG_KEYS.size;
     USER_HIDDEN_TAG_KEYS = new Set([...USER_HIDDEN_TAG_KEYS, ...data.userHiddenTagKeys]);
@@ -730,12 +772,27 @@ async function applyMetaSnapshot(data) {
     await idbPut(STORE_META, { key: 'customMoods', value: Array.from(merged) });
     await idbPut(STORE_META, { key: 'imageGroups', value: Array.from(merged) });
   }
-  if (data.imageTagMap && typeof data.imageTagMap === 'object' && (data.imageTagMapUpdatedAt || 0) > IMAGE_TAG_MAP_UPDATED_AT) {
-    IMAGE_TAG_MAP = data.imageTagMap;
-    IMAGE_TAG_MAP_UPDATED_AT = data.imageTagMapUpdatedAt;
-    changed = true;
-    await idbPut(STORE_META, { key: 'imageTagMap', value: IMAGE_TAG_MAP });
-    await idbPut(STORE_META, { key: 'imageTagMapUpdatedAt', value: IMAGE_TAG_MAP_UPDATED_AT });
+  // Per-KEY merge, not whole-map replace — see the big comment on
+  // IMAGE_TAG_MAP_TS above. Only overwrite an individual image's tag list
+  // when the incoming copy of THAT key is actually newer than what this
+  // device already has for it; keys neither side touched, or where this
+  // device's own edit is newer, are left alone.
+  if (data.imageTagMap && typeof data.imageTagMap === 'object') {
+    const incomingTs = (data.imageTagMapTs && typeof data.imageTagMapTs === 'object') ? data.imageTagMapTs : {};
+    let imageTagMapChanged = false;
+    Object.keys(data.imageTagMap).forEach((k) => {
+      const remoteTs = incomingTs[k] || 0;
+      if (remoteTs > (IMAGE_TAG_MAP_TS[k] || 0)) {
+        IMAGE_TAG_MAP[k] = data.imageTagMap[k];
+        IMAGE_TAG_MAP_TS[k] = remoteTs;
+        imageTagMapChanged = true;
+      }
+    });
+    if (imageTagMapChanged) {
+      changed = true;
+      await idbPut(STORE_META, { key: 'imageTagMap', value: IMAGE_TAG_MAP });
+      await idbPut(STORE_META, { key: 'imageTagMapTs', value: IMAGE_TAG_MAP_TS });
+    }
   }
   if (Array.isArray(data.hiddenGroupKeys) && data.hiddenGroupKeys.length) {
     const before = HIDDEN_GROUP_KEYS.size;
@@ -787,12 +844,22 @@ async function applyMetaSnapshot(data) {
     if (H_GROUPS.size !== before) changed = true;
     await idbPut(STORE_META, { key: 'hGroups', value: Array.from(H_GROUPS) });
   }
-  if (data.hTagMap && typeof data.hTagMap === 'object' && (data.hTagMapUpdatedAt || 0) > H_TAG_MAP_UPDATED_AT) {
-    H_TAG_MAP = data.hTagMap;
-    H_TAG_MAP_UPDATED_AT = data.hTagMapUpdatedAt;
-    changed = true;
-    await idbPut(STORE_META, { key: 'hTagMap', value: H_TAG_MAP });
-    await idbPut(STORE_META, { key: 'hTagMapUpdatedAt', value: H_TAG_MAP_UPDATED_AT });
+  if (data.hTagMap && typeof data.hTagMap === 'object') {
+    const incomingTs = (data.hTagMapTs && typeof data.hTagMapTs === 'object') ? data.hTagMapTs : {};
+    let hTagChanged = false;
+    Object.keys(data.hTagMap).forEach((k) => {
+      const remoteTs = incomingTs[k] || 0;
+      if (remoteTs > (H_TAG_MAP_TS[k] || 0)) {
+        H_TAG_MAP[k] = data.hTagMap[k];
+        H_TAG_MAP_TS[k] = remoteTs;
+        hTagChanged = true;
+      }
+    });
+    if (hTagChanged) {
+      changed = true;
+      await idbPut(STORE_META, { key: 'hTagMap', value: H_TAG_MAP });
+      await idbPut(STORE_META, { key: 'hTagMapTs', value: H_TAG_MAP_TS });
+    }
   }
   if (Array.isArray(data.hHiddenGroupKeys) && data.hHiddenGroupKeys.length) {
     const before = H_HIDDEN_GROUP_KEYS.size;
@@ -806,12 +873,22 @@ async function applyMetaSnapshot(data) {
     if (H_DELETED_GROUP_KEYS.size !== before) changed = true;
     await idbPut(STORE_META, { key: 'hDeletedGroupKeys', value: Array.from(H_DELETED_GROUP_KEYS) });
   }
-  if (data.hNoteMap && typeof data.hNoteMap === 'object' && (data.hNoteMapUpdatedAt || 0) > H_NOTE_MAP_UPDATED_AT) {
-    H_NOTE_MAP = data.hNoteMap;
-    H_NOTE_MAP_UPDATED_AT = data.hNoteMapUpdatedAt;
-    changed = true;
-    await idbPut(STORE_META, { key: 'hNoteMap', value: H_NOTE_MAP });
-    await idbPut(STORE_META, { key: 'hNoteMapUpdatedAt', value: H_NOTE_MAP_UPDATED_AT });
+  if (data.hNoteMap && typeof data.hNoteMap === 'object') {
+    const incomingTs = (data.hNoteMapTs && typeof data.hNoteMapTs === 'object') ? data.hNoteMapTs : {};
+    let hNoteChanged = false;
+    Object.keys(data.hNoteMap).forEach((k) => {
+      const remoteTs = incomingTs[k] || 0;
+      if (remoteTs > (H_NOTE_MAP_TS[k] || 0)) {
+        H_NOTE_MAP[k] = data.hNoteMap[k];
+        H_NOTE_MAP_TS[k] = remoteTs;
+        hNoteChanged = true;
+      }
+    });
+    if (hNoteChanged) {
+      changed = true;
+      await idbPut(STORE_META, { key: 'hNoteMap', value: H_NOTE_MAP });
+      await idbPut(STORE_META, { key: 'hNoteMapTs', value: H_NOTE_MAP_TS });
+    }
   }
   // Only adopt a remote themeMode if this device doesn't already have one
   // cached — same "never overwrite what's already decided" rule as the
@@ -981,16 +1058,39 @@ function deleteEntryFromFirestore(id) {
 function restoreLocallyKeptImages(remote, local) {
   if (!local) return remote;
   let patched = remote;
-  if (remote.screencapsTooLargeForSync && local.screencaps && local.screencaps.length) {
-    patched = { ...patched, screencaps: local.screencaps };
+  if (remote.screencapsTooLargeForSync) {
+    // Rebuild against remote.screencapDriveIds — the authoritative "what
+    // should exist now" list, which shrinks the moment an image is deleted
+    // on any device. Only reuse this device's cached bytes wholesale when
+    // they cover every remote drive id (fast path, no gaps); otherwise
+    // leave the Drive-backed portion empty and let hydrateDriveImages()'s
+    // existing re-fetch-everything-in-order logic rebuild it correctly —
+    // safer than trying to patch in partial/possibly-misaligned bytes.
+    // Any local image past this device's own screencapDriveIds list is a
+    // genuinely new, not-yet-uploaded image and is kept regardless (same
+    // as before).
+    const remoteDriveIds = remote.screencapDriveIds || [];
+    const localDriveIds = local.screencapDriveIds || [];
+    const localCaps = local.screencaps || [];
+    const fullyCachedLocally = remoteDriveIds.every((id) => localDriveIds.includes(id));
+    const rebuiltDriveBacked = fullyCachedLocally
+      ? remoteDriveIds.map((id) => localCaps[localDriveIds.indexOf(id)])
+      : [];
+    const pendingNew = localCaps.slice(localDriveIds.length);
+    patched = { ...patched, screencaps: [...rebuiltDriveBacked, ...pendingNew] };
   }
-  if (remote.ukePhotoTooLargeForSync && local.uke && local.uke.photo) {
+  // Semi/uke/cover are single-image fields, so the same drive-id check just
+  // means "only reuse the local cached bytes if they're still caching the
+  // exact file remote currently points to" — otherwise a replaced (or
+  // deleted, though that clears the TooLargeForSync flag itself) photo
+  // could show this device's old cached copy instead of the current one.
+  if (remote.ukePhotoTooLargeForSync && local.uke && local.uke.photo && remote.uke && local.uke.photoDriveId === remote.uke.photoDriveId) {
     patched = { ...patched, uke: { ...patched.uke, photo: local.uke.photo } };
   }
-  if (remote.semiPhotoTooLargeForSync && local.semi && local.semi.photo) {
+  if (remote.semiPhotoTooLargeForSync && local.semi && local.semi.photo && remote.semi && local.semi.photoDriveId === remote.semi.photoDriveId) {
     patched = { ...patched, semi: { ...patched.semi, photo: local.semi.photo } };
   }
-  if (remote.coverTooLargeForSync && local.coverUrl && local.coverUrl.startsWith('data:')) {
+  if (remote.coverTooLargeForSync && local.coverUrl && local.coverUrl.startsWith('data:') && local.coverDriveId === remote.coverDriveId) {
     patched = { ...patched, coverUrl: local.coverUrl };
   }
   return patched;
@@ -2956,15 +3056,15 @@ function renderHome() {
   // 'Completed' shelf), but per her direct correction that silently dropped
   // the whole Reading Status row out of the filter box, which she hadn't
   // asked for. Restored unconditionally.
-  const shelfChips = `<div class="filter-dropdown-col"><select id="home-shelf-select" class="filter-select">${['ALL', ...SHELVES_READING].map((s) => `<option value="${escapeHtml(s)}" ${STATE.shelf === s ? 'selected' : ''}>${s === 'ALL' ? 'All' : escapeHtml(shelfLabel(s))}</option>`).join('')}</select></div>`;
+  const shelfChips = `<div class="filter-dropdown-col"><select id="home-shelf-select" class="filter-select">${['ALL', ...SHELVES_READING].map((s) => `<option value="${escapeHtml(s)}" ${STATE.shelf === s ? 'selected' : ''}>${s === 'ALL' ? 'Shelf' : escapeHtml(shelfLabel(s))}</option>`).join('')}</select></div>`;
   // Story Status (WIP/Finished) — the story's own completion state, distinct
   // from Reading Status (her shelf: Currently Reading/Completed/etc, which is
   // about her progress through it, not whether the author's finished it).
-  const storyStatusChips = `<div class="filter-dropdown-col"><select id="home-story-status-select" class="filter-select">${['ALL', 'WIP', 'Finished'].map((s) => `<option value="${escapeHtml(s)}" ${(STATE.storyStatusFilter || 'ALL') === s ? 'selected' : ''}>${s === 'ALL' ? 'All' : escapeHtml(s)}</option>`).join('')}</select></div>`;
+  const storyStatusChips = `<div class="filter-dropdown-col"><select id="home-story-status-select" class="filter-select">${['ALL', 'WIP', 'Finished'].map((s) => `<option value="${escapeHtml(s)}" ${(STATE.storyStatusFilter || 'ALL') === s ? 'selected' : ''}>${s === 'ALL' ? 'Story Status' : escapeHtml(s)}</option>`).join('')}</select></div>`;
   // Format filter row — replaces the old book/tv icon toggle (STATE.format)
   // with a proper dropdown, same row as Shelf/Story Status above it.
   const mediaFormatChips = `<div class="filter-dropdown-col"><select id="home-format-select" class="filter-select">${['ALL', ...MEDIA_FORMATS.map((f) => f.value)].map((v) => {
-    const label = v === 'ALL' ? 'All' : mediaFormatLabel(v);
+    const label = v === 'ALL' ? 'Format' : mediaFormatLabel(v);
     return `<option value="${escapeHtml(v)}" ${(STATE.mediaFormatFilter || 'ALL') === v ? 'selected' : ''}>${escapeHtml(label)}</option>`;
   }).join('')}</select></div>`;
   const tagMsPanel = tags.map((t) => `<span class="tag-pool-chip ${STATE.tagFilters.includes(t) ? 'active' : ''}" data-toggle-home-tag="${escapeHtml(t)}">${escapeHtml(t)}</span>`).join('');
@@ -2988,7 +3088,7 @@ function renderHome() {
   function ratingFilterSelect(field, current, icon, label) {
     const opts = [1, 2, 3, 4, 5].map((n) => `<option value="${n}" ${current === n ? 'selected' : ''}>${icon.repeat(n)}</option>`).join('');
     return `<div class="filter-dropdown-col"><select class="rating-filter-select" data-rating-filter-field="${field}" title="${label} filter">
-      <option value="" ${!current ? 'selected' : ''}>${icon} ${label}</option>
+      <option value="" ${!current ? 'selected' : ''}>${label}</option>
       ${opts}
     </select></div>`;
   }
@@ -3463,19 +3563,32 @@ function imageKey(dataUrl) {
 // the Images tab code already refers to it by this name throughout.
 let IMAGE_GROUPS = CUSTOM_MOODS;
 let IMAGE_TAG_MAP = {}; // { [imageKey]: string[] group names }
-// Whole-map "last write wins" timestamp — see the big comment on
-// applyMetaSnapshot() for why this exists (a device used to always keep its
-// OWN tag data on sync, even when another device's was newer).
-let IMAGE_TAG_MAP_UPDATED_AT = 0;
+// Per-KEY "last write wins" timestamps — NOT one whole-map timestamp. A
+// single whole-map timestamp meant whichever device happened to save ANY
+// tag change most recently would silently overwrite the OTHER device's
+// unrelated edits to DIFFERENT images: tag image A on the phone, tag image
+// B on desktop a few minutes later without waiting for a full sync, and
+// desktop's push (newer overall timestamp) would replace the whole map —
+// including phone's tag on A, which desktop's local copy never had.
+// Tracking freshness per image key means two devices' concurrent edits to
+// different images both survive; only an actual edit to the SAME key on
+// two devices needs one to win, which per-key timestamps also handle.
+let IMAGE_TAG_MAP_TS = {}; // { [imageKey]: ms epoch of last change to that key }
 function persistImageGroups() {
   idbPut(STORE_META, { key: 'imageGroups', value: Array.from(IMAGE_GROUPS) });
   pushMetaField('imageGroups', Array.from(IMAGE_GROUPS));
 }
-function persistImageTagMap() {
-  IMAGE_TAG_MAP_UPDATED_AT = Date.now();
+function persistImageTagMap(touchedKeys) {
+  const now = Date.now();
+  // Defensive fallback for any call site that forgets to pass which keys
+  // changed: treat every current key as freshly touched rather than
+  // silently leaving its timestamp stale (stale timestamps are what let
+  // another device's older data win and overwrite real edits).
+  const keys = touchedKeys ? (Array.isArray(touchedKeys) ? touchedKeys : [touchedKeys]) : Object.keys(IMAGE_TAG_MAP);
+  keys.forEach((k) => { IMAGE_TAG_MAP_TS[k] = now; });
   idbPut(STORE_META, { key: 'imageTagMap', value: IMAGE_TAG_MAP });
-  idbPut(STORE_META, { key: 'imageTagMapUpdatedAt', value: IMAGE_TAG_MAP_UPDATED_AT });
-  pushMetaFields({ imageTagMap: IMAGE_TAG_MAP, imageTagMapUpdatedAt: IMAGE_TAG_MAP_UPDATED_AT });
+  idbPut(STORE_META, { key: 'imageTagMapTs', value: IMAGE_TAG_MAP_TS });
+  pushMetaFields({ imageTagMap: IMAGE_TAG_MAP, imageTagMapTs: IMAGE_TAG_MAP_TS });
 }
 // Shared by both galleries' add/rename/delete group functions below —
 // persists under both legacy meta keys (a device that's only ever synced
@@ -3488,14 +3601,16 @@ function persistSharedGroups() {
   persistCustomMoods();
 }
 function renameSharedGroupEverywhere(oldKey, finalKey) {
+  const touched = [];
   Object.keys(IMAGE_TAG_MAP).forEach((k) => {
     if (IMAGE_TAG_MAP[k].includes(oldKey)) {
       const tags = new Set(IMAGE_TAG_MAP[k].filter((t) => t !== oldKey));
       tags.add(finalKey);
       IMAGE_TAG_MAP[k] = Array.from(tags);
+      touched.push(k);
     }
   });
-  persistImageTagMap();
+  if (touched.length) persistImageTagMap(touched);
   ALL_REACTIONS.forEach((r) => {
     if ((r.moodTags || []).includes(oldKey)) {
       const tags = new Set(r.moodTags.filter((t) => t !== oldKey));
@@ -3506,10 +3621,11 @@ function renameSharedGroupEverywhere(oldKey, finalKey) {
   });
 }
 function deleteSharedGroupEverywhere(key) {
+  const touched = [];
   Object.keys(IMAGE_TAG_MAP).forEach((k) => {
-    if (IMAGE_TAG_MAP[k].includes(key)) IMAGE_TAG_MAP[k] = IMAGE_TAG_MAP[k].filter((t) => t !== key);
+    if (IMAGE_TAG_MAP[k].includes(key)) { IMAGE_TAG_MAP[k] = IMAGE_TAG_MAP[k].filter((t) => t !== key); touched.push(k); }
   });
-  persistImageTagMap();
+  if (touched.length) persistImageTagMap(touched);
   ALL_REACTIONS.forEach((r) => {
     if ((r.moodTags || []).includes(key)) {
       r.moodTags = r.moodTags.filter((t) => t !== key);
@@ -3606,7 +3722,7 @@ function toggleImageTag(dataUrl, tag) {
   const tags = new Set(IMAGE_TAG_MAP[key] || []);
   if (tags.has(tag)) tags.delete(tag); else tags.add(tag);
   IMAGE_TAG_MAP[key] = Array.from(tags);
-  persistImageTagMap();
+  persistImageTagMap(key);
 }
 // Shared manage-groups modal — same row layout as Tag Manager (count,
 // hide toggle, merge, rename, delete) since Images/Reactions now share one
@@ -3775,13 +3891,14 @@ async function attachImagesToEntry(dataUrls, entryId) {
 // never toggles off, since with several images selected at once some may
 // already carry the tag and others not.
 function tagImagesWithGroup(dataUrls, tag) {
-  dataUrls.forEach((dataUrl) => {
+  const touched = dataUrls.map((dataUrl) => {
     const key = imageKey(dataUrl);
     const tags = new Set(IMAGE_TAG_MAP[key] || []);
     tags.add(tag);
     IMAGE_TAG_MAP[key] = Array.from(tags);
+    return key;
   });
-  persistImageTagMap();
+  persistImageTagMap(touched);
 }
 function openTagSelectedImagesModal(dataUrls) {
   // Built-ins-plus-custom, same list Reactions uses — the 4 built-in moods
@@ -4304,14 +4421,14 @@ async function transferDuplicateTagsOnDelete(deletedDataUrl, survivorDataUrls, d
   const deletedHTags = getHTags(deletedDataUrl);
   const deletedInReactions = await isDataUrlInReactions(deletedDataUrl);
   const deletedInH = isDataUrlInH(deletedDataUrl);
-  let imageTagMapChanged = false;
-  let hTagMapChanged = false;
+  const touchedImageKeys = [];
+  let touchedHKeys = [];
   for (const survivorUrl of survivors) {
     if (deletedTags.length) {
       const key = imageKey(survivorUrl);
       const existing = IMAGE_TAG_MAP[key] || [];
       const merged = new Set([...existing, ...deletedTags]);
-      if (merged.size !== existing.length) { IMAGE_TAG_MAP[key] = Array.from(merged); imageTagMapChanged = true; }
+      if (merged.size !== existing.length) { IMAGE_TAG_MAP[key] = Array.from(merged); touchedImageKeys.push(key); }
       // Also merge onto every survivor reaction record that shares this
       // dataUrl (there can legitimately be more than one — e.g. the same
       // file uploaded as two separate reactions), excluding the one about
@@ -4332,13 +4449,13 @@ async function transferDuplicateTagsOnDelete(deletedDataUrl, survivorDataUrls, d
       const key = imageKey(survivorUrl);
       const existing = H_TAG_MAP[key] || [];
       const merged = new Set([...existing, ...deletedHTags]);
-      if (merged.size !== existing.length) { H_TAG_MAP[key] = Array.from(merged); hTagMapChanged = true; }
+      if (merged.size !== existing.length) { H_TAG_MAP[key] = Array.from(merged); touchedHKeys.push(key); }
     }
     if (deletedInReactions && !(await reactionsPoolHasOtherRecord(survivorUrl, deletedId))) await addImageAsReaction(survivorUrl);
     if (deletedInH && !isDataUrlInH(survivorUrl)) pullImageIntoH(survivorUrl);
   }
-  if (imageTagMapChanged) persistImageTagMap();
-  if (hTagMapChanged) persistHTagMap();
+  if (touchedImageKeys.length) persistImageTagMap(touchedImageKeys);
+  if (touchedHKeys.length) persistHTagMap(touchedHKeys);
 }
 // Shared button pair rendered at the bottom of every individual-item modal.
 // The "Use as reaction"/"In Reactions" toggle only makes sense from the
@@ -4951,9 +5068,9 @@ function migrateImageKeyMetadata(oldDataUrl, newDataUrl) {
   const oldKey = imageKey(oldDataUrl);
   const newKey = imageKey(newDataUrl);
   if (oldKey === newKey) return;
-  if (IMAGE_TAG_MAP[oldKey]) { IMAGE_TAG_MAP[newKey] = IMAGE_TAG_MAP[oldKey]; delete IMAGE_TAG_MAP[oldKey]; persistImageTagMap(); }
-  if (H_TAG_MAP[oldKey]) { H_TAG_MAP[newKey] = H_TAG_MAP[oldKey]; delete H_TAG_MAP[oldKey]; persistHTagMap(); }
-  if (H_NOTE_MAP[oldKey]) { H_NOTE_MAP[newKey] = H_NOTE_MAP[oldKey]; delete H_NOTE_MAP[oldKey]; persistHNoteMap(); }
+  if (IMAGE_TAG_MAP[oldKey]) { IMAGE_TAG_MAP[newKey] = IMAGE_TAG_MAP[oldKey]; delete IMAGE_TAG_MAP[oldKey]; persistImageTagMap(newKey); }
+  if (H_TAG_MAP[oldKey]) { H_TAG_MAP[newKey] = H_TAG_MAP[oldKey]; delete H_TAG_MAP[oldKey]; persistHTagMap(newKey); }
+  if (H_NOTE_MAP[oldKey]) { H_NOTE_MAP[newKey] = H_NOTE_MAP[oldKey]; delete H_NOTE_MAP[oldKey]; persistHNoteMap(newKey); }
   if (H_IMAGE_KEYS.has(oldKey)) { H_IMAGE_KEYS.delete(oldKey); H_IMAGE_KEYS.add(newKey); persistHImageKeys(); }
 }
 
@@ -5637,7 +5754,11 @@ async function addHImageFiles(fileList) {
 // Images-tab groups.
 let H_GROUPS = new Set();
 let H_TAG_MAP = {}; // { [imageKey]: string[] group names }
-let H_TAG_MAP_UPDATED_AT = 0; // whole-map LWW timestamp, see applyMetaSnapshot()
+// Per-KEY LWW timestamps, not one whole-map timestamp — same fix and same
+// reasoning as IMAGE_TAG_MAP_TS above (a whole-map timestamp let one
+// device's tag edit to image A silently overwrite another device's edit to
+// unrelated image B, just because it happened to save more recently).
+let H_TAG_MAP_TS = {}; // { [imageKey]: ms epoch of last change to that key }
 // Same hide/delete lifecycle as the shared Images/Reactions groups above,
 // but its own separate copy — H's groups were deliberately kept out of that
 // shared set, so hiding/deleting one here has no effect on the other two
@@ -5649,11 +5770,13 @@ function persistHGroups() {
   idbPut(STORE_META, { key: 'hGroups', value: Array.from(H_GROUPS) });
   pushMetaField('hGroups', Array.from(H_GROUPS));
 }
-function persistHTagMap() {
-  H_TAG_MAP_UPDATED_AT = Date.now();
+function persistHTagMap(touchedKeys) {
+  const now = Date.now();
+  const keys = touchedKeys ? (Array.isArray(touchedKeys) ? touchedKeys : [touchedKeys]) : Object.keys(H_TAG_MAP);
+  keys.forEach((k) => { H_TAG_MAP_TS[k] = now; });
   idbPut(STORE_META, { key: 'hTagMap', value: H_TAG_MAP });
-  idbPut(STORE_META, { key: 'hTagMapUpdatedAt', value: H_TAG_MAP_UPDATED_AT });
-  pushMetaFields({ hTagMap: H_TAG_MAP, hTagMapUpdatedAt: H_TAG_MAP_UPDATED_AT });
+  idbPut(STORE_META, { key: 'hTagMapTs', value: H_TAG_MAP_TS });
+  pushMetaFields({ hTagMap: H_TAG_MAP, hTagMapTs: H_TAG_MAP_TS });
 }
 function isHiddenHGroup(name) {
   return H_HIDDEN_GROUP_KEYS.has(name) || H_DELETED_GROUP_KEYS.has(name);
@@ -5702,23 +5825,26 @@ function renameHGroup(oldKey, rawNewName) {
   const finalKey = mergedInto || newName;
   if (!mergedInto) H_GROUPS.add(finalKey);
   persistHGroups();
+  const touched = [];
   Object.keys(H_TAG_MAP).forEach((k) => {
     if (H_TAG_MAP[k].includes(oldKey)) {
       const tags = new Set(H_TAG_MAP[k].filter((t) => t !== oldKey));
       tags.add(finalKey);
       H_TAG_MAP[k] = Array.from(tags);
+      touched.push(k);
     }
   });
-  persistHTagMap();
+  if (touched.length) persistHTagMap(touched);
   if (H_GROUP_FILTER === oldKey) H_GROUP_FILTER = finalKey;
 }
 function deleteHGroup(key) {
   H_GROUPS.delete(key);
   persistHGroups();
+  const touched = [];
   Object.keys(H_TAG_MAP).forEach((k) => {
-    if (H_TAG_MAP[k].includes(key)) H_TAG_MAP[k] = H_TAG_MAP[k].filter((t) => t !== key);
+    if (H_TAG_MAP[k].includes(key)) { H_TAG_MAP[k] = H_TAG_MAP[k].filter((t) => t !== key); touched.push(k); }
   });
-  persistHTagMap();
+  if (touched.length) persistHTagMap(touched);
   recordDeletedHGroup(key);
   if (H_GROUP_FILTER === key) H_GROUP_FILTER = null;
 }
@@ -5730,7 +5856,7 @@ function toggleHTag(dataUrl, tag) {
   const tags = new Set(H_TAG_MAP[key] || []);
   if (tags.has(tag)) tags.delete(tag); else tags.add(tag);
   H_TAG_MAP[key] = Array.from(tags);
-  persistHTagMap();
+  persistHTagMap(key);
 }
 // Free-text caption/keywords per image, same idea as a reaction's `note`
 // field (and searched the same way) — kept as a lookup map rather than a
@@ -5738,19 +5864,23 @@ function toggleHTag(dataUrl, tag) {
 // a live reference to an entry's photo, and only the map approach works for
 // both uniformly (mirrors H_TAG_MAP for the same reason).
 let H_NOTE_MAP = {};
-let H_NOTE_MAP_UPDATED_AT = 0; // whole-map LWW timestamp, see applyMetaSnapshot()
-function persistHNoteMap() {
-  H_NOTE_MAP_UPDATED_AT = Date.now();
+// Per-KEY LWW timestamps — same reasoning as H_TAG_MAP_TS/IMAGE_TAG_MAP_TS.
+let H_NOTE_MAP_TS = {}; // { [imageKey]: ms epoch of last change to that key }
+function persistHNoteMap(touchedKeys) {
+  const now = Date.now();
+  const keys = touchedKeys ? (Array.isArray(touchedKeys) ? touchedKeys : [touchedKeys]) : Object.keys(H_NOTE_MAP);
+  keys.forEach((k) => { H_NOTE_MAP_TS[k] = now; });
   idbPut(STORE_META, { key: 'hNoteMap', value: H_NOTE_MAP });
-  idbPut(STORE_META, { key: 'hNoteMapUpdatedAt', value: H_NOTE_MAP_UPDATED_AT });
-  pushMetaFields({ hNoteMap: H_NOTE_MAP, hNoteMapUpdatedAt: H_NOTE_MAP_UPDATED_AT });
+  idbPut(STORE_META, { key: 'hNoteMapTs', value: H_NOTE_MAP_TS });
+  pushMetaFields({ hNoteMap: H_NOTE_MAP, hNoteMapTs: H_NOTE_MAP_TS });
 }
 function getHNote(dataUrl) {
   return H_NOTE_MAP[imageKey(dataUrl)] || '';
 }
 function setHNote(dataUrl, note) {
-  H_NOTE_MAP[imageKey(dataUrl)] = note;
-  persistHNoteMap();
+  const key = imageKey(dataUrl);
+  H_NOTE_MAP[key] = note;
+  persistHNoteMap(key);
 }
 // Same tag-style row layout as renderSharedGroupManagerModal (Images/
 // Reactions) — count, hide toggle, merge, rename, delete — just backed by
@@ -6051,13 +6181,14 @@ function renderHLibrary() {
 // already had closed, now closed for NSFW too. Always adds, never toggles
 // off (see tagImagesWithGroup/tagMemesWithMood for the same reasoning).
 function tagHImagesWithGroup(dataUrls, tag) {
-  dataUrls.forEach((dataUrl) => {
+  const touched = dataUrls.map((dataUrl) => {
     const key = imageKey(dataUrl);
     const tags = new Set(H_TAG_MAP[key] || []);
     tags.add(tag);
     H_TAG_MAP[key] = Array.from(tags);
+    return key;
   });
-  persistHTagMap();
+  persistHTagMap(touched);
 }
 function openTagSelectedHModal(dataUrls) {
   const groupList = visibleHGroupList();
@@ -9588,6 +9719,8 @@ async function boot() {
     if (savedIgnoredDup && Array.isArray(savedIgnoredDup.value)) IGNORED_DUP_GROUPS = new Set(savedIgnoredDup.value);
     const savedDeletedIds = await idbGet(STORE_META, 'deletedEntryIds');
     if (savedDeletedIds && Array.isArray(savedDeletedIds.value)) DELETED_ENTRY_IDS = new Set(savedDeletedIds.value);
+    const savedDeletedReactionIds = await idbGet(STORE_META, 'deletedReactionIds');
+    if (savedDeletedReactionIds && Array.isArray(savedDeletedReactionIds.value)) DELETED_REACTION_IDS = new Set(savedDeletedReactionIds.value);
     const savedUserHidden = await idbGet(STORE_META, 'userHiddenTagKeys');
     if (savedUserHidden && Array.isArray(savedUserHidden.value)) USER_HIDDEN_TAG_KEYS = new Set(savedUserHidden.value);
     const savedIgnoredSugg = await idbGet(STORE_META, 'ignoredTagSuggestions');
@@ -9608,8 +9741,8 @@ async function boot() {
     }
     const savedImageTagMap = await idbGet(STORE_META, 'imageTagMap');
     if (savedImageTagMap && savedImageTagMap.value && typeof savedImageTagMap.value === 'object') IMAGE_TAG_MAP = savedImageTagMap.value;
-    const savedImageTagMapTs = await idbGet(STORE_META, 'imageTagMapUpdatedAt');
-    if (savedImageTagMapTs && typeof savedImageTagMapTs.value === 'number') IMAGE_TAG_MAP_UPDATED_AT = savedImageTagMapTs.value;
+    const savedImageTagMapTs = await idbGet(STORE_META, 'imageTagMapTs');
+    if (savedImageTagMapTs && savedImageTagMapTs.value && typeof savedImageTagMapTs.value === 'object') IMAGE_TAG_MAP_TS = savedImageTagMapTs.value;
     const savedHiddenGroups = await idbGet(STORE_META, 'hiddenGroupKeys');
     if (savedHiddenGroups && Array.isArray(savedHiddenGroups.value)) HIDDEN_GROUP_KEYS = new Set(savedHiddenGroups.value);
     const savedDeletedGroups = await idbGet(STORE_META, 'deletedGroupKeys');
@@ -9626,16 +9759,16 @@ async function boot() {
     if (savedHGroups && Array.isArray(savedHGroups.value)) H_GROUPS = new Set(savedHGroups.value);
     const savedHTagMap = await idbGet(STORE_META, 'hTagMap');
     if (savedHTagMap && savedHTagMap.value && typeof savedHTagMap.value === 'object') H_TAG_MAP = savedHTagMap.value;
-    const savedHTagMapTs = await idbGet(STORE_META, 'hTagMapUpdatedAt');
-    if (savedHTagMapTs && typeof savedHTagMapTs.value === 'number') H_TAG_MAP_UPDATED_AT = savedHTagMapTs.value;
+    const savedHTagMapTs = await idbGet(STORE_META, 'hTagMapTs');
+    if (savedHTagMapTs && savedHTagMapTs.value && typeof savedHTagMapTs.value === 'object') H_TAG_MAP_TS = savedHTagMapTs.value;
     const savedHHiddenGroups = await idbGet(STORE_META, 'hHiddenGroupKeys');
     if (savedHHiddenGroups && Array.isArray(savedHHiddenGroups.value)) H_HIDDEN_GROUP_KEYS = new Set(savedHHiddenGroups.value);
     const savedHDeletedGroups = await idbGet(STORE_META, 'hDeletedGroupKeys');
     if (savedHDeletedGroups && Array.isArray(savedHDeletedGroups.value)) H_DELETED_GROUP_KEYS = new Set(savedHDeletedGroups.value);
     const savedHNoteMap = await idbGet(STORE_META, 'hNoteMap');
     if (savedHNoteMap && savedHNoteMap.value && typeof savedHNoteMap.value === 'object') H_NOTE_MAP = savedHNoteMap.value;
-    const savedHNoteMapTs = await idbGet(STORE_META, 'hNoteMapUpdatedAt');
-    if (savedHNoteMapTs && typeof savedHNoteMapTs.value === 'number') H_NOTE_MAP_UPDATED_AT = savedHNoteMapTs.value;
+    const savedHNoteMapTs = await idbGet(STORE_META, 'hNoteMapTs');
+    if (savedHNoteMapTs && savedHNoteMapTs.value && typeof savedHNoteMapTs.value === 'object') H_NOTE_MAP_TS = savedHNoteMapTs.value;
     const savedThemeMode = await idbGet(STORE_META, 'themeMode');
     if (savedThemeMode && typeof savedThemeMode.value === 'string') THEME_MODE = savedThemeMode.value;
     const savedBgMode = await idbGet(STORE_META, 'bgMode');
