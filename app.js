@@ -1816,15 +1816,18 @@ function formatNames(s) {
 // case a toast fires while nothing's focused to click it, e.g. a background
 // sync completing).
 function showToast(msg) {
+  const requiresClick = /error|fail|invalid|please|must not|must be|must have|cannot|can.t\b|couldn.t\b|unable|reconnect|too (big|large)|not found|not available|missing|warning|try again|network|blocked|hidden on purpose/i.test(msg);
+  // Routine success confirmations (Deleted, Merged and deleted, Got it —
+  // won't flag these again, tag/mood updates, etc.) are silent now -- she
+  // asked to get rid of these since they interrupt fast, repetitive
+  // workflows like bulk duplicate cleanup. Genuine errors/warnings still
+  // show and still require a click to dismiss (see requiresClick above).
+  if (!requiresClick) return;
   const t = document.getElementById('toast');
   const msgEl = document.getElementById('toast-msg');
   if (msgEl) msgEl.textContent = msg; else t.textContent = msg;
   t.style.display = 'flex';
   clearTimeout(showToast._t);
-  const requiresClick = /error|fail|invalid|please|must not|must be|must have|cannot|can.t\b|couldn.t\b|unable|reconnect|too (big|large)|not found|not available|missing|warning|try again|network|blocked|hidden on purpose/i.test(msg);
-  if (!requiresClick) {
-    showToast._t = setTimeout(() => { t.style.display = 'none'; }, 1500);
-  }
 }
 function hideToast() {
   document.getElementById('toast').style.display = 'none';
