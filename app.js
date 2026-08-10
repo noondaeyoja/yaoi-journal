@@ -1829,7 +1829,12 @@ function showToast(msg) {
   // asked to get rid of these since they interrupt fast, repetitive
   // workflows like bulk duplicate cleanup. Genuine errors/warnings still
   // show and still require a click to dismiss (see requiresClick above).
-  if (!requiresClick) return;
+  // #327: "Attached" is brought back on request -- unlike Deleted/Merged/tag
+  // updates (which just restate something already visible on screen), this
+  // is the only signal she has that an attach actually stuck, since the
+  // Images gallery doesn't otherwise change in an obvious way.
+  const alwaysShow = /^Attached /i.test(msg);
+  if (!requiresClick && !alwaysShow) return;
   const t = document.getElementById('toast');
   const msgEl = document.getElementById('toast-msg');
   if (msgEl) msgEl.textContent = msg; else t.textContent = msg;
