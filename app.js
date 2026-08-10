@@ -2735,6 +2735,25 @@ function setHeaderScrollCollapsed(header, collapsed) {
   header.querySelectorAll('.filters-collapsible').forEach((el) => {
     el.getAnimations().forEach((a) => a.cancel());
   });
+  // #311 (cont'd): the header itself is just as susceptible -- its own
+  // max-height/opacity/padding transition (this function) gets called on
+  // every scroll-direction change, and a scroll gesture that reverses
+  // quickly can call this again before the previous transition finished.
+  // That's what showed up as the header visibly stuck mid-fade, overlapping
+  // the content underneath it. Cancel any leftover transition on the header
+  // before starting a new one so each call always begins from a clean,
+  // settled state.
+  header.getAnimations().forEach((a) => a.cancel());
+  // Watchdog: if the transition we're about to start doesn't actually
+  // progress (same stuck-timeline quirk as above), force-cancel it once
+  // it's had time to finish, so the header snaps to its correct resting
+  // state instead of staying frozen mid-transition forever.
+  const watchdog = () => {
+    setTimeout(() => {
+      const stuck = header.getAnimations().some((a) => a.effect && a.effect.getComputedTiming().progress === 0);
+      if (stuck) header.getAnimations().forEach((a) => a.cancel());
+    }, 320);
+  };
   if (collapsed) {
     header.style.maxHeight = header.scrollHeight + 'px';
     void header.offsetHeight;
@@ -2744,6 +2763,7 @@ function setHeaderScrollCollapsed(header, collapsed) {
       header.style.paddingTop = '0px';
       header.style.paddingBottom = '0px';
       header.style.borderBottomWidth = '0px';
+      watchdog();
     });
   } else {
     header.style.paddingTop = '';
@@ -2755,6 +2775,7 @@ function setHeaderScrollCollapsed(header, collapsed) {
     header._scrollHideT = setTimeout(() => {
       if (header.style.opacity !== '0') header.style.maxHeight = '';
     }, 280);
+    watchdog();
   }
 }
 // Accumulates scroll distance in the current direction (instead of just
