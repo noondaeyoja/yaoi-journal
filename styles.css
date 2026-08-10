@@ -18,6 +18,7 @@
 --black-flag: #3a3d52;
 --bg-cyan: #d6f9ff;       /* page background option 1 */
 --bg-pink: #fbe3ff;       /* page background option 2 */
+--bg-purple: #ede3ff;     /* page background option 3 */
 --cyan-fill: #8fe9f5;     /* dropdown fill color */
 --radius: 0;
 --radius-sm: 0;
@@ -41,6 +42,7 @@ min-height: 100vh;
 }
 body[data-bg="pink"] { background-color: var(--bg-pink); }
 body[data-bg="cyan"] { background-color: var(--bg-cyan); }
+body[data-bg="purple"] { background-color: var(--bg-purple); }
 
 button, input, textarea, select { font-family: inherit; }
 
@@ -88,6 +90,9 @@ overflow: hidden;
 transition: max-height .25s ease, opacity .2s ease, padding-top .25s ease, padding-bottom .25s ease, border-bottom-width .25s ease;
 }
 body[data-bg='pink'] .app-header { background: var(--bg-pink); }
+body[data-bg='purple'] .app-header { background: var(--bg-purple); }
+body[data-bg='pink'] .detail-header { background: var(--bg-pink); }
+body[data-bg='purple'] .detail-header { background: var(--bg-purple); }
 .brand-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .brand-row h1 { font-size: 18px; margin: 0; letter-spacing: .01em; }
 .brand-row h1 .egg { margin-right: 4px; }
