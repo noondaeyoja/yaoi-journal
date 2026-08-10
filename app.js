@@ -7029,8 +7029,17 @@ function renderDatabase() {
         <div class="field-row">
         <label>Page Background</label>
         <div style="display:flex;gap:8px;">
-          <button type="button" data-bg-mode-pick="cyan" class="chip ${BG_MODE !== 'pink' ? 'active' : ''}" style="flex:1;">Cyan</button>
+          <button type="button" data-bg-mode-pick="cyan" class="chip ${BG_MODE === 'cyan' ? 'active' : ''}" style="flex:1;">Cyan</button>
+          <button type="button" data-bg-mode-pick="purple" class="chip ${BG_MODE === 'purple' ? 'active' : ''}" style="flex:1;">Purple</button>
           <button type="button" data-bg-mode-pick="pink" class="chip ${BG_MODE === 'pink' ? 'active' : ''}" style="flex:1;">Pink</button>
+        </div>
+      </div>
+      <div class="field-row">
+        <label>Google Drive</label>
+        <div style="display:flex;align-items:center;gap:8px;">
+          ${(DRIVE_NEEDS_RECONNECT || (CURRENT_USER && !driveTokenValid()))
+            ? `<span style="color:var(--red-flag);font-weight:600;">⚠️ Disconnected</span><button type="button" data-reconnect-drive-account="1" class="ref-btn">Reconnect</button>`
+            : `<span style="color:var(--green-flag);font-weight:600;">✅ Connected</span>`}
         </div>
       </div>
       </div>
@@ -8149,6 +8158,8 @@ function attachRootHandlers() {
       render();
     };
   });
+  const reconnectDriveAccountBtn = root.querySelector('[data-reconnect-drive-account]');
+  if (reconnectDriveAccountBtn) reconnectDriveAccountBtn.onclick = () => reconnectGoogleDrive();
   // #278: individual item modals (Details header icon actions, plus any other
   // icon+label pairing) only had the tiny emoji <button> itself as the click
   // target, with the text label sitting outside it as an inert sibling span.
