@@ -2725,6 +2725,16 @@ let SCROLL_HIDE_ACCUM = 0;
 let SCROLL_HIDE_ON = false;
 function setHeaderScrollCollapsed(header, collapsed) {
   if (!header) return;
+  // #311: forcing header.scrollHeight below triggers a synchronous layout;
+  // if a .filters-collapsible inside the header (Mood Tags box) has its own
+  // max-height transition in flight at that exact moment, the forced layout
+  // can leave it stuck mid-transition forever (browser quirk: the CSS
+  // transition's timeline stops ticking, freezing the box at its
+  // pre-transition size no matter what class it ends up with). Cancel first
+  // so there's nothing for the reflow to interrupt.
+  header.querySelectorAll('.filters-collapsible').forEach((el) => {
+    el.getAnimations().forEach((a) => a.cancel());
+  });
   if (collapsed) {
     header.style.maxHeight = header.scrollHeight + 'px';
     void header.offsetHeight;
@@ -3828,7 +3838,7 @@ let IMAGES_NAV_LIST = [];
 // FILTERS_COLLAPSED/.filters-collapsible) — the Semi/Uke + mood-group chip
 // row can be tucked away on demand instead of always taking up header space.
 // Session-only, like its homepage counterpart (resets on reload).
-let IMAGES_FILTERS_COLLAPSED = true;
+let IMAGES_FILTERS_COLLAPSED = false;
 let IMAGE_KIND_FILTER = null; // null | 'semi' | 'uke'
 // Manual Semi/Uke tags — she can flag ANY image in the Images gallery as
 // "Semi only"/"Uke only" from its individual view, same chip-toggle
@@ -4641,7 +4651,7 @@ let MEME_STATE = { moodFilter: null, search: '', untaggedOnly: false };
 let MEME_NAV_LIST = [];
 // Same purpose as IMAGES_FILTERS_COLLAPSED above, for the Reactions mood
 // chip row.
-let MEME_FILTERS_COLLAPSED = true;
+let MEME_FILTERS_COLLAPSED = false;
 
 // Mirror of the Images gallery's own source filter — the Reactions pool
 // should only ever hold direct Reactions-tab uploads (source: 'reactions')
@@ -4899,7 +4909,8 @@ function attachMemeGridHandlers() {
     memeFiltersToggleRow.onclick = () => {
     MEME_FILTERS_COLLAPSED = !MEME_FILTERS_COLLAPSED;
     const el = document.getElementById('meme-filters-collapsible');
-    if (el) el.classList.toggle('collapsed', MEME_FILTERS_COLLAPSED);
+    // #311: see images toggle handler above for why this cancel is needed.
+    if (el) { el.getAnimations().forEach((a) => a.cancel()); el.classList.toggle('collapsed', MEME_FILTERS_COLLAPSED); }
     };
   }
   const tagSelectedMemesBtn = document.querySelector('[data-meme-tag-selected]');
@@ -6028,7 +6039,7 @@ let H_SELECTED = new Set();
 // updated on every hMainBody() call.
 let H_NAV_LIST = [];
 // Same purpose as IMAGES_FILTERS_COLLAPSED above, for the NSFW group chip row.
-let H_FILTERS_COLLAPSED = true;
+let H_FILTERS_COLLAPSED = false;
 
 function hFilteredItems() {
   const q = H_STATE.search.trim().toLowerCase();
@@ -6340,7 +6351,8 @@ function attachHGridHandlers() {
     hFiltersToggleRow.onclick = () => {
     H_FILTERS_COLLAPSED = !H_FILTERS_COLLAPSED;
     const el = document.getElementById('h-filters-collapsible');
-    if (el) el.classList.toggle('collapsed', H_FILTERS_COLLAPSED);
+    // #311: see images toggle handler above for why this cancel is needed.
+    if (el) { el.getAnimations().forEach((a) => a.cancel()); el.classList.toggle('collapsed', H_FILTERS_COLLAPSED); }
     };
   }
   const tagSelectedHBtn = document.querySelector('[data-h-tag-selected]');
@@ -8565,7 +8577,10 @@ function attachRootHandlers() {
     imagesFiltersToggleRow.onclick = () => {
     IMAGES_FILTERS_COLLAPSED = !IMAGES_FILTERS_COLLAPSED;
     const el = document.getElementById('images-filters-collapsible');
-    if (el) el.classList.toggle('collapsed', IMAGES_FILTERS_COLLAPSED);
+    // #311: cancel any transition left stuck mid-flight by a scroll-driven
+    // header resize (see setHeaderScrollCollapsed) before applying the new
+    // class, so the box always starts its own transition from a clean state.
+    if (el) { el.getAnimations().forEach((a) => a.cancel()); el.classList.toggle('collapsed', IMAGES_FILTERS_COLLAPSED); }
     };
   }
   const attachSelectedBtn = root.querySelector('[data-images-attach-selected]');
