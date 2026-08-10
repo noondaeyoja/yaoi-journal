@@ -2786,6 +2786,12 @@ function setHeaderScrollCollapsed(header, collapsed) {
 // fires many tiny-delta scroll events -- still adds up to a hide/reveal
 // instead of getting reset away by each small step.
 function handleHeaderScrollHide() {
+  // #311/#317: app-header/detail-header are static now, not sticky, per
+  // user request -- the sticky scroll-hide transition kept getting stuck
+  // no matter what fix was tried, so the whole mechanism is retired. This
+  // early-return keeps the function (and its scroll-listener registration)
+  // harmless without having to touch every call site.
+  return;
   const header = document.querySelector('.app-header, .detail-header');
   if (!header) return;
   const y = window.scrollY || document.documentElement.scrollTop || 0;
@@ -6758,7 +6764,6 @@ function renderDetail(e) {
     ` : `
       <div class="field-row"><label>Title</label><input type="text" id="edit-title" value="${escapeHtml(e.title)}"></div>
       <div class="field-row"><label>Alt title</label><input type="text" id="edit-altTitle" placeholder="Other names this goes by..." value="${escapeHtml(e.altTitle || '')}"></div>
-      <div class="field-row"><label>Total Episodes</label><input type="number" id="edit-chapters" value="${e.totalChapters || ''}"></div>
       <div class="field-row"><label>Story Status</label>
         <select id="edit-status">
           <option value="" ${!e.status ? 'selected' : ''}>—</option>
