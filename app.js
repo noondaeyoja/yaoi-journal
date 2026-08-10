@@ -4910,7 +4910,21 @@ function attachMemeGridHandlers() {
     MEME_FILTERS_COLLAPSED = !MEME_FILTERS_COLLAPSED;
     const el = document.getElementById('meme-filters-collapsible');
     // #311: see images toggle handler above for why this cancel is needed.
-    if (el) { el.getAnimations().forEach((a) => a.cancel()); el.classList.toggle('collapsed', MEME_FILTERS_COLLAPSED); }
+    if (el) {
+      el.getAnimations().forEach((a) => a.cancel());
+      el.classList.toggle('collapsed', MEME_FILTERS_COLLAPSED);
+      // #311: on this box specifically (nested inside the sticky .app-header)
+      // a freshly-started CSS transition can also come out of the gate stuck
+      // -- the transition object exists (playState "running") but its
+      // timeline never ticks past localTime 0, so it never visually reaches
+      // its target size. If it's still sitting at progress 0 well past when
+      // a normal .25s transition would be done, force-cancel so it snaps to
+      // the correct resting value instead of staying stuck open forever.
+      setTimeout(() => {
+        const stuck = el.getAnimations().some((a) => a.effect && a.effect.getComputedTiming().progress === 0);
+        if (stuck) el.getAnimations().forEach((a) => a.cancel());
+      }, 300);
+    }
     };
   }
   const tagSelectedMemesBtn = document.querySelector('[data-meme-tag-selected]');
@@ -6352,7 +6366,21 @@ function attachHGridHandlers() {
     H_FILTERS_COLLAPSED = !H_FILTERS_COLLAPSED;
     const el = document.getElementById('h-filters-collapsible');
     // #311: see images toggle handler above for why this cancel is needed.
-    if (el) { el.getAnimations().forEach((a) => a.cancel()); el.classList.toggle('collapsed', H_FILTERS_COLLAPSED); }
+    if (el) {
+      el.getAnimations().forEach((a) => a.cancel());
+      el.classList.toggle('collapsed', H_FILTERS_COLLAPSED);
+      // #311: on this box specifically (nested inside the sticky .app-header)
+      // a freshly-started CSS transition can also come out of the gate stuck
+      // -- the transition object exists (playState "running") but its
+      // timeline never ticks past localTime 0, so it never visually reaches
+      // its target size. If it's still sitting at progress 0 well past when
+      // a normal .25s transition would be done, force-cancel so it snaps to
+      // the correct resting value instead of staying stuck open forever.
+      setTimeout(() => {
+        const stuck = el.getAnimations().some((a) => a.effect && a.effect.getComputedTiming().progress === 0);
+        if (stuck) el.getAnimations().forEach((a) => a.cancel());
+      }, 300);
+    }
     };
   }
   const tagSelectedHBtn = document.querySelector('[data-h-tag-selected]');
@@ -8580,7 +8608,21 @@ function attachRootHandlers() {
     // #311: cancel any transition left stuck mid-flight by a scroll-driven
     // header resize (see setHeaderScrollCollapsed) before applying the new
     // class, so the box always starts its own transition from a clean state.
-    if (el) { el.getAnimations().forEach((a) => a.cancel()); el.classList.toggle('collapsed', IMAGES_FILTERS_COLLAPSED); }
+    if (el) {
+      el.getAnimations().forEach((a) => a.cancel());
+      el.classList.toggle('collapsed', IMAGES_FILTERS_COLLAPSED);
+      // #311: on this box specifically (nested inside the sticky .app-header)
+      // a freshly-started CSS transition can also come out of the gate stuck
+      // -- the transition object exists (playState "running") but its
+      // timeline never ticks past localTime 0, so it never visually reaches
+      // its target size. If it's still sitting at progress 0 well past when
+      // a normal .25s transition would be done, force-cancel so it snaps to
+      // the correct resting value instead of staying stuck open forever.
+      setTimeout(() => {
+        const stuck = el.getAnimations().some((a) => a.effect && a.effect.getComputedTiming().progress === 0);
+        if (stuck) el.getAnimations().forEach((a) => a.cancel());
+      }, 300);
+    }
     };
   }
   const attachSelectedBtn = root.querySelector('[data-images-attach-selected]');
