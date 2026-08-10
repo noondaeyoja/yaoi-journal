@@ -4196,6 +4196,14 @@ async function scanForImageDuplicates() {
 
 function renderReactionsLibrary() {
   let items = allAppImages();
+  // #328: the header line below says "across the app" implying the true
+  // app-wide total, but items gets reassigned to whatever mood/kind/group
+  // (including the untagged pseudo-filter) is currently active a few lines
+  // down -- so the header was silently tracking the filtered count instead,
+  // changing every time a filter chip was clicked even though its wording
+  // never changed to say so. Capture the real total here, before any
+  // filtering, so the header stays constant regardless of active filters.
+  const totalPoolCount = items.length;
   // Matches images that are AUTOMATICALLY semi/uke (kind-derived — current
   // or former semi/uke photo, see allAppImages()) OR manually flagged Semi/
   // Uke via the Groups chips in the individual item view.
@@ -4290,7 +4298,7 @@ function renderReactionsLibrary() {
     <main>
     <div class="app-header">
       <div class="brand-row"><h1>🖼️ Images</h1></div>
-      <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${items.length} image${items.length === 1 ? '' : 's'} across the app. Tap one to see which reads it's attached to.</div>
+      <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${totalPoolCount} image${totalPoolCount === 1 ? '' : 's'} across the app. Tap one to see which reads it's attached to.</div>
       <div class="export-row" style="margin-bottom:10px;">
         <label class="upload-btn" style="flex:1;">📎 Add image(s)<input type="file" accept="image/*,video/*" multiple id="reaction-upload-input"></label>
         <button class="ref-btn" data-images-toggle-select="1">${IMAGE_SELECT_MODE ? '✕ Cancel select' : '☑️ Select'}</button>
