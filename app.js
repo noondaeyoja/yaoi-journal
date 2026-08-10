@@ -4888,7 +4888,6 @@ function attachMemeGridHandlers() {
         render();
       } else if (MEME_SHOWING_DUPLICATES) {
         // Same fast-triage tap-to-delete flow as the Images duplicates tab.
-        if (!await confirmModal('Delete this image from your library? Any entries it\'s already attached to keep their own copy.')) return;
         const deletedRec = ALL_REACTIONS.find((r) => r.id === id);
         const memeDupGroup = (MEME_DUP_GROUPS || []).find((g) => g.some((r) => r.id === id));
         if (deletedRec && memeDupGroup) {
@@ -6357,7 +6356,6 @@ function attachHGridHandlers() {
         render();
       } else if (H_SHOWING_DUPLICATES) {
         // Same fast tap-to-delete triage flow as Images/Reactions duplicates.
-        if (!await confirmModal('Delete this image?')) return;
         const hDupGroup = (H_DUP_GROUPS || []).find((g) => g.some((i) => i.dataUrl === url));
         if (hDupGroup) {
           const survivorHUrls = hDupGroup.filter((i) => i.dataUrl !== url).map((i) => i.dataUrl);
@@ -8573,7 +8571,6 @@ function attachRootHandlers() {
         // Possible Duplicates is a fast triage screen — tapping a copy
         // deletes it outright (still behind a confirm as the safety net)
         // instead of opening the full edit modal.
-        if (!await confirmModal('Delete this image? It will be removed from any read it\'s attached to.')) return;
         // Bug fix: this used to always pass reactionId: null, so a
         // standalone Images-tab upload (which is actually backed by an
         // ALL_REACTIONS record, source: 'images') never got deleted at
