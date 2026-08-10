@@ -53,6 +53,17 @@ function mediaFormatLabel(v) {
   const found = MEDIA_FORMATS.find((f) => f.value === v);
   return found ? found.label : '';
 }
+// #330: book-type mediaFormat values, used to tell book-flavored entries
+// (Reading/chapters/manga-scan vocabulary) apart from TV-flavored ones
+// (Watching/episodes) now that mediaFormat -- not the legacy e.format field
+// -- is the real source of truth for that split. See isBookFormat call
+// sites for the bug this replaced: changing the Format dropdown never
+// touched e.format, so anything still keyed off e.format silently kept
+// showing the pre-change book/TV terminology forever.
+const BOOK_MEDIA_FORMATS = ['manhwa', 'manhua', 'manga', 'novel', 'doujinshi'];
+function isBookFormat(e) {
+  return e.mediaFormat ? BOOK_MEDIA_FORMATS.includes(e.mediaFormat) : e.format === 'reading';
+}
 
 /* ---------------------------------------------------------------------- */
 /* SFW / NSFW account theme                                               */
@@ -3936,7 +3947,7 @@ function openAttachImagesToEntryModal(dataUrls) {
   // them apart at a glance in an alphabetical list, same icon scheme as the
   // Database duplicates review screen.
   const renderList = (list) => list.length
-    ? list.slice(0, 40).map((c) => `<button class="ref-btn" style="width:100%;text-align:left;" data-attach-images-target="${c.id}">${c.format === 'reading' ? '📖' : '📺'} ${escapeHtml(c.title)}</button>`).join('')
+    ? list.slice(0, 40).map((c) => `<button class="ref-btn" style="width:100%;text-align:left;" data-attach-images-target="${c.id}">${isBookFormat(c) ? '📖' : '📺'} ${escapeHtml(c.title)}</button>`).join('')
     : '<div class="empty-state">No matches.</div>';
   openModal(`
     <h3>Attach ${dataUrls.length} image${dataUrls.length === 1 ? '' : 's'} to…</h3>
@@ -6709,7 +6720,7 @@ function migrateCharNotesToCombined(e) {
 
 function renderDetail(e) {
   if (!e) return `<div class="empty-state">Entry not found.</div>${renderBottomNav('home')}`;
-  const isReading = e.format === 'reading';
+  const isReading = isBookFormat(e);
   migrateCharNotesToCombined(e);
 
   // Unconfirmed matching workflow (suggested-match preview, or the plain
@@ -7192,7 +7203,7 @@ function renderReviewCard(e) {
         <div class="cover-thumb" style="width:78px;flex:0 0 78px;">${cover}</div>
         <div class="review-card-info">
           <strong>${escapeHtml(e.title)}</strong>
-          <div style="font-size:11px;color:var(--text-dim);margin:2px 0 4px;">${e.format === 'reading' ? '📖' : '📺'} ${escapeHtml(e.shelf)}${e.author ? ' · ' + escapeHtml(formatNames(e.author)) : ''}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin:2px 0 4px;">${isBookFormat(e) ? '📖' : '📺'} ${escapeHtml(e.shelf)}${e.author ? ' · ' + escapeHtml(formatNames(e.author)) : ''}</div>
           ${sm ? `
             <div style="font-size:11.5px;color:var(--yellow);">Suggested: ${escapeHtml(sm.title || '')} <span style="opacity:.7">(${escapeHtml(sm.confidence || 'unconfirmed')})</span></div>
             ${sm.tags && sm.tags.length ? `<div style="font-size:11px;color:var(--text-dim);">${escapeHtml(sm.tags.slice(0, 5).join(', '))}</div>` : ''}
