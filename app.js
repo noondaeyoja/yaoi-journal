@@ -1494,12 +1494,19 @@ async function hydrateMissingEntryImages() {
     } catch (err) {
       console.error('Entry image hydrate failed:', err);
     }
-    if (STATE.view === 'reactions' && Date.now() - lastRender > 400) {
+    // #326: this used to only re-render on the reactions view, but this
+    // function hydrates ENTRY images (screencaps/cover/semi/uke) -- the ones
+    // shown in the Images gallery and on individual detail pages, not
+    // reactions. That meant a hydrated image would download and save to
+    // IndexedDB correctly, but the Images tab kept showing its stale
+    // hourglass placeholder indefinitely since nothing ever told it to
+    // redraw. Re-render on every screen that can actually show these images.
+    if (['images', 'reactions', 'h', 'detail'].includes(STATE.view) && Date.now() - lastRender > 400) {
       render();
       lastRender = Date.now();
     }
   }
-  if (STATE.view === 'reactions') render();
+  if (['images', 'reactions', 'h', 'detail'].includes(STATE.view)) render();
   ENTRY_IMAGE_HYDRATE_BUSY = false;
 }
 
