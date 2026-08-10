@@ -1671,9 +1671,27 @@ function startFirestoreListener(user) {
       const data = normalizeEntry(change.doc.data());
       if (change.type === 'removed') {
         if (ALL_ENTRIES.some((e) => e.id === data.id)) {
-          ALL_ENTRIES = ALL_ENTRIES.filter((e) => e.id !== data.id);
-          idbDelete(STORE_ENTRIES, data.id).catch(() => {});
-          changed = true;
+          // #329: only honor this as a real deletion if THIS device already
+          // knows it was deleted on purpose (DELETED_ENTRY_IDS is written by
+          // deleteEntry() before it ever touches Firestore, see
+          // recordDeletedEntryId). Every real in-app delete path goes
+          // through deleteEntry(), so a 'removed' event with no matching
+          // tombstone means the Firestore doc vanished some other way (a
+          // script touching the database directly, a bug elsewhere, bad
+          // manual cleanup) -- not something the user did here. Blindly
+          // mirroring that removal would silently wipe the last surviving
+          // copy of the entry on every open device. Instead, treat it as
+          // suspicious and push the local copy straight back up so the two
+          // stay in sync rather than losing data.
+          if (DELETED_ENTRY_IDS.has(data.id)) {
+            ALL_ENTRIES = ALL_ENTRIES.filter((e) => e.id !== data.id);
+            idbDelete(STORE_ENTRIES, data.id).catch(() => {});
+            changed = true;
+          } else {
+            const local = ALL_ENTRIES.find((e) => e.id === data.id);
+            console.warn('Entry removed from Firestore with no matching local tombstone -- restoring from local copy:', data.id, local && local.title);
+            if (local) pushEntryToFirestore(local);
+          }
         }
         return;
       }
