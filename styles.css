@@ -78,7 +78,8 @@ padding: 5px 12px; font-size: 12px; font-weight: 700; cursor: pointer; flex-shri
 }
 
 .app-header {
-position: sticky; top: var(--global-header-h); z-index: 30;
+/* #311: reverted from sticky to static per user request -- the sticky scroll-hide mechanism kept getting stuck mid-transition no matter what fix was tried. Scroll to the top to see the filters/tabs again. */
+position: static; z-index: 30;
 background: var(--bg-cyan);
 backdrop-filter: blur(10px);
 border-bottom: 1px solid var(--border);
@@ -349,7 +350,8 @@ display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
 }
 /* ---------- Detail / Journal screen ---------- */
 .detail-header {
-display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; position: sticky; top: var(--global-header-h); z-index: 30;
+display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; /* #311: reverted from sticky to static per user request -- the sticky scroll-hide mechanism kept getting stuck mid-transition no matter what fix was tried. Scroll to the top to see the filters/tabs again. */
+position: static; z-index: 30;
 background: var(--bg-cyan); border-bottom: 3px solid var(--border);
 overflow: hidden;
 transition: max-height .25s ease, opacity .2s ease, padding-top .25s ease, padding-bottom .25s ease, border-bottom-width .25s ease;
