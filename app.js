@@ -7028,8 +7028,19 @@ function renderDetail(e) {
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
           <label class="upload-btn" style="flex:1;">📎 Add photo(s)<input type="file" accept="image/*" multiple id="screencap-input"></label>
         </div>
+        ${(() => {
+          const capsList = e.screencaps || [];
+          const missingCount = capsList.filter((s) => !s).length;
+          const hint = missingCount > 0
+            ? `<div style="font-size:12px;opacity:0.75;margin-bottom:8px;">⏳ Restoring ${missingCount} of ${capsList.length} image(s) from Google Drive — this happens automatically in the background and can take anywhere from a few seconds to a couple minutes per image depending on your connection.</div>`
+            : "";
+          return hint;
+        })()}
         <div class="image-masonry screencap-dropzone" id="screencap-dropzone">
-          ${(e.screencaps || []).map((src, i) => `<div class="masonry-item"><img src="${src}" data-view-screencap="${i}" loading="lazy"><button class="del" data-del-screencap="${i}">✕</button></div>`).join('')}
+          ${(e.screencaps || []).map((src, i) => src
+            ? `<div class="masonry-item"><img src="${src}" data-view-screencap="${i}" loading="lazy"><button class="del" data-del-screencap="${i}">✕</button></div>`
+            : `<div class="masonry-item" title="Restoring from Google Drive — usually resolves within a couple minutes."><div class="cover-placeholder" style="height:100%;">⏳</div></div>`
+          ).join("")}
         </div>
         ${!(e.screencaps || []).length ? `<div class="empty-state" style="padding:16px 0;">No images yet — drag and drop, or tap "Add photo(s)".</div>` : ''}
       </div>
@@ -10101,9 +10112,17 @@ async function boot() {
 /* on its own while she's sitting right there looking at it.              */
 /* ---------------------------------------------------------------------- */
 setInterval(() => {
-  if (STATE.view === 'reactions') hydrateMissingEntryImages().catch(() => {});
-  else if (STATE.view === 'meme') hydrateMissingReactions().catch(() => {});
-  else if (STATE.view === 'h') hydrateMissingHImages().catch(() => {});
+  // #332 fix: this used to only retry entry images (screencaps/cover/
+  // semi/uke) while sitting on the Reactions view -- but those same images
+  // are what render on the Images gallery and on individual detail pages,
+  // which never got a periodic retry at all. A user could reconnect Drive
+  // while looking straight at a broken placeholder on a detail page and
+  // still have to wait for the one-shot navigate()-triggered attempt (which
+  // may have already failed before the reconnect) instead of getting
+  // picked up by this loop.
+  if (['images', 'reactions', 'detail'].includes(STATE.view)) hydrateMissingEntryImages().catch(() => {});
+  if (STATE.view === 'meme') hydrateMissingReactions().catch(() => {});
+  if (STATE.view === 'h') hydrateMissingHImages().catch(() => {});
 }, 30000);
 
 boot();
