@@ -1108,10 +1108,19 @@ function restoreLocallyKeptImages(remote, local) {
     const remoteDriveIds = remote.screencapDriveIds || [];
     const localDriveIds = local.screencapDriveIds || [];
     const localCaps = local.screencaps || [];
-    const fullyCachedLocally = remoteDriveIds.every((id) => localDriveIds.includes(id));
-    const rebuiltDriveBacked = fullyCachedLocally
-      ? remoteDriveIds.map((id) => localCaps[localDriveIds.indexOf(id)])
-      : [];
+    // #329 fix: rebuild positionally against every remote drive id
+    // instead of gating on an all-or-nothing "is every remote id present
+    // locally" check. That check only proved the id was *listed* locally,
+    // not that real bytes were cached at that position -- so a single
+    // stale/incomplete id used to null out this device's entire cached set,
+    // and once a gap slipped in it got faithfully copied forward by this
+    // same function on every later sync. A per-id gap here is fine: it's
+    // left undefined and hydrateDriveImages() (now also per-slot aware)
+    // re-fetches just that position.
+    const rebuiltDriveBacked = remoteDriveIds.map((id) => {
+      const li = localDriveIds.indexOf(id);
+      return li > -1 ? localCaps[li] : undefined;
+    });
     const pendingNew = localCaps.slice(localDriveIds.length);
     patched = { ...patched, screencaps: [...rebuiltDriveBacked, ...pendingNew] };
   }
@@ -1448,13 +1457,22 @@ async function hydrateDriveImages(entry) {
   if (entry.uke && entry.uke.photoDriveId && !entry.uke.photo) {
     jobs.push(downloadFromDrive(entry.uke.photoDriveId).then((url) => { entry.uke.photo = url; }).catch((err) => console.error('Uke photo hydrate failed:', err)));
   }
-  if (entry.screencapDriveIds && entry.screencapDriveIds.length && (!entry.screencaps || entry.screencaps.length < entry.screencapDriveIds.length)) {
+  // #329 fix: gate on per-slot validity (not just array length) and
+  // re-fetch only the missing slots, writing results back to the SAME
+  // index instead of pushing into a separate array -- the old version
+  // discarded good images on partial failure and could misalign a
+  // download failure into the wrong slot.
+  const screencapsNeedWork = entry.screencapDriveIds && entry.screencapDriveIds.length &&
+    (!entry.screencaps || entry.screencaps.length < entry.screencapDriveIds.length ||
+     entry.screencapDriveIds.some((_, i) => !entry.screencaps[i]));
+  if (screencapsNeedWork) {
     jobs.push((async () => {
-      const urls = [];
-      for (const id of entry.screencapDriveIds) {
-        try { urls.push(await downloadFromDrive(id)); } catch (err) { console.error('Screencap hydrate failed:', err); }
+      const caps = entry.screencaps ? entry.screencaps.slice() : [];
+      for (let i = 0; i < entry.screencapDriveIds.length; i++) {
+        if (caps[i]) continue;
+        try { caps[i] = await downloadFromDrive(entry.screencapDriveIds[i]); } catch (err) { console.error('Screencap hydrate failed:', err); }
       }
-      if (urls.length) entry.screencaps = urls;
+      entry.screencaps = caps;
     })());
   }
   if (!jobs.length) return;
@@ -1484,7 +1502,12 @@ function entryNeedsImageHydration(e) {
     (e.coverDriveId && !e.coverUrl) ||
     (e.semi && e.semi.photoDriveId && !e.semi.photo) ||
     (e.uke && e.uke.photoDriveId && !e.uke.photo) ||
-    (e.screencapDriveIds && e.screencapDriveIds.length && (!e.screencaps || e.screencaps.length < e.screencapDriveIds.length))
+    // #329 fix: length-only comparison used to miss the case where
+    // screencaps is the RIGHT length but contains empty/null slots (e.g.
+    // from a screencapDriveIds/screencaps population race during
+    // upload/sync) -- those entries never got flagged as needing
+    // hydration, so the placeholders stuck around forever.
+    (e.screencapDriveIds && e.screencapDriveIds.length && (!e.screencaps || e.screencaps.length < e.screencapDriveIds.length || e.screencapDriveIds.some((_, i) => !e.screencaps[i])))
   );
 }
 async function hydrateMissingEntryImages() {
