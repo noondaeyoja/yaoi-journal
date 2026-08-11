@@ -3196,7 +3196,7 @@ function renderHome() {
     const label = v === 'ALL' ? 'Format' : mediaFormatLabel(v);
     return `<option value="${escapeHtml(v)}" ${(STATE.mediaFormatFilter || 'ALL') === v ? 'selected' : ''}>${escapeHtml(label)}</option>`;
   }).join('')}</select></div>`;
-  const tagMsPanel = tags.map((t) => `<span class="tag-pool-chip ${STATE.tagFilters.includes(t) ? 'active' : ''}" data-toggle-home-tag="${escapeHtml(t)}">${escapeHtml(t)}</span>`).join('');
+  const tagMsPanel = tags.map((t) => `<span class="tag-pool-chip ${STATE.tagFilters.includes(t) ? 'active' : ''}" data-toggle-home-tag="${escapeHtml(t)}">${escapeHtml(capTag(t))}</span>`).join('');
   const tagMultiselect = `
     <div class="tag-multiselect">
       <button class="tag-ms-toggle" data-tag-ms-toggle="1">🏷️ Tags${STATE.tagFilters.length ? ` (${STATE.tagFilters.length})` : ''} <span class="chevron">${TAG_FILTER_OPEN ? '▴' : '▾'}</span></button>
@@ -3292,6 +3292,20 @@ function allTagCounts() {
 // near-duplicate tags as the user types a new one.
 function normalizeTagKey(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+// #335: display-only capitalization -- never touches stored tag text, only
+// how it's shown. Capitalizes the first letter of each word so tags read
+// consistently ("public play" and "Public play" both show as "Public
+// Play") regardless of how they were originally typed in. Words that are
+// already fully uppercase are left alone so real acronyms (BDSM, BL, JJK,
+// PWP) don't get mangled into "Bdsm"/"Jjk".
+function capTag(s) {
+  return String(s || '').split(' ').map((w) => {
+    if (!w) return w;
+    if (w === w.toUpperCase() && /[A-Z]/.test(w)) return w;
+    return w.charAt(0).toUpperCase() + w.slice(1);
+  }).join(' ');
 }
 
 function levenshteinDistance(a, b) {
@@ -3403,7 +3417,7 @@ function renderTagManager() {
     ? names.map((t) => `
         <div class="tagmgr-row" data-tag-name="${escapeHtml(t)}">
           <div class="tagmgr-click-area" data-tagmgr-view="${escapeHtml(t)}" title="View entries tagged &quot;${escapeHtml(t)}&quot;">
-            <div class="tagmgr-name">${escapeHtml(t)}</div>
+            <div class="tagmgr-name">${escapeHtml(capTag(t))}</div>
             <div class="tagmgr-count">${counts[t]} entr${counts[t] === 1 ? 'y' : 'ies'}</div>
           </div>
           <div class="tagmgr-actions">
@@ -6679,9 +6693,9 @@ function renderTagCloud(e) {
     .concat((e.customTags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: true })));
   const existingChips = existing.map(({ t, custom }) => {
     const removed = ts.removed.has(t);
-    return `<div class="tag-chip ${custom ? 'custom' : ''} ${removed ? 'tag-removed' : ''}" data-toggle-tag="${escapeHtml(t)}" title="Tap to ${removed ? 'keep' : 'remove'}">${escapeHtml(t)}</div>`;
+    return `<div class="tag-chip ${custom ? 'custom' : ''} ${removed ? 'tag-removed' : ''}" data-toggle-tag="${escapeHtml(t)}" title="Tap to ${removed ? 'keep' : 'remove'}">${escapeHtml(capTag(t))}</div>`;
   });
-  const addedChips = ts.added.map((t) => `<div class="tag-chip custom" data-toggle-added="${escapeHtml(t)}" title="Tap to undo">${escapeHtml(t)} ✕</div>`);
+  const addedChips = ts.added.map((t) => `<div class="tag-chip custom" data-toggle-added="${escapeHtml(t)}" title="Tap to undo">${escapeHtml(capTag(t))} ✕</div>`);
   return existingChips.concat(addedChips).join('') || '<span style="color:var(--text-dim);font-size:12.5px;">No tags yet.</span>';
 }
 
@@ -6710,7 +6724,7 @@ function renderTagCloudReadOnly(e) {
 function renderTagChipsInline(e) {
   const all = (e.tags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: false }))
     .concat((e.customTags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: true })));
-  const chips = all.map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}" data-remove-tag="${escapeHtml(t)}" title="Click to remove">${escapeHtml(t)}</div>`).join('');
+  const chips = all.map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}" data-remove-tag="${escapeHtml(t)}" title="Click to remove">${escapeHtml(capTag(t))}</div>`).join('');
   const addChip = `<div class="tag-chip add-tag-chip ${TAG_ADD_MODE ? 'active' : ''}" data-tag-add-toggle="1">+ NEW TAG</div>`;
   return chips + addChip;
 }
@@ -6718,7 +6732,7 @@ function renderTagChipsInline(e) {
 function renderDetailTagPool(e) {
   const existingLower = new Set([...(e.tags || []), ...(e.customTags || [])].map((t) => t.toLowerCase()));
   const all = Object.keys(allTagCounts()).filter((t) => !isHiddenTag(t)).sort((a, b) => a.localeCompare(b));
-  return all.map((t) => `<span class="tag-pool-chip ${existingLower.has(t.toLowerCase()) ? 'active' : ''}" data-toggle-detail-tag="${escapeHtml(t)}">${escapeHtml(t)}</span>`).join('');
+  return all.map((t) => `<span class="tag-pool-chip ${existingLower.has(t.toLowerCase()) ? 'active' : ''}" data-toggle-detail-tag="${escapeHtml(t)}">${escapeHtml(capTag(t))}</span>`).join('');
 }
 
 // One-time, per-entry migration: the old per-character semi/uke note
