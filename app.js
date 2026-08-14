@@ -7066,18 +7066,25 @@ function renderDetail(e) {
         </div>
         <div style="position:relative;margin-bottom:10px;">
           <input type="text" id="similar-search-input" class="tag-picker-input" placeholder="Search your library to link a similar read..." autocomplete="off">
-          <div id="similar-search-results" class="tag-pool" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:5;background:var(--bg-card);border:2px solid var(--pink-mid);border-top:none;border-radius:0 0 10px 10px;max-height:220px;overflow-y:auto;"></div>
+          <div id="similar-search-results" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:5;background:var(--bg-card);border:2px solid var(--pink-mid);border-top:none;border-radius:0 0 10px 10px;max-height:280px;overflow-y:auto;padding:8px;box-sizing:border-box;"></div>
         </div>
-        <div class="image-masonry" id="similar-grid">
+        <div class="cover-grid" id="similar-grid">
           ${(e.similarIds || []).map((sid) => {
             const s = getEntry(sid);
             if (!s) return '';
             const coverSrc = s.coverUrl || (s.suggestedMatch ? s.suggestedMatch.coverUrl : null);
             const cover = coverSrc
-              ? `<img src="${escapeHtml(coverSrc)}" data-view-similar="${escapeHtml(sid)}" loading="lazy" referrerpolicy="no-referrer" title="${escapeHtml(s.title)}" style="cursor:pointer;" onerror="this.parentElement.innerHTML='<div class=\'cover-placeholder\'>${themeIcon()}</div>'">`
-              : `<div class="cover-placeholder" data-view-similar="${escapeHtml(sid)}" title="${escapeHtml(s.title)}" style="cursor:pointer;height:100%;">${themeIcon()}</div>`;
-            return `<div class="masonry-item">${cover}<button class="del" data-remove-similar="${escapeHtml(sid)}" title="Remove from Similar">✕</button></div>`;
-          }).join('') || '<div class="empty-state" style="padding:16px 0;">No similar reads linked yet — search above to link one.</div>'}
+              ? `<img src="${escapeHtml(coverSrc)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='<div class=\'cover-placeholder\'>${themeIcon()}</div>'">`
+              : `<div class="cover-placeholder">${themeIcon()}</div>`;
+            return `<div class="cover-card">
+              <div class="cover-thumb" data-view-similar="${escapeHtml(sid)}">
+                ${cover}
+                <button data-remove-similar="${escapeHtml(sid)}" title="Remove from Similar" style="position:absolute;top:5px;right:5px;width:22px;height:22px;border-radius:0;background:rgba(0,0,0,.6);color:#fff;border:none;font-size:12px;z-index:3;cursor:pointer;">✕</button>
+              </div>
+              <div class="cover-title">${escapeHtml(s.title)}</div>
+              ${s.author ? `<div class="cover-sub">${escapeHtml(formatNames(s.author))}</div>` : ''}
+            </div>`;
+          }).join('') || '<div class="empty-state" style="grid-column:1 / -1;padding:16px 0;">No similar reads linked yet.</div>'}
         </div>
       </div>
 
@@ -8632,7 +8639,7 @@ function attachRootHandlers() {
       const existing = new Set([e.id, ...(e.similarIds || [])]);
       const matches = ALL_ENTRIES.filter((c) => !existing.has(c.id) && c.title && c.title.toLowerCase().includes(q)).slice(0, 8);
       similarResultsEl.innerHTML = matches.length
-        ? matches.map((c) => `<div class="tag-pool-chip" data-add-similar="${escapeHtml(c.id)}" style="display:block;">${isBookFormat(c) ? '\ud83d\udcd6' : '\ud83d\udcfa'} ${escapeHtml(c.title)}</div>`).join('')
+        ? matches.map((c) => `<button class="ref-btn" style="width:100%;text-align:left;margin-bottom:6px;" data-add-similar="${escapeHtml(c.id)}">${isBookFormat(c) ? '\ud83d\udcd6' : '\ud83d\udcfa'} ${escapeHtml(c.title)}</button>`).join('')
         : '<div style="color:var(--text-dim);font-size:12px;padding:6px 8px;">No matches.</div>';
       similarResultsEl.style.display = '';
     };
