@@ -7059,6 +7059,28 @@ function renderDetail(e) {
         ${!(e.screencaps || []).length ? `<div class="empty-state" style="padding:16px 0;">No images yet — drag and drop, or tap "Add photo(s)".</div>` : ''}
       </div>
 
+      <div class="panel">
+        <div class="panel-title-row" style="margin-bottom:10px;">
+          <div class="panel-title" style="margin:0;">Similar</div>
+          <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
+        </div>
+        <div style="position:relative;margin-bottom:10px;">
+          <input type="text" id="similar-search-input" class="tag-picker-input" placeholder="Search your library to link a similar read..." autocomplete="off">
+          <div id="similar-search-results" class="tag-pool" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:5;background:var(--bg-card);border:2px solid var(--pink-mid);border-top:none;border-radius:0 0 10px 10px;max-height:220px;overflow-y:auto;"></div>
+        </div>
+        <div class="image-masonry" id="similar-grid">
+          ${(e.similarIds || []).map((sid) => {
+            const s = getEntry(sid);
+            if (!s) return '';
+            const coverSrc = s.coverUrl || (s.suggestedMatch ? s.suggestedMatch.coverUrl : null);
+            const cover = coverSrc
+              ? `<img src="${escapeHtml(coverSrc)}" data-view-similar="${escapeHtml(sid)}" loading="lazy" referrerpolicy="no-referrer" title="${escapeHtml(s.title)}" style="cursor:pointer;" onerror="this.parentElement.innerHTML='<div class=\'cover-placeholder\'>${themeIcon()}</div>'">`
+              : `<div class="cover-placeholder" data-view-similar="${escapeHtml(sid)}" title="${escapeHtml(s.title)}" style="cursor:pointer;height:100%;">${themeIcon()}</div>`;
+            return `<div class="masonry-item">${cover}<button class="del" data-remove-similar="${escapeHtml(sid)}" title="Remove from Similar">✕</button></div>`;
+          }).join('') || '<div class="empty-state" style="padding:16px 0;">No similar reads linked yet — search above to link one.</div>'}
+        </div>
+      </div>
+
     </div>
     ${renderBottomNav('home')}
   `;
@@ -8596,6 +8618,58 @@ function attachRootHandlers() {
         showToast('Tag added');
       }
       await saveEntry(e);
+      render();
+    };
+  });
+  // #336: Similar reads panel -- bidirectional linking, search-as-you-type.
+  const similarSearchInput = root.querySelector('#similar-search-input');
+  const similarResultsEl = root.querySelector('#similar-search-results');
+  if (similarSearchInput && similarResultsEl) {
+    similarSearchInput.oninput = () => {
+      const q = similarSearchInput.value.trim().toLowerCase();
+      const e = getEntry(STATE.entryId);
+      if (!q || !e) { similarResultsEl.style.display = 'none'; similarResultsEl.innerHTML = ''; return; }
+      const existing = new Set([e.id, ...(e.similarIds || [])]);
+      const matches = ALL_ENTRIES.filter((c) => !existing.has(c.id) && c.title && c.title.toLowerCase().includes(q)).slice(0, 8);
+      similarResultsEl.innerHTML = matches.length
+        ? matches.map((c) => `<div class="tag-pool-chip" data-add-similar="${escapeHtml(c.id)}" style="display:block;">${isBookFormat(c) ? '\ud83d\udcd6' : '\ud83d\udcfa'} ${escapeHtml(c.title)}</div>`).join('')
+        : '<div style="color:var(--text-dim);font-size:12px;padding:6px 8px;">No matches.</div>';
+      similarResultsEl.style.display = '';
+    };
+    similarSearchInput.onblur = () => { setTimeout(() => { similarResultsEl.style.display = 'none'; }, 150); };
+    similarResultsEl.onclick = async (ev) => {
+      const chip = ev.target.closest('[data-add-similar]');
+      if (!chip) return;
+      const sid = chip.getAttribute('data-add-similar');
+      const e = getEntry(STATE.entryId);
+      const other = getEntry(sid);
+      if (!e || !other) return;
+      e.similarIds = e.similarIds || [];
+      other.similarIds = other.similarIds || [];
+      if (!e.similarIds.includes(sid)) e.similarIds.push(sid);
+      if (!other.similarIds.includes(e.id)) other.similarIds.push(e.id);
+      await saveEntry(e);
+      await saveEntry(other);
+      showToast('Linked as similar');
+      render();
+    };
+  }
+  root.querySelectorAll('[data-view-similar]').forEach((el) => {
+    el.onclick = () => navigate('detail', el.getAttribute('data-view-similar'));
+  });
+  root.querySelectorAll('[data-remove-similar]').forEach((el) => {
+    el.onclick = async (ev) => {
+      ev.stopPropagation();
+      const sid = el.getAttribute('data-remove-similar');
+      const e = getEntry(STATE.entryId);
+      if (!e) return;
+      const other = getEntry(sid);
+      e.similarIds = (e.similarIds || []).filter((x) => x !== sid);
+      await saveEntry(e);
+      if (other) {
+        other.similarIds = (other.similarIds || []).filter((x) => x !== e.id);
+        await saveEntry(other);
+      }
       render();
     };
   });
