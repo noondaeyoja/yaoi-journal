@@ -207,6 +207,30 @@ let TAG_FILTER_OPEN = false;       // whether the homepage tag multi-select drop
 let FILTERS_COLLAPSED = false;     // whether the homepage search/tabs/format/Status/Tags/Ratings&Flags block is tucked away
 let SEARCH_INPUT_SHOULD_FOCUS = false; // one-shot flag: refocus the global search box after it causes a view jump
 let MEME_SEARCH_INPUT_SHOULD_FOCUS = false; // stays false on a fresh nav into Reactions so the mobile keyboard doesn't pop uninvited
+// #338/#340: background Firestore echoes (e.g. Drive image hydration
+// finishing while an entry is open) used to call render() unconditionally,
+// which rebuilds the whole page from scratch. If the user was mid-keystroke
+// in the Notes box (or any other text field) when that happened, the
+// rebuilt field came back showing whatever was last SAVED (Notes only saves
+// on blur) -- wiping out anything typed since, and stealing focus/scroll
+// along with it. RENDER_DEFERRED lets those background renders skip
+// themselves while the user is actively editing, then catch up right after
+// the field blurs (once its own save has had a chance to run) instead of
+// ever touching a focused field's DOM mid-edit.
+let RENDER_DEFERRED = false;
+function isEditingTextField() {
+  const ae = document.activeElement;
+  if (!ae) return false;
+  return ae.isContentEditable || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA';
+}
+document.addEventListener('focusout', () => {
+  if (!RENDER_DEFERRED) return;
+  RENDER_DEFERRED = false;
+  // Let the field's own onblur (e.g. notesArea.onblur saving e.notes) run
+  // and finish first, so the deferred render picks up the just-saved value
+  // instead of racing it.
+  setTimeout(() => render(), 0);
+}, true);
 let STATE = {
   view: 'home',            // 'home' | 'detail' | 'tags' | 'database' | 'review' | 'duplicates'
   entryId: null,
@@ -972,7 +996,7 @@ function startMetaFirestoreListener(user) {
     if (!skippedFirst) { skippedFirst = true; return; }
     if (!snap.exists) return;
     const changed = await applyMetaSnapshot(snap.data());
-    if (changed && ['reactions', 'meme', 'h', 'tags', 'tagEntries', 'home'].includes(STATE.view)) render();
+    if (changed && ['reactions', 'meme', 'h', 'tags', 'tagEntries', 'home'].includes(STATE.view)) { if (isEditingTextField()) RENDER_DEFERRED = true; else render(); }
   }, (err) => console.error('Meta listener error:', err));
 }
 
@@ -1746,7 +1770,7 @@ function startFirestoreListener(user) {
         changed = true;
       }
     });
-    if (changed && ['home', 'detail', 'tagEntries', 'tags', 'database'].includes(STATE.view)) render();
+    if (changed && ['home', 'detail', 'tagEntries', 'tags', 'database'].includes(STATE.view)) { if (isEditingTextField()) RENDER_DEFERRED = true; else render(); }
   }, (err) => console.error('Firestore listener error:', err));
 }
 
@@ -2430,6 +2454,7 @@ function restoreNavState() {
   } catch (err) { /* corrupt/missing — just boots to Home like before */ }
 }
 function navigate(view, entryId, opts) {
+  RENDER_DEFERRED = false;
   const isBack = !!(opts && opts.isBack);
   // A modal (e.g. the Suggested Match Review carousel) is a separate overlay
   // layer that sits on top of #view-root and was never being closed on
@@ -2754,6 +2779,16 @@ function renderGlobalHeader() {
 }
 
 function render() {
+  // #340: background re-renders (Drive image hydration completing, remote
+  // sync echoes, etc.) rebuild the whole page from scratch, which resets
+  // scroll to the top by default -- making it impossible to keep scrolling
+  // through a long Images panel while its later images are still hydrating
+  // in the background. navigate() already does its own window.scrollTo(0,0)
+  // BEFORE calling render() for real navigations, so capturing/restoring
+  // scroll position here is safe for both cases: a real navigation has
+  // already been reset to 0 by the time this runs, and a same-page
+  // background render just keeps wherever the user currently is.
+  const __preRenderScrollY = window.scrollY || document.documentElement.scrollTop || 0;
 document.body.dataset.bg = BG_MODE;
   const root = document.getElementById('view-root');
   if (!CURRENT_USER) {
@@ -2780,6 +2815,7 @@ document.body.dataset.bg = BG_MODE;
   root.innerHTML = renderGlobalHeader() + body;
   attachRootHandlers();
   resetHeaderScrollHide();
+  if (__preRenderScrollY > 0) window.scrollTo(0, __preRenderScrollY);
 }
 
 /* #296: hide the page's sub-header (.app-header on most screens, or
