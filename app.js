@@ -232,6 +232,16 @@ function isEditingTextField() {
   if (!ae) return false;
   return ae.isContentEditable || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA';
 }
+// #347: the background image-hydration loops below (hydrateMissingEntryImages,
+// hydrateMissingHImages) call render() directly and repeatedly -- unlike the
+// Firestore listeners above, they aren't routed through the deferred-render
+// flag at all, so right after login (when dozens of images can be hydrating
+// in a burst) they were still rebuilding the whole page every ~400ms even
+// while someone was mid-keystroke in the detail page's Notes box or typing
+// a new tag, making both fields impossible to use. Same fix, same flag.
+function renderOrDefer() {
+  if (isEditingTextField()) { RENDER_DEFERRED = true; } else { render(); }
+}
 document.addEventListener('focusout', () => {
   if (!RENDER_DEFERRED) return;
   RENDER_DEFERRED = false;
@@ -1569,11 +1579,11 @@ async function hydrateMissingEntryImages() {
     // hourglass placeholder indefinitely since nothing ever told it to
     // redraw. Re-render on every screen that can actually show these images.
     if (['images', 'reactions', 'h', 'detail'].includes(STATE.view) && Date.now() - lastRender > 400) {
-      render();
+      renderOrDefer();
       lastRender = Date.now();
     }
   }
-  if (['images', 'reactions', 'h', 'detail'].includes(STATE.view)) render();
+  if (['images', 'reactions', 'h', 'detail'].includes(STATE.view)) renderOrDefer();
   ENTRY_IMAGE_HYDRATE_BUSY = false;
 }
 
@@ -5955,12 +5965,12 @@ async function hydrateMissingHImages() {
       console.error('H image hydrate failed:', err);
     }
     if (STATE.view === 'h' && Date.now() - lastRender > 400) {
-      render();
+      renderOrDefer();
       lastRender = Date.now();
     }
   }
   H_IMAGE_HYDRATE_BUSY = false;
-  if (STATE.view === 'h') render();
+  if (STATE.view === 'h') renderOrDefer();
 }
 
 // Uploads straight into the standalone H library — never attached to any
