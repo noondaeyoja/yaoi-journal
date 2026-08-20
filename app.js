@@ -34,6 +34,15 @@ function shelfLabelForEntry(value, isReadingFmt) {
 }
 const FLAG_COLORS = ['green', 'red', 'black'];
 const FLAG_HEX = { green: '#4ade80', red: '#f87171', black: '#6b6b7a' };
+// #345: shared name-builder for the auto-tag each flag button keeps in
+// sync with the tag box (one-way: flag -> tag only). "who" is 'semi'
+// (Main Lead) or 'uke' (Main Character), matching the notes-lead-head
+// labels shown above each flag picker.
+function flagTagName(color, who) {
+  const cap = color.charAt(0).toUpperCase() + color.slice(1);
+  const role = who === 'semi' ? 'Main Lead' : 'Main Character';
+  return cap + ' Flag ' + role;
+}
 
 // "Format" here is the media type (Manhwa/Manhua/Manga/Novel/Doujinshi/TV
 // Show/Movie) — a separate concept from the existing e.format field, which
@@ -3082,6 +3091,37 @@ async function runFavoriteTagMigrationOnce() {
     if (touched) console.log(`Favorite/blocked-tag migration: updated ${touched} entries.`);
   } catch (err) {
     console.error('Favorite tag migration failed:', err);
+  }
+}
+
+// #345: one-time backfill (idempotent, run once per device like the
+// migration above) that adds the commensurate flag tag to every entry
+// that already had a green/red/black flag set before this feature
+// existed, so search works immediately across the whole library instead
+// of only for flags clicked after today.
+async function runFlagTagBackfillOnce() {
+  try {
+    const done = await idbGet(STORE_META, 'flagTagBackfillDone');
+    if (done && done.value) return;
+    let touched = 0;
+    for (const e of ALL_ENTRIES) {
+      let changed = false;
+      e.customTags = e.customTags || [];
+      ['semi', 'uke'].forEach((who) => {
+        const flag = e[who] && e[who].flag;
+        if (!flag) return;
+        const tn = flagTagName(flag, who);
+        if (!e.customTags.some((t) => t.toLowerCase() === tn.toLowerCase())) {
+          e.customTags.push(tn);
+          changed = true;
+        }
+      });
+      if (changed) { await saveEntry(e); touched++; }
+    }
+    await idbPut(STORE_META, { key: 'flagTagBackfillDone', value: true });
+    if (touched) console.log('Flag tag backfill: updated ' + touched + ' entries.');
+  } catch (err) {
+    console.error('Flag tag backfill failed:', err);
   }
 }
 
@@ -6791,10 +6831,27 @@ function migrateCharNotesToCombined(e) {
   saveEntry(e);
 }
 
+// One-time, per-entry migration: folds the old single-line "Notes (legacy)"
+// text field (only ever shown on non-reading/TV entries) into the combined
+// rich-text Notes box above it, then clears the legacy field. Goes in
+// BEFORE whatever's already in the combined box, matching the same
+// precedent as migrateCharNotesToCombined() above. Runs silently the first
+// time this entry is opened after the legacy field is removed; a harmless
+// no-op on every render after that (e.legacyNote is blank).
+function migrateLegacyNoteToCombined(e) {
+  const legacy = (e.legacyNote || '').trim();
+  if (!legacy) return;
+  const legacyHtml = '<div>› ' + escapeHtml(legacy) + '</div>';
+  e.notes = legacyHtml + notesToEditorHtml(e.notes);
+  e.legacyNote = '';
+  saveEntry(e);
+}
+
 function renderDetail(e) {
   if (!e) return `<div class="empty-state">Entry not found.</div>${renderBottomNav('home')}`;
   const isReading = isBookFormat(e);
   migrateCharNotesToCombined(e);
+  migrateLegacyNoteToCombined(e);
 
   // Unconfirmed matching workflow (suggested-match preview, or the plain
   // "not linked yet" cross-reference prompt) lives with the cover image.
@@ -7059,7 +7116,7 @@ function renderDetail(e) {
             ${!isSFW() ? `<div class="flag-picker">${renderFlagPicker(e.uke.flag, 'uke')}</div>` : ''}
           </div>
         </div>
-        ${!isReading ? `<div class="field-row"><label>Notes (legacy)</label><input type="text" id="legacy-note-input" value="${escapeHtml(e.legacyNote || '')}"></div>` : ''}
+        
         <div class="notes-toolbar">
           <button type="button" class="notes-fmt-btn" data-notes-cmd="bold" title="Bold"><b>B</b></button>
           <button type="button" class="notes-fmt-btn" data-notes-cmd="italic" title="Italic"><i>I</i></button>
@@ -8085,7 +8142,7 @@ async function submitAdd() {
     title, altTitle: '', novelAuthor: '', author, artist: '', isNovel: false,
     totalSeasons: null, totalChapters: null, epilogue: '', officialLink: '', released: null,
     status: '', currentlyReadingRaw: '', downloaded: '', currentChapter: '',
-    shelf: ADD_FORMAT_PICK === 'reading' ? 'Plan to Read' : 'Completed',
+    shelf: 'Plan to Read',
     tags: [], customTags: [], notes: '', favorite: false,
     coverUrl: null, referenceUrl: null, referenceSite: null, referenceStatus: 'none', suggestedMatch: null,
     summaryCache: null, summaryCachedAt: null, smutRating: 0, qualityRating: 0, lolRating: 0, cryRating: 0, wtfRating: 0,
@@ -8484,7 +8541,20 @@ function attachRootHandlers() {
     el.onclick = async () => {
       const [who, color] = el.getAttribute('data-flag-pick').split(':');
       const e = getEntry(STATE.entryId);
-      e[who].flag = e[who].flag === color ? null : color;
+      const newColor = e[who].flag === color ? null : color;
+      e[who].flag = newColor;
+      // #345: keep the commensurate tag in sync one-way (flag -> tag).
+      // Only one flag can be active per lead at a time, so drop whichever
+      // color's tag was there before, then add the new one if any.
+      e.customTags = e.customTags || [];
+      FLAG_COLORS.forEach((c) => {
+        const tn = flagTagName(c, who).toLowerCase();
+        e.customTags = e.customTags.filter((t) => t.toLowerCase() !== tn);
+      });
+      if (newColor) {
+        const tn = flagTagName(newColor, who);
+        if (!e.customTags.some((t) => t.toLowerCase() === tn.toLowerCase())) e.customTags.push(tn);
+      }
       await saveEntry(e); render();
     };
   });
@@ -8727,10 +8797,6 @@ function attachRootHandlers() {
       render();
     };
   });
-  const legacyNoteInput = root.querySelector('#legacy-note-input');
-  if (legacyNoteInput) legacyNoteInput.onblur = async () => {
-    const e = getEntry(STATE.entryId); e.legacyNote = legacyNoteInput.value.trim(); await saveEntry(e);
-  };
   const notesArea = root.querySelector('#user-notes');
   if (notesArea) {
     // Plain Enter should insert a line break, not a new paragraph block —
@@ -10169,6 +10235,7 @@ async function boot() {
         SYNC_BUSY = false;
         autoMatchSweepIfDue();
         runFavoriteTagMigrationOnce();
+        runFlagTagBackfillOnce();
       }
       render();
       // A genuinely brand-new account (no entries/reactions/H images ever
