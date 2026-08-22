@@ -210,7 +210,8 @@ let ALL_REACTIONS = [];            // meme/reaction image library, in-memory cac
 let ALL_H_IMAGES = [];             // standalone H-tab uploads (not pulled from an entry), in-memory cache
 let DETAIL_EDIT_MODE = false;      // whether the detail page's top fields are in edit mode
 let TAG_EDIT_MODE = false;
-let TAG_ADD_MODE = false;       // whether the inline "+ NEW TAG" input is showing         // whether the Tags panel is showing its editable (toggle/add/save) UI
+let TAG_ADD_MODE = false;       // whether the inline "+ NEW TAG" input is showing
+let TAG_ADD_AUTOFOCUS = false;  // one-shot: only steal focus into the tag input when the panel was just opened or a tag was just typed -- NOT on every background re-render (that was fighting clicks on tag-pool chips via scroll/refocus)         // whether the Tags panel is showing its editable (toggle/add/save) UI
 let TAG_ENTRIES_FILTER = null;     // which tag name the "view entries with this tag" screen is showing
 let TAG_FILTER_OPEN = false;       // whether the homepage tag multi-select dropdown panel is open
 let FILTERS_COLLAPSED = false;     // whether the homepage search/tabs/format/Status/Tags/Ratings&Flags block is tucked away
@@ -2491,6 +2492,8 @@ function navigate(view, entryId, opts) {
   DETAIL_EDIT_MODE = false;
   TAG_EDIT_MODE = false;
   TAG_FILTER_OPEN = false;
+  TAG_ADD_MODE = false;
+  TAG_ADD_AUTOFOCUS = false;
   window.scrollTo(0, 0);
   persistNavState();
   render();
@@ -8695,10 +8698,10 @@ function attachRootHandlers() {
     render();
   };
   const tagAddToggleBtn = root.querySelector('[data-tag-add-toggle]');
-  if (tagAddToggleBtn) tagAddToggleBtn.onclick = () => { TAG_ADD_MODE = !TAG_ADD_MODE; render(); };
+  if (tagAddToggleBtn) tagAddToggleBtn.onclick = () => { TAG_ADD_MODE = !TAG_ADD_MODE; TAG_ADD_AUTOFOCUS = TAG_ADD_MODE; render(); };
   const newTagInputInline = root.querySelector('#new-tag-input-inline');
   if (newTagInputInline) {
-    newTagInputInline.focus();
+    if (TAG_ADD_AUTOFOCUS) { newTagInputInline.focus(); TAG_ADD_AUTOFOCUS = false; }
     newTagInputInline.oninput = () => {
       const q = newTagInputInline.value.toLowerCase();
       root.querySelectorAll('#detail-tag-pool .tag-pool-chip').forEach((chip) => {
@@ -8723,6 +8726,7 @@ function attachRootHandlers() {
       e.customTags = [...(e.customTags || []), val];
       await saveEntry(e);
       showToast('Tag added');
+      TAG_ADD_AUTOFOCUS = true;
       render();
     };
   }
