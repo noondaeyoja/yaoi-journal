@@ -53,6 +53,7 @@ const MEDIA_FORMATS = [
   { value: 'manhwa', label: 'Manhwa' },
   { value: 'manhua', label: 'Manhua' },
   { value: 'manga', label: 'Manga' },
+  { value: 'webtoon', label: 'Webtoon' },
   { value: 'novel', label: 'Novel' },
   { value: 'doujinshi', label: 'Doujinshi' },
   { value: 'tv-show', label: 'TV Show' },
@@ -69,7 +70,7 @@ function mediaFormatLabel(v) {
 // sites for the bug this replaced: changing the Format dropdown never
 // touched e.format, so anything still keyed off e.format silently kept
 // showing the pre-change book/TV terminology forever.
-const BOOK_MEDIA_FORMATS = ['manhwa', 'manhua', 'manga', 'novel', 'doujinshi'];
+const BOOK_MEDIA_FORMATS = ['manhwa', 'manhua', 'manga', 'webtoon', 'novel', 'doujinshi'];
 function isBookFormat(e) {
   return e.mediaFormat ? BOOK_MEDIA_FORMATS.includes(e.mediaFormat) : e.format === 'reading';
 }
