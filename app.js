@@ -6684,7 +6684,13 @@ async function applySuggestedMatch(entryId) {
   const e = getEntry(entryId);
   const sm = e && e.suggestedMatch;
   if (!sm) return false;
-  if (sm.coverUrl && !e.coverIsUserUploaded) e.coverUrl = sm.coverUrl;
+  // #355: was gated on coverIsUserUploaded (only set by the manual file-
+  // upload path), so any cover fixed a different way -- e.g. by accepting
+  // an earlier match -- had no protection and got silently clobbered by a
+  // later re-match/re-confirm (including bad placeholder art some
+  // reference sites serve for licensed/delisted titles). Now: once ANY
+  // cover exists, only a deliberate re-upload can replace it.
+  if (sm.coverUrl && !e.coverUrl) e.coverUrl = sm.coverUrl;
   if (sm.url) { e.referenceUrl = sm.url; e.referenceSite = sm.site || 'Anime-Planet'; e.referenceStatus = 'confirmed'; }
   if (sm.summary) e.summaryCache = sm.summary;
   if (sm.tags && sm.tags.length) {
@@ -8089,7 +8095,7 @@ async function confirmReference(entryId) {
   const data = previewEl._pendingData;
   const url = previewEl._pendingUrl;
   const e = getEntry(entryId);
-  if (data.coverUrl && !e.coverIsUserUploaded) e.coverUrl = data.coverUrl;
+  if (data.coverUrl && !e.coverUrl) e.coverUrl = data.coverUrl; // #355: same broadened guard as applySuggestedMatch
   e.referenceUrl = url;
   e.referenceSite = data.site || (url.includes('myanimelist') ? 'MyAnimeList' : 'MangaDex');
   e.referenceStatus = 'confirmed';
@@ -9326,7 +9332,7 @@ function attachRootHandlers() {
       const e = getEntry(id);
       const sm = e && e.suggestedMatch;
       if (!sm) return;
-      if (sm.coverUrl && !e.coverIsUserUploaded) e.coverUrl = sm.coverUrl;
+      if (sm.coverUrl && !e.coverUrl) e.coverUrl = sm.coverUrl; // #355: same broadened guard as applySuggestedMatch
       if (sm.url) { e.referenceUrl = sm.url; e.referenceSite = sm.site || 'Anime-Planet'; e.referenceStatus = 'confirmed'; }
       if (sm.summary) e.summaryCache = sm.summary;
       if (sm.tags && sm.tags.length) {
