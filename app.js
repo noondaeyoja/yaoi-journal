@@ -2953,8 +2953,19 @@ function resetHeaderScrollHide() {
 /* HOME VIEW                                                              */
 /* ---------------------------------------------------------------------- */
 
+// #356: plain substring search was punctuation-sensitive -- "Autumn: at the
+// Cemetery" and "Autumn at the Cemetery" looked like different strings to
+// .includes() because of the colon, even though a person typing the title
+// from memory would reasonably drop it. Collapsing every run of
+// non-alphanumeric characters (punctuation, symbols) down to a single space
+// on BOTH sides before comparing makes those equivalent, while still
+// keeping word order/boundaries intact (so it doesn't start matching
+// across unrelated words the way stripping spaces entirely would).
+function normalizeSearchText(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
 function filteredEntries() {
-  const q = STATE.search.trim().toLowerCase();
+  const q = normalizeSearchText(STATE.search);
   return ALL_ENTRIES.filter((e) => {
     // Favorites and On Yaoi Drive tabs both pull from Reading + Watching,
     // ignoring the format toggle — same as each other.
@@ -2991,8 +3002,8 @@ function filteredEntries() {
     if (STATE.linkFilter && !e.readingLink) return false;
     if (STATE.noLinkFilter && e.readingLink) return false;
     if (q) {
-      const hay = [e.title, e.altTitle, e.author, e.artist, e.notes, ...(e.tags || []), ...(e.customTags || [])]
-        .filter(Boolean).join(' ').toLowerCase();
+      const hay = normalizeSearchText([e.title, e.altTitle, e.author, e.artist, e.notes, ...(e.tags || []), ...(e.customTags || [])]
+        .filter(Boolean).join(' '));
       if (!hay.includes(q)) return false;
     }
     return true;
