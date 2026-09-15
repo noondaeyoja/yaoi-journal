@@ -6964,28 +6964,28 @@ function renderDetail(e) {
       <div class="field-row"><label>Author</label><input type="text" id="edit-author" value="${escapeHtml(e.author || '')}"></div>
       <div class="field-row"><label>Artist</label><input type="text" id="edit-artist" value="${escapeHtml(e.artist || '')}"></div>
       <div class="field-row"><label>Story Status</label>
-        <select id="edit-status" class="status-pill-select">
+        <select id="edit-status" class="shelf-select status-pill-select">
           <option value="" ${!e.status ? 'selected' : ''}>—</option>
           <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
           <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
         </select>
       </div>
       <div class="field-row"><label>Format</label>${mediaFormatSelect}</div>
-      <div class="field-row"><label>Merge</label><button class="ref-btn" style="width:100%;text-align:left;" data-merge-entry="${e.id}">🔀 Merge duplicate</button></div>
-      <div class="field-row"><button class="ref-btn" style="width:100%;text-align:left;" data-delete-entry="${e.id}">✕ Delete this entry</button></div>
+      <div class="field-row"><button class="ref-btn" style="width:100%;" data-merge-entry="${e.id}">🔀 Merge duplicate</button></div>
+      <div class="field-row"><button class="ref-btn" style="width:100%;" data-delete-entry="${e.id}">✕ Delete this entry</button></div>
     ` : `
       <div class="field-row"><label>Title</label><input type="text" id="edit-title" value="${escapeHtml(e.title)}"></div>
       <div class="field-row"><label>Alt title</label><input type="text" id="edit-altTitle" placeholder="Other names this goes by..." value="${escapeHtml(e.altTitle || '')}"></div>
       <div class="field-row"><label>Story Status</label>
-        <select id="edit-status" class="status-pill-select">
+        <select id="edit-status" class="shelf-select status-pill-select">
           <option value="" ${!e.status ? 'selected' : ''}>—</option>
           <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
           <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
         </select>
       </div>
       <div class="field-row"><label>Format</label>${mediaFormatSelect}</div>
-      <div class="field-row"><label>Merge</label><button class="ref-btn" style="width:100%;text-align:left;" data-merge-entry="${e.id}">🔀 Merge duplicate</button></div>
-      <div class="field-row"><button class="ref-btn" style="width:100%;text-align:left;" data-delete-entry="${e.id}">✕ Delete this entry</button></div>
+      <div class="field-row"><button class="ref-btn" style="width:100%;" data-merge-entry="${e.id}">🔀 Merge duplicate</button></div>
+      <div class="field-row"><button class="ref-btn" style="width:100%;" data-delete-entry="${e.id}">✕ Delete this entry</button></div>
     `;
   
 
@@ -7026,10 +7026,10 @@ function renderDetail(e) {
         </div>
         <div class="split-row">
           <div>
-            <div class="cover-slot">${e.coverUrl ? `<img src="${escapeHtml(e.coverUrl)}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='${themeIcon()}'">` : themeIcon()}</div>
-            <div class="cover-actions-row">
-              <label class="upload-btn small">📷 ${e.coverUrl ? 'Change' : 'Upload'}<input type="file" accept="image/*" style="display:none" id="cover-upload-input"></label>
-            </div>
+            <label style="cursor:pointer;display:block;">
+              <div class="cover-slot">${e.coverUrl ? `<img src="${escapeHtml(e.coverUrl)}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='${themeIcon()}'">` : themeIcon()}</div>
+              <input type="file" accept="image/*" style="display:none" id="cover-upload-input">
+            </label>
           </div>
           <div>
             ${topFieldsHtml}
