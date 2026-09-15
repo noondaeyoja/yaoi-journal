@@ -6964,26 +6964,28 @@ function renderDetail(e) {
       <div class="field-row"><label>Author</label><input type="text" id="edit-author" value="${escapeHtml(e.author || '')}"></div>
       <div class="field-row"><label>Artist</label><input type="text" id="edit-artist" value="${escapeHtml(e.artist || '')}"></div>
       <div class="field-row"><label>Story Status</label>
-        <select id="edit-status">
+        <select id="edit-status" class="status-pill-select">
           <option value="" ${!e.status ? 'selected' : ''}>—</option>
           <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
           <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
         </select>
       </div>
       <div class="field-row"><label>Format</label>${mediaFormatSelect}</div>
+      <div class="field-row"><label>Merge</label><button class="ref-btn" style="width:100%;text-align:left;" data-merge-entry="${e.id}">🔀 Merge duplicate</button></div>
+      <div class="field-row"><button class="ref-btn" style="width:100%;text-align:left;" data-delete-entry="${e.id}">✕ Delete this entry</button></div>
     ` : `
       <div class="field-row"><label>Title</label><input type="text" id="edit-title" value="${escapeHtml(e.title)}"></div>
       <div class="field-row"><label>Alt title</label><input type="text" id="edit-altTitle" placeholder="Other names this goes by..." value="${escapeHtml(e.altTitle || '')}"></div>
       <div class="field-row"><label>Story Status</label>
-        <select id="edit-status">
+        <select id="edit-status" class="status-pill-select">
           <option value="" ${!e.status ? 'selected' : ''}>—</option>
           <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
           <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
         </select>
       </div>
       <div class="field-row"><label>Format</label>${mediaFormatSelect}</div>
-      <div class="field-row"><label>Merge</label><button class="ref-btn" style="width:100%;text-align:left;" data-merge-entry="${e.id}">🔀 Mark as duplicate / merge into another entry</button></div>
-      <div class="field-row"><button class="icon-btn danger" style="width:100%;" data-delete-entry="${e.id}">✕ Delete this entry</button></div>
+      <div class="field-row"><label>Merge</label><button class="ref-btn" style="width:100%;text-align:left;" data-merge-entry="${e.id}">🔀 Merge duplicate</button></div>
+      <div class="field-row"><button class="ref-btn" style="width:100%;text-align:left;" data-delete-entry="${e.id}">✕ Delete this entry</button></div>
     `;
   
 
