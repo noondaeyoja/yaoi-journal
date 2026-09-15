@@ -3290,7 +3290,7 @@ function renderHome() {
   // Story Status (WIP/Finished) — the story's own completion state, distinct
   // from Reading Status (her shelf: Currently Reading/Completed/etc, which is
   // about her progress through it, not whether the author's finished it).
-  const storyStatusChips = `<div class="filter-dropdown-col"><select id="home-story-status-select" class="filter-select">${['ALL', 'WIP', 'Finished'].map((s) => `<option value="${escapeHtml(s)}" ${(STATE.storyStatusFilter || 'ALL') === s ? 'selected' : ''}>${s === 'ALL' ? 'Story Status' : escapeHtml(s)}</option>`).join('')}</select></div>`;
+  const storyStatusChips = `<div class="filter-dropdown-col"><select id="home-story-status-select" class="filter-select">${['ALL', 'WIP', 'Finished', 'Discontinued'].map((s) => `<option value="${escapeHtml(s)}" ${(STATE.storyStatusFilter || 'ALL') === s ? 'selected' : ''}>${s === 'ALL' ? 'Story Status' : escapeHtml(s)}</option>`).join('')}</select></div>`;
   // Format filter row — replaces the old book/tv icon toggle (STATE.format)
   // with a proper dropdown, same row as Shelf/Story Status above it.
   const mediaFormatChips = `<div class="filter-dropdown-col"><select id="home-format-select" class="filter-select">${['ALL', ...MEDIA_FORMATS.map((f) => f.value)].map((v) => {
@@ -6968,6 +6968,7 @@ function renderDetail(e) {
           <option value="" ${!e.status ? 'selected' : ''}>—</option>
           <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
           <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
+          <option value="Discontinued" ${e.status === 'Discontinued' ? 'selected' : ''}>Discontinued</option>
         </select>
       </div>
       <div class="field-row"><label>Format</label>${mediaFormatSelect}</div>
@@ -6981,6 +6982,7 @@ function renderDetail(e) {
           <option value="" ${!e.status ? 'selected' : ''}>—</option>
           <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
           <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
+          <option value="Discontinued" ${e.status === 'Discontinued' ? 'selected' : ''}>Discontinued</option>
         </select>
       </div>
       <div class="field-row"><label>Format</label>${mediaFormatSelect}</div>
