@@ -6982,6 +6982,8 @@ function renderDetail(e) {
         </select>
       </div>
       <div class="field-row"><label>Format</label>${mediaFormatSelect}</div>
+      <div class="field-row"><label>Merge</label><button class="ref-btn" style="width:100%;text-align:left;" data-merge-entry="${e.id}">🔀 Mark as duplicate / merge into another entry</button></div>
+      <div class="field-row"><button class="icon-btn danger" style="width:100%;" data-delete-entry="${e.id}">✕ Delete this entry</button></div>
     `;
   
 
@@ -6995,14 +6997,6 @@ function renderDetail(e) {
         <div class="icon-action">
           <button class="icon-btn save" data-force-save="1" title="Save now">✅</button>
           <span class="icon-label">Save</span>
-        </div>
-        <div class="icon-action">
-          <button class="icon-btn" data-merge-entry="${e.id}" title="Mark as duplicate / merge into another entry">🔀</button>
-          <span class="icon-label">Merge</span>
-        </div>
-        <div class="icon-action">
-          <button class="icon-btn danger" data-delete-entry="${e.id}" title="Delete this entry">✕</button>
-          <span class="icon-label">Delete</span>
         </div>
         <div class="icon-action">
           <button class="icon-btn ${e.favorite ? 'fav-active' : ''}" data-toggle-fav="1" title="Favorite">${e.favorite ? '💜' : '🤍'}</button>
@@ -7038,7 +7032,7 @@ function renderDetail(e) {
           <div>
             ${topFieldsHtml}
             ${confirmedSummaryHtml}
-            ${matchColumnHtml}
+            ${matchColumnHtml ? `<div class="field-row" style="margin-top:12px;margin-bottom:18px;"><label>Summary</label>${matchColumnHtml}</div>` : ''}
           </div>
         </div>
         </div>
