@@ -2122,6 +2122,20 @@ function mediaModalNavNeighbors(list, current) {
     next: list[(idx + 1) % list.length],
   };
 }
+// #375: prev/next through whatever filtered/searched list the user was
+// looking at on the homepage before opening this entry -- mirrors the exact
+// "is a filter active" check renderHome() uses to decide between its
+// sectioned view and the flat filtered grid, so the arrows only appear when
+// there's an actual flat list to step through (not the default homepage).
+function detailBrowseNeighbors(id) {
+  const activeFilter = STATE.shelf !== 'ALL' || STATE.tagFilters.length || STATE.search
+    || STATE.showFavoritesOnly || STATE.showOnDriveOnly || STATE.showHentaiOnly || STATE.showArtworkOnly
+    || STATE.smutFilter || STATE.qualityFilter || STATE.lolFilter || STATE.cryFilter
+    || STATE.flagFilter || STATE.linkFilter || STATE.noLinkFilter || STATE.storyStatusFilter;
+  if (!activeFilter) return { prev: null, next: null };
+  const list = filteredEntries().map((x) => x.id);
+  return mediaModalNavNeighbors(list, id);
+}
 // Builds the actual prev/next chevron buttons, keyed to whichever gallery's
 // data-*-nav-prev/next attribute the global click handler listens for.
 function mediaModalNavArrowsHtml(attrPrefix, prev, next) {
@@ -7219,7 +7233,11 @@ function renderDetail(e) {
     `;
   
 
+  const detailNeighbors = detailBrowseNeighbors(e.id);
+
   return `
+    ${detailNeighbors.prev ? `<button class="detail-nav-arrow detail-nav-prev" data-open-entry="${escapeHtml(detailNeighbors.prev)}" title="Previous result">‹</button>` : ''}
+    ${detailNeighbors.next ? `<button class="detail-nav-arrow detail-nav-next" data-open-entry="${escapeHtml(detailNeighbors.next)}" title="Next result">›</button>` : ''}
     <div class="detail-header">
       <div class="detail-header-row">
         <button class="back-btn" data-nav-back="1">← Back</button>
