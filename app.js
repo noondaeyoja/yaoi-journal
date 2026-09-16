@@ -274,6 +274,7 @@ let STATE = {
   storyStatusFilter: null,  // null or 'WIP'|'Finished' — the story's own completion state
   showArtworkOnly: false,   // "Artwork" filter — entries tagged as artwork
   wtfFilter: null,          // null or 1-5, meaning "at least N WTFs"
+  darknessFilter: null,     // null or 1-5, meaning "at least N Darkness"
   search: '',
 };
 
@@ -294,6 +295,7 @@ function resetHomeFiltersClean() {
   STATE.lolFilter = null;
   STATE.cryFilter = null;
   STATE.wtfFilter = null;
+  STATE.darknessFilter = null;
   STATE.flagFilter = null;
   STATE.linkFilter = false;
   STATE.noLinkFilter = false;
@@ -3001,6 +3003,7 @@ function filteredEntries() {
     if (STATE.lolFilter && (e.lolRating || 0) < STATE.lolFilter) return false;
     if (STATE.cryFilter && (e.cryRating || 0) < STATE.cryFilter) return false;
     if (STATE.wtfFilter && (e.wtfRating || 0) < STATE.wtfFilter) return false;
+    if (STATE.darknessFilter && (e.darknessRating || 0) < STATE.darknessFilter) return false;
     if (STATE.flagFilter) {
       const hasFlag = (e.semi && e.semi.flag === STATE.flagFilter) || (e.uke && e.uke.flag === STATE.flagFilter);
       if (!hasFlag) return false;
@@ -3342,6 +3345,7 @@ function renderHome() {
   const lolChips = ratingFilterSelect('lolFilter', STATE.lolFilter, '😂', 'Laughing');
   const cryChips = ratingFilterSelect('cryFilter', STATE.cryFilter, '😭', 'Crying');
   const wtfChips = ratingFilterSelect('wtfFilter', STATE.wtfFilter, '🤯', 'WTF');
+  const darknessChips = ratingFilterSelect('darknessFilter', STATE.darknessFilter, '🌑', 'Darkness');
   // Semi/Uke green/red/black flags are hidden entirely for SFW accounts —
   // her explicit call: this is a general relationship-dynamic marker, not
   // just a hentai-adjacent thing, but it's still part of the SFW cut.
@@ -3369,7 +3373,7 @@ function renderHome() {
         <div class="filter-dropdown-row">${shelfChips}${storyStatusChips}${mediaFormatChips}</div>
         ${tagMultiselect}
         <div class="rating-pick-row">${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}</div>
-        <div class="filter-dropdown-row rating-emoji-row">${qualityChips}${smutChips}${lolChips}${cryChips}${wtfChips}</div>
+        <div class="filter-dropdown-row rating-emoji-row">${qualityChips}${smutChips}${lolChips}${cryChips}${wtfChips}${darknessChips}</div>
       </div>
     </div>
     <main>${body}</main>
@@ -7213,9 +7217,13 @@ function renderDetail(e) {
             <div class="label">Laughing</div>
             <div class="rating-icons" data-rating="lolRating">${renderRatingIcons(e.lolRating, '😂')}</div>
           </div>
-          <div class="rating-block" style="grid-column:1 / -1;">
+          <div class="rating-block">
             <div class="label">WTF</div>
             <div class="rating-icons" data-rating="wtfRating">${renderRatingIcons(e.wtfRating, '🤯')}</div>
+          </div>
+          <div class="rating-block">
+            <div class="label">Darkness</div>
+            <div class="rating-icons" data-rating="darknessRating">${renderRatingIcons(e.darknessRating, '🌑')}</div>
           </div>
         </div>
       </div>
@@ -7588,6 +7596,7 @@ function mergeEntryData(target, source) {
   target.lolRating = Math.max(target.lolRating || 0, source.lolRating || 0);
   target.cryRating = Math.max(target.cryRating || 0, source.cryRating || 0);
   target.wtfRating = Math.max(target.wtfRating || 0, source.wtfRating || 0);
+  target.darknessRating = Math.max(target.darknessRating || 0, source.darknessRating || 0);
   target.notes = mergeText(target.notes, source.notes);
 
   ['semi', 'uke'].forEach((k) => {
@@ -7771,7 +7780,7 @@ function renderDuplicates() {
 
 function exportCsv() {
   const rows = ALL_ENTRIES.slice().sort((a, b) => a.title.localeCompare(b.title));
-  const cols = ['title', 'altTitle', 'format', 'mediaFormat', 'shelf', 'author', 'artist', 'isNovel', 'status', 'tags', 'semiFlag', 'semiNotes', 'ukeFlag', 'ukeNotes', 'smutRating', 'qualityRating', 'wtfRating', 'favorite', 'notes', 'referenceUrl', 'pdfLink'];
+  const cols = ['title', 'altTitle', 'format', 'mediaFormat', 'shelf', 'author', 'artist', 'isNovel', 'status', 'tags', 'semiFlag', 'semiNotes', 'ukeFlag', 'ukeNotes', 'smutRating', 'qualityRating', 'wtfRating', 'darknessRating', 'favorite', 'notes', 'referenceUrl', 'pdfLink'];
   const esc = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
   const lines = [cols.join(',')];
   rows.forEach((e) => {
@@ -7779,7 +7788,7 @@ function exportCsv() {
       e.title, e.altTitle, e.format, e.mediaFormat, e.shelf, e.author, e.artist, e.isNovel, e.status,
       (e.tags || []).concat(e.customTags || []).join('; '),
       e.semi && e.semi.flag, e.semi && e.semi.notes, e.uke && e.uke.flag, e.uke && e.uke.notes,
-      e.smutRating, e.qualityRating, e.wtfRating, e.favorite, notesToPlainText(e.notes), e.referenceUrl, e.pdfLink
+      e.smutRating, e.qualityRating, e.wtfRating, e.darknessRating, e.favorite, notesToPlainText(e.notes), e.referenceUrl, e.pdfLink
     ].map(esc).join(','));
   });
   const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
@@ -7855,7 +7864,7 @@ async function importEntriesFromCsv(text) {
       coverUrl: null, referenceUrl: obj.referenceUrl || null, referenceSite: null, referenceStatus: 'none', suggestedMatch: null,
       summaryCache: null, summaryCachedAt: null,
       smutRating: Number(obj.smutRating) || 0, qualityRating: Number(obj.qualityRating) || 0,
-      lolRating: 0, cryRating: 0, wtfRating: Number(obj.wtfRating) || 0,
+      lolRating: 0, cryRating: 0, wtfRating: Number(obj.wtfRating) || 0, darknessRating: Number(obj.darknessRating) || 0,
       semi: { flag: obj.semiFlag || null, notes: obj.semiNotes || '', photo: null },
       uke: { flag: obj.ukeFlag || null, notes: obj.ukeNotes || '', photo: null },
       screencaps: [], pdfLink: obj.pdfLink || '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
@@ -8275,7 +8284,7 @@ async function submitAdd() {
     shelf: 'Plan to Read',
     tags: [], customTags: [], notes: '', favorite: false,
     coverUrl: null, referenceUrl: null, referenceSite: null, referenceStatus: 'none', suggestedMatch: null,
-    summaryCache: null, summaryCachedAt: null, smutRating: 0, qualityRating: 0, lolRating: 0, cryRating: 0, wtfRating: 0,
+    summaryCache: null, summaryCachedAt: null, smutRating: 0, qualityRating: 0, lolRating: 0, cryRating: 0, wtfRating: 0, darknessRating: 0,
     semi: { flag: null, notes: '', photo: null }, uke: { flag: null, notes: '', photo: null },
     screencaps: [], pdfLink: '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
   };
