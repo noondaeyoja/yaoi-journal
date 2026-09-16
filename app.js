@@ -7144,9 +7144,9 @@ function renderDetail(e) {
         <div class="summary-text">${escapeHtml(e.summaryCache) || '<em>No summary cached — tap refresh.</em>'}</div>
       </div>`;
   
-    crossRefRowHtml = `<div class="cross-ref-row"><a href="${escapeHtml(e.referenceUrl)}" target="_blank">${escapeHtml(e.referenceSite || 'source')} ↗</a>
-          &nbsp;·&nbsp;
-          <button class="ref-btn" data-refresh-ref="1">↻ Refresh</button>
+    crossRefRowHtml = `<div class="cross-ref-row cross-ref-row-compact">
+          <a class="ref-btn" href="${escapeHtml(e.referenceUrl)}" target="_blank" rel="noopener noreferrer" title="Open ${escapeHtml(e.referenceSite || 'source')}">↗</a>
+          <button class="ref-btn" data-refresh-ref="1" title="Refresh">↻</button>
           <button class="ref-btn" data-open-crossref="1">Change link</button></div>`;
   } else if (e.suggestedMatch) {
     const sm = e.suggestedMatch;
@@ -7245,21 +7245,19 @@ function renderDetail(e) {
               <div class="cover-slot">${e.coverUrl ? `<img src="${escapeHtml(e.coverUrl)}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='${themeIcon()}'">` : themeIcon()}</div>
               <input type="file" accept="image/*" style="display:none" id="cover-upload-input">
             </label>
+            ${crossRefRowHtml}
           </div>
           <div>
             ${topFieldsHtml}
             ${confirmedSummaryHtml}
-            ${crossRefRowHtml}
             ${matchColumnHtml ? `<div class="field-row" style="margin-top:12px;margin-bottom:18px;"><label>Summary</label>${matchColumnHtml}</div>` : ''}
           </div>
         </div>
-        <div class="reading-link-top-row">
+        <div class="reading-link-row reading-link-row-full">
           <div class="reading-chapter-col">
             <label>Chapter</label>
             <input type="text" class="chapter-pill-input" id="current-chapter-input" placeholder="—" value="${escapeHtml(e.currentChapter || '')}">
           </div>
-        </div>
-        <div class="reading-link-row">
           <div class="field-row" style="flex:1;min-width:0;margin-bottom:0;">
             ${e.readingLink
               ? `<a href="${escapeHtml(e.readingLink)}" target="_blank" rel="noopener noreferrer" class="reading-link-value">${escapeHtml(e.readingLink)}</a>`
