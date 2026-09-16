@@ -472,30 +472,12 @@ async function ensureSeeded() {
 function normalizeEntry(e) {
   if (!e.semi) e.semi = { flag: null, notes: '', photo: null };
   if (!e.uke) e.uke = { flag: null, notes: '', photo: null };
-  // #360: Favorite <-> tag two-way sync. Whichever of (boolean, tag) changed
-  // since the last saved version wins and is mirrored onto the other, so the
-  // Stats button and manually typing/removing the "Favorite" tag both work.
-  {
-    const priorEntry = (typeof ALL_ENTRIES !== 'undefined') ? ALL_ENTRIES.find((o) => o.id === e.id) : null;
-    const hasFavTag = (ent) => [...(ent.tags || []), ...(ent.customTags || [])].some((t) => normalizeTagKey(t) === FAVORITE_TAG_KEY);
-    const newBool = !!e.favorite;
-    const newTag = hasFavTag(e);
-    const oldBool = priorEntry ? !!priorEntry.favorite : newBool;
-    const oldTag = priorEntry ? hasFavTag(priorEntry) : newTag;
-    const boolChanged = newBool !== oldBool;
-    const tagChanged = newTag !== oldTag;
-    if (newBool !== newTag) {
-      if (boolChanged && !tagChanged) {
-        if (newBool) e.customTags = [...(e.customTags || []), 'Favorite'];
-        else {
-          e.tags = (e.tags || []).filter((t) => normalizeTagKey(t) !== FAVORITE_TAG_KEY);
-          e.customTags = (e.customTags || []).filter((t) => normalizeTagKey(t) !== FAVORITE_TAG_KEY);
-        }
-      } else {
-        e.favorite = newTag;
-      }
-    }
-  }
+  // #360: Favorite <-> tag two-way sync. The "Favorite" tag is the source of
+  // truth; e.favorite is always derived from it here, so toggling the Stats
+  // button (which just adds/removes the tag, like Hentai/On HD/Artwork) and
+  // manually typing/removing the "Favorite" tag in the Tags panel both work
+  // and always agree with each other.
+  e.favorite = [...(e.tags || []), ...(e.customTags || [])].some((t) => normalizeTagKey(t) === FAVORITE_TAG_KEY);
   // Repair sparse (hole-containing) screencapDriveIds arrays. A hole (as
   // opposed to an explicit null) makes Firestore's WriteBatch.set() reject
   // the WHOLE document with "Unsupported field value: undefined" the
@@ -8462,7 +8444,14 @@ function attachRootHandlers() {
   };
   const favBtn = root.querySelector('[data-toggle-fav]');
   if (favBtn) favBtn.onclick = async () => {
-    const e = getEntry(STATE.entryId); e.favorite = !e.favorite; await saveEntry(e); render();
+    const e = getEntry(STATE.entryId);
+    if (e.favorite) {
+      e.tags = (e.tags || []).filter((t) => normalizeTagKey(t) !== FAVORITE_TAG_KEY);
+      e.customTags = (e.customTags || []).filter((t) => normalizeTagKey(t) !== FAVORITE_TAG_KEY);
+    } else {
+      e.customTags = [...(e.customTags || []), 'Favorite'];
+    }
+    await saveEntry(e); render();
   };
   const readingLinkInput = root.querySelector('#reading-link-input');
   if (readingLinkInput) readingLinkInput.onblur = async () => {
