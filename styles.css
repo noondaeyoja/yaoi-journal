@@ -362,7 +362,7 @@ transition: max-height .25s ease, opacity .2s ease, padding-top .25s ease, paddi
 }
 .detail-header-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; row-gap: 10px; justify-content: center; position: relative; }
 .detail-header-row .back-btn { position: absolute; left: 0; }
-.detail-header-row h2 { flex: 0 1 auto; text-align: center; white-space: normal; margin: 0 44px; width: 100%; font-size: 34px; font-weight: 900; line-height: 1.15; text-transform: uppercase; color: #ff3b1f; letter-spacing: .01em; }
+.detail-header-row h2 { flex: 0 1 auto; text-align: center; white-space: normal; margin: 0 8px; width: 100%; font-size: 44px; font-weight: 900; line-height: 1.05; text-transform: uppercase; color: var(--text); letter-spacing: .01em; }
 .detail-actions-row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
 .back-btn { background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 0; padding: 7px 12px; font-size: 14px; flex-shrink: 0; }
 .detail-header h2 { font-size: 15px; margin: 0; flex: 1 1 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 70px; }
