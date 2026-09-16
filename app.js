@@ -472,6 +472,30 @@ async function ensureSeeded() {
 function normalizeEntry(e) {
   if (!e.semi) e.semi = { flag: null, notes: '', photo: null };
   if (!e.uke) e.uke = { flag: null, notes: '', photo: null };
+  // #360: Favorite <-> tag two-way sync. Whichever of (boolean, tag) changed
+  // since the last saved version wins and is mirrored onto the other, so the
+  // Stats button and manually typing/removing the "Favorite" tag both work.
+  {
+    const priorEntry = (typeof ALL_ENTRIES !== 'undefined') ? ALL_ENTRIES.find((o) => o.id === e.id) : null;
+    const hasFavTag = (ent) => [...(ent.tags || []), ...(ent.customTags || [])].some((t) => normalizeTagKey(t) === FAVORITE_TAG_KEY);
+    const newBool = !!e.favorite;
+    const newTag = hasFavTag(e);
+    const oldBool = priorEntry ? !!priorEntry.favorite : newBool;
+    const oldTag = priorEntry ? hasFavTag(priorEntry) : newTag;
+    const boolChanged = newBool !== oldBool;
+    const tagChanged = newTag !== oldTag;
+    if (newBool !== newTag) {
+      if (boolChanged && !tagChanged) {
+        if (newBool) e.customTags = [...(e.customTags || []), 'Favorite'];
+        else {
+          e.tags = (e.tags || []).filter((t) => normalizeTagKey(t) !== FAVORITE_TAG_KEY);
+          e.customTags = (e.customTags || []).filter((t) => normalizeTagKey(t) !== FAVORITE_TAG_KEY);
+        }
+      } else {
+        e.favorite = newTag;
+      }
+    }
+  }
   // Repair sparse (hole-containing) screencapDriveIds arrays. A hole (as
   // opposed to an explicit null) makes Firestore's WriteBatch.set() reject
   // the WHOLE document with "Unsupported field value: undefined" the
@@ -3164,6 +3188,15 @@ function isHentai(e) {
 const ARTWORK_TAG_KEY = 'artwork';
 function isArtwork(e) {
   return [...(e.tags || []), ...(e.customTags || [])].some((t) => normalizeTagKey(t) === ARTWORK_TAG_KEY);
+}
+const FAVORITE_TAG_KEY = 'favorite';
+const BW_STYLE_TAG_KEY = 'bwcoloring';
+function isBWStyle(e) {
+  return [...(e.tags || []), ...(e.customTags || [])].some((t) => normalizeTagKey(t) === BW_STYLE_TAG_KEY);
+}
+const COLOR_STYLE_TAG_KEY = 'color';
+function isColorStyle(e) {
+  return [...(e.tags || []), ...(e.customTags || [])].some((t) => normalizeTagKey(t) === COLOR_STYLE_TAG_KEY);
 }
 
 function topTags(entries) {
@@ -6963,29 +6996,11 @@ function renderDetail(e) {
       <div class="field-row"><label>Novel (author)</label><input type="text" id="edit-novelAuthor" placeholder="Original novel's author, if adapted" value="${escapeHtml(e.novelAuthor || '')}"></div>
       <div class="field-row"><label>Author</label><input type="text" id="edit-author" value="${escapeHtml(e.author || '')}"></div>
       <div class="field-row"><label>Artist</label><input type="text" id="edit-artist" value="${escapeHtml(e.artist || '')}"></div>
-      <div class="field-row"><label>Story Status</label>
-        <select id="edit-status" class="shelf-select status-pill-select">
-          <option value="" ${!e.status ? 'selected' : ''}>—</option>
-          <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
-          <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
-          <option value="Discontinued" ${e.status === 'Discontinued' ? 'selected' : ''}>Discontinued</option>
-        </select>
-      </div>
-      <div class="field-row"><label>Format</label>${mediaFormatSelect}</div>
       <div class="field-row"><button class="ref-btn" style="width:100%;" data-merge-entry="${e.id}">🔀 Merge duplicate</button></div>
       <div class="field-row"><button class="ref-btn" style="width:100%;" data-delete-entry="${e.id}">✕ Delete this entry</button></div>
     ` : `
       <div class="field-row"><label>Title</label><input type="text" id="edit-title" value="${escapeHtml(e.title)}"></div>
       <div class="field-row"><label>Alt title</label><input type="text" id="edit-altTitle" placeholder="Other names this goes by..." value="${escapeHtml(e.altTitle || '')}"></div>
-      <div class="field-row"><label>Story Status</label>
-        <select id="edit-status" class="shelf-select status-pill-select">
-          <option value="" ${!e.status ? 'selected' : ''}>—</option>
-          <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
-          <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
-          <option value="Discontinued" ${e.status === 'Discontinued' ? 'selected' : ''}>Discontinued</option>
-        </select>
-      </div>
-      <div class="field-row"><label>Format</label>${mediaFormatSelect}</div>
       <div class="field-row"><button class="ref-btn" style="width:100%;" data-merge-entry="${e.id}">🔀 Merge duplicate</button></div>
       <div class="field-row"><button class="ref-btn" style="width:100%;" data-delete-entry="${e.id}">✕ Delete this entry</button></div>
     `;
@@ -7002,17 +7017,6 @@ function renderDetail(e) {
           <button class="icon-btn save" data-force-save="1" title="Save now">✅</button>
           <span class="icon-label">Save</span>
         </div>
-        <div class="icon-action">
-          <button class="icon-btn ${e.favorite ? 'fav-active' : ''}" data-toggle-fav="1" title="Favorite">${e.favorite ? '💜' : '🤍'}</button>
-          <span class="icon-label">Favorite</span>
-        </div>
-        ${!isSFW() ? `<div class="icon-action">
-          <button class="icon-btn ${isHentai(e) ? 'hentai-active' : ''}" data-toggle-hentai="1" title="${isHentai(e) ? 'NSFW — tap to unmark' : 'Mark as NSFW'}">💦</button>
-          <span class="icon-label">NSFW</span>
-        </div>` : ''}
-        <div class="icon-action">
-          <button class="icon-btn ${isOnDrive(e) ? 'hd-active' : ''}" data-toggle-hd="1" title="${isOnDrive(e) ? 'On HD — tap to unmark' : 'Mark as On HD'}">💾</button>
-          <span class="icon-label">On HD</span>
         </div>
       </div>
     </div>
@@ -7040,12 +7044,6 @@ function renderDetail(e) {
           </div>
         </div>
         <div class="reading-link-top-row">
-          <div class="reading-link-shelf-col">
-            <label>Shelf</label>
-            <select class='shelf-select status-pill-select' data-shelf-select='1'>
-              ${SHELVES_READING.map((s) => `<option value='${escapeHtml(s)}' ${e.shelf === s ? 'selected' : ''}>${escapeHtml(shelfLabelForEntry(s, isReading))}</option>`).join('')}
-            </select>
-          </div>
           <div class="reading-chapter-col">
             <label>Chapter</label>
             <input type="text" class="chapter-pill-input" id="current-chapter-input" placeholder="—" value="${escapeHtml(e.currentChapter || '')}">
@@ -7060,6 +7058,42 @@ function renderDetail(e) {
           ${e.readingLink ? `<button class="icon-btn-inline reading-link-clear" data-clear-reading-link="1" title="Remove link">✕</button>` : ''}
         </div>
         </div>
+
+      <!-- 1c. Stats -->
+      <div class="panel">
+        <div class="panel-title-row" style="margin-bottom:10px;">
+          <div class="panel-title" style="margin:0;">Stats</div>
+          <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
+        </div>
+        <div class="field-row"><label>Shelf</label>
+          <select class="shelf-select status-pill-select" data-shelf-select="1">
+            ${SHELVES_READING.map((s) => `<option value="${escapeHtml(s)}" ${e.shelf === s ? 'selected' : ''}>${escapeHtml(shelfLabelForEntry(s, isReading))}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field-row"><label>Story Status</label>
+          <select id="edit-status" class="shelf-select status-pill-select">
+            <option value="" ${!e.status ? 'selected' : ''}>—</option>
+            <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
+            <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
+            <option value="Discontinued" ${e.status === 'Discontinued' ? 'selected' : ''}>Discontinued</option>
+          </select>
+        </div>
+        <div class="field-row"><label>Format</label>${mediaFormatSelect}</div>
+        <div class="field-row"><label>Style</label>
+          <div style="display:flex;gap:8px;flex:1;">
+            <button type="button" class="ref-btn ${isBWStyle(e) ? 'active' : ''}" style="flex:1;" data-toggle-bw="1">B&amp;W</button>
+            <button type="button" class="ref-btn ${isColorStyle(e) ? 'active' : ''}" style="flex:1;" data-toggle-color="1">Color</button>
+          </div>
+        </div>
+        <div class="field-row"><label>Flags</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;flex:1;">
+            ${!isSFW() ? `<button type="button" class="ref-btn ${isHentai(e) ? 'active' : ''}" style="flex:1;" data-toggle-hentai="1">💦 NSFW</button>` : ''}
+            <button type="button" class="ref-btn ${isOnDrive(e) ? 'active' : ''}" style="flex:1;" data-toggle-hd="1">💾 On HD</button>
+            <button type="button" class="ref-btn ${e.favorite ? 'active' : ''}" style="flex:1;" data-toggle-fav="1">${e.favorite ? '💜' : '🤍'} Favorite</button>
+            <button type="button" class="ref-btn ${isArtwork(e) ? 'active' : ''}" style="flex:1;" data-toggle-artwork="1">🎨 Artwork</button>
+          </div>
+        </div>
+      </div>
 
       <!-- 1a2. Tags -->
       <div class="panel">
@@ -8479,6 +8513,39 @@ function attachRootHandlers() {
       e.customTags = (e.customTags || []).filter((t) => normalizeTagKey(t) !== HENTAI_TAG_KEY);
     } else {
       e.customTags = [...(e.customTags || []), 'Hentai'];
+    }
+    await saveEntry(e); render();
+  };
+  const artworkBtn = root.querySelector('[data-toggle-artwork]');
+  if (artworkBtn) artworkBtn.onclick = async () => {
+    const e = getEntry(STATE.entryId);
+    if (isArtwork(e)) {
+      e.tags = (e.tags || []).filter((t) => normalizeTagKey(t) !== ARTWORK_TAG_KEY);
+      e.customTags = (e.customTags || []).filter((t) => normalizeTagKey(t) !== ARTWORK_TAG_KEY);
+    } else {
+      e.customTags = [...(e.customTags || []), 'Artwork'];
+    }
+    await saveEntry(e); render();
+  };
+  const bwBtn = root.querySelector('[data-toggle-bw]');
+  if (bwBtn) bwBtn.onclick = async () => {
+    const e = getEntry(STATE.entryId);
+    if (isBWStyle(e)) {
+      e.tags = (e.tags || []).filter((t) => normalizeTagKey(t) !== BW_STYLE_TAG_KEY);
+      e.customTags = (e.customTags || []).filter((t) => normalizeTagKey(t) !== BW_STYLE_TAG_KEY);
+    } else {
+      e.customTags = [...(e.customTags || []), 'BW Coloring'];
+    }
+    await saveEntry(e); render();
+  };
+  const colorBtn = root.querySelector('[data-toggle-color]');
+  if (colorBtn) colorBtn.onclick = async () => {
+    const e = getEntry(STATE.entryId);
+    if (isColorStyle(e)) {
+      e.tags = (e.tags || []).filter((t) => normalizeTagKey(t) !== COLOR_STYLE_TAG_KEY);
+      e.customTags = (e.customTags || []).filter((t) => normalizeTagKey(t) !== COLOR_STYLE_TAG_KEY);
+    } else {
+      e.customTags = [...(e.customTags || []), 'Color'];
     }
     await saveEntry(e); render();
   };
