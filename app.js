@@ -3532,8 +3532,13 @@ function levenshteinDistance(a, b) {
 // collapse to the same key. Deliberately crude (no dictionary, no AI) but
 // covers the common English pluralization patterns the user asked for.
 function pluralNormalizeKey(normKey) {
+  // Strip only ONE trailing "s" for the common case (apocalypse/apocalypses,
+  // vampire/vampires) -- most English plurals just add "s", including words
+  // that already end in a silent "e". A separate "-es" branch here would
+  // wrongly strip 2 chars off those (turning "vampires" into "vampir"), so
+  // "-es" plurals of s/x/z/ch/sh-ending words (box/boxes) are an accepted,
+  // rarer miss rather than breaking the common case.
   if (normKey.endsWith('ies') && normKey.length > 5) return normKey.slice(0, -3) + 'y';
-  if (normKey.endsWith('es') && normKey.length > 4) return normKey.slice(0, -2);
   if (normKey.endsWith('s') && normKey.length > 3) return normKey.slice(0, -1);
   return normKey;
 }
