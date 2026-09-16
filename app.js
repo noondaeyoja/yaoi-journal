@@ -3410,6 +3410,78 @@ function normalizeTagKey(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+// #361: static tag -> section mapping for the redesigned Tags container
+// (Couple / Themes / Smut / General), built from the confirmed
+// tag-categorization review (#357/#365). Keyed by normalizeTagKey so
+// matching is case/punctuation-insensitive; any tag not listed here
+// (including brand-new custom tags) falls into General by default.
+const TAG_SECTIONS = {
+  'adultcouples': 'Couple', 'agegap': 'Couple', 'awesomesidecouple': 'Couple', 'bara': 'Couple',
+  'baseball': 'Couple', 'bodyguards': 'Couple', 'boxing': 'Couple', 'ceosecretaryrelationship': 'Couple',
+  'carracer': 'Couple', 'childhoodfriends': 'Couple', 'contractmarriage': 'Couple', 'copcriminalpairing': 'Couple',
+  'coworkers': 'Couple', 'crazybottom': 'Couple', 'enemiestolovers': 'Couple', 'fallingforthemark': 'Couple',
+  'fatedlovers': 'Couple', 'forcedproximity': 'Couple', 'friendstolovers': 'Couple', 'genderbender': 'Couple',
+  'idols': 'Couple', 'interspeciesrelationship': 'Couple', 'mafia': 'Couple', 'masterservantrelationship': 'Couple',
+  'matureromance': 'Couple', 'musclebottom': 'Couple', 'muscletop': 'Couple', 'neighbors': 'Couple',
+  'nonhumanprotagonists': 'Couple', 'obsessivelove': 'Couple', 'officeromance': 'Couple', 'onebed': 'Couple',
+  'onenightstand': 'Couple', 'oppositesattract': 'Couple', 'photographer': 'Couple', 'possessivelovers': 'Couple',
+  'prettybottom': 'Couple', 'prettytop': 'Couple', 'psychobottom': 'Couple', 'psychotop': 'Couple',
+  'richpoordynamics': 'Couple', 'roommates': 'Couple', 'royalty': 'Couple', 'secretchild': 'Couple',
+  'skateboarding': 'Couple', 'sports': 'Couple', 'studentteacherrelationship': 'Couple', 'tattooedlead': 'Couple',
+  'yanderebottom': 'Couple', 'yanderetop': 'Couple', 'glasses': 'Couple', 'handicapped': 'Couple',
+  'knight': 'Couple', 'malefemalepairing': 'Couple', 'marriageproposal': 'Couple',
+  'action': 'Themes', 'adventure': 'Themes', 'amnesia': 'Themes', 'animaltransformation': 'Themes',
+  'apocalypse': 'Themes', 'blackmail': 'Themes', 'bodyswapping': 'Themes', 'christmas': 'Themes',
+  'crime': 'Themes', 'curse': 'Themes', 'dark': 'Themes', 'deathofalovedone': 'Themes',
+  'debt': 'Themes', 'delinquents': 'Themes', 'demons': 'Themes', 'despair': 'Themes',
+  'detectives': 'Themes', 'doctors': 'Themes', 'drama': 'Themes', 'drugs': 'Themes',
+  'dystopianpostapocalypse': 'Themes', 'emotionaldamagetragedy': 'Themes', 'espionage': 'Themes', 'fantasy': 'Themes',
+  'funny': 'Themes', 'gangsmafiapaidkillers': 'Themes', 'ghosts': 'Themes', 'gods': 'Themes',
+  'gore': 'Themes', 'halloween': 'Themes', 'hiddenidentity': 'Themes', 'historical': 'Themes',
+  'homophobia': 'Themes', 'horror': 'Themes', 'illness': 'Themes', 'isekai': 'Themes',
+  'kidnapping': 'Themes', 'magic': 'Themes', 'medieval': 'Themes', 'monsters': 'Themes',
+  'mystery': 'Themes', 'noncon': 'Themes', 'orphans': 'Themes', 'pedophilia': 'Themes',
+  'personinastrangeworld': 'Themes', 'philosophical': 'Themes', 'postapocalyptic': 'Themes', 'prisonjail': 'Themes',
+  'psychicpowers': 'Themes', 'psychological': 'Themes', 'redthread': 'Themes', 'reincarnation': 'Themes',
+  'revenge': 'Themes', 'romance': 'Themes', 'sadending': 'Themes', 'schoollife': 'Themes',
+  'scifi': 'Themes', 'serialkillers': 'Themes', 'sliceoflife': 'Themes', 'sooooosweet': 'Themes',
+  'supernatural': 'Themes', 'superpowers': 'Themes', 'survival': 'Themes', 'thriller': 'Themes',
+  'timeloop': 'Themes', 'timetravel': 'Themes', 'trappedinavideogame': 'Themes', 'unrequitedlove': 'Themes',
+  'vampire': 'Themes', 'ww2': 'Themes', 'zombies': 'Themes', 'angst': 'Themes',
+  'church': 'Themes', 'comingofage': 'Themes', 'cute': 'Themes', 'depression': 'Themes',
+  'goodcommunication': 'Themes', 'grief': 'Themes', 'highschool': 'Themes', 'mermaid': 'Themes',
+  'misunderstanding': 'Themes', 'suicide': 'Themes', 'unrequitedending': 'Themes',
+  'bdsm': 'Smut', 'bestiality': 'Smut', 'bloodysex': 'Smut', 'blowjob': 'Smut',
+  'bully': 'Smut', 'camboy': 'Smut', 'choking': 'Smut', 'condom': 'Smut',
+  'crossdressing': 'Smut', 'doublepenetration': 'Smut', 'ecchi': 'Smut', 'extreme': 'Smut',
+  'fetish': 'Smut', 'fisting': 'Smut', 'futa': 'Smut', 'gangrape': 'Smut',
+  'harem': 'Smut', 'hypnosis': 'Smut', 'incest': 'Smut', 'mindbreak': 'Smut',
+  'pwp': 'Smut', 'petplay': 'Smut', 'piss': 'Smut', 'polyamory': 'Smut',
+  'publicplay': 'Smut', 'rape': 'Smut', 'sexworker': 'Smut', 'sexslave': 'Smut',
+  'sexualviolence': 'Smut', 'sexualassault': 'Smut', 'smut': 'Smut', 'sounding': 'Smut',
+  'squirt': 'Smut', 'tentacles': 'Smut', 'trainmolestation': 'Smut', 'uncensored': 'Smut',
+  'mpreg': 'Smut', 'roughsex': 'Smut', 'stockings': 'Smut', 'virgin': 'Smut',
+  'adaptedtoanime': 'General', 'africa': 'General', 'aliens': 'General', 'allboysschool': 'General',
+  'america': 'General', 'ancientkorea': 'General', 'animalcharacteristics': 'General', 'animals': 'General',
+  'anthology': 'General', 'awardwinning': 'General', 'basedonadoujinshi': 'General', 'basedonanovel': 'General',
+  'basedonawebnovel': 'General', 'basedonananime': 'General', 'boardingschool': 'General', 'boyslove': 'General',
+  'cannabalism': 'General', 'cats': 'General', 'chapterartwork': 'General', 'college': 'General',
+  'conveniencestore': 'General', 'countryside': 'General', 'cutebaby': 'General', 'danmei': 'General',
+  'dogs': 'General', 'egypt': 'General', 'egyptianmythology': 'General', 'gl': 'General',
+  'gameelements': 'General', 'genshinimpact': 'General', 'gintama': 'General', 'goblin': 'General',
+  'guideverse': 'General', 'hacker': 'General', 'hiatus': 'General', 'hockey': 'General',
+  'honkaistarrail': 'General', 'jjk': 'General', 'longstrip': 'General', 'manhua': 'General',
+  'music': 'General', 'nobility': 'General', 'officeworkers': 'General', 'omegaverse': 'General',
+  'oneshot': 'General', 'photography': 'General', 'police': 'General', 'russia': 'General',
+  'schoolmates': 'General', 'shortstory': 'General', 'snakes': 'General', 'thai': 'General',
+  'transferstudents': 'General', 'unique': 'General', 'webcomic': 'General', 'worklife': 'General',
+  'childrenaround': 'General', 'cutepet': 'General', 'dj': 'General', 'manipulation': 'General',
+  'noheroacademia': 'General', 'videogame': 'General',
+};
+function sectionForTag(t) {
+  return TAG_SECTIONS[normalizeTagKey(t)] || 'General';
+}
+
 // #335: display-only capitalization -- never touches stored tag text, only
 // how it's shown. Capitalizes the first letter of each word so tags read
 // consistently ("public play" and "Public play" both show as "Public
@@ -6844,11 +6916,24 @@ function renderTagCloudReadOnly(e) {
 }
 
 function renderTagChipsInline(e) {
+  // #361: group the entry's tags into the 4 fixed sections (Couple/Themes/
+  // Smut/General) per the confirmed tag-categorization mapping, each with
+  // its own pink section-header button, a borderless bunch of that
+  // section's tags, and its own "+ NEW TAG" affordance (all wired to the
+  // same shared TAG_ADD_MODE add-panel below).
   const all = (e.tags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: false }))
     .concat((e.customTags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: true })));
-  const chips = all.map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}" data-remove-tag="${escapeHtml(t)}" title="Click to remove">${escapeHtml(capTag(t))}</div>`).join('');
-  const addChip = `<div class="tag-chip add-tag-chip ${TAG_ADD_MODE ? 'active' : ''}" data-tag-add-toggle="1">+ NEW TAG</div>`;
-  return chips + addChip;
+  const bySection = { Couple: [], Themes: [], Smut: [], General: [] };
+  all.forEach((item) => { bySection[sectionForTag(item.t)].push(item); });
+  const sectionOrder = ['Couple', 'Themes', 'Smut', 'General'];
+  return sectionOrder.map((sec) => {
+    const chips = bySection[sec].map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}" data-remove-tag="${escapeHtml(t)}" title="Click to remove">${escapeHtml(capTag(t))}</div>`).join('');
+    const addChip = `<div class="tag-chip add-tag-chip ${TAG_ADD_MODE ? 'active' : ''}" data-tag-add-toggle="1">+ NEW TAG</div>`;
+    return `<div class="tag-section-row">
+      <div class="tag-section-header">${sec}</div>
+      <div class="tag-section-tags">${chips}${addChip}</div>
+    </div>`;
+  }).join('');
 }
 
 function renderDetailTagPool(e) {
@@ -7083,7 +7168,7 @@ function renderDetail(e) {
           <div class="panel-title" style="margin:0;">Tags</div>
           <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
         </div>
-        <div class="tag-cloud">${renderTagChipsInline(e)}</div>
+        <div class="tag-sections">${renderTagChipsInline(e)}</div>
         ${TAG_ADD_MODE ? `
         <div class="tag-ms-panel open" style="margin-top:10px;">
           <div class="tag-picker-box">
@@ -8761,8 +8846,9 @@ function attachRootHandlers() {
     showToast('Tags saved!');
     render();
   };
-  const tagAddToggleBtn = root.querySelector('[data-tag-add-toggle]');
-  if (tagAddToggleBtn) tagAddToggleBtn.onclick = () => { TAG_ADD_MODE = !TAG_ADD_MODE; TAG_ADD_AUTOFOCUS = TAG_ADD_MODE; render(); };
+  root.querySelectorAll('[data-tag-add-toggle]').forEach((tagAddToggleBtn) => {
+    tagAddToggleBtn.onclick = () => { TAG_ADD_MODE = !TAG_ADD_MODE; TAG_ADD_AUTOFOCUS = TAG_ADD_MODE; render(); };
+  });
   const newTagInputInline = root.querySelector('#new-tag-input-inline');
   if (newTagInputInline) {
     if (TAG_ADD_AUTOFOCUS) { newTagInputInline.focus(); TAG_ADD_AUTOFOCUS = false; }
