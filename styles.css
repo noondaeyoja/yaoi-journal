@@ -542,6 +542,24 @@ text-align: center; font-family: inherit;
 background: var(--pink-soft); color: var(--text); border: 2px solid var(--border); border-radius: 0;
 padding: 4px 10px; font-size: 12px; display: flex; align-items: center; gap: 5px; cursor: pointer; font-weight: 600;
 }
+/* #361: redesigned Tags container -- 4 fixed sections (Couple/Themes/Smut/
+   General), each a pink 3D-block header button on the left plus a
+   borderless bunch of that section's tags in a light-blue space on the
+   right, with a "+ NEW TAG" chip trailing the bunch. */
+.tag-sections { display: flex; flex-direction: column; gap: 10px; }
+.tag-section-row { display: flex; align-items: stretch; gap: 10px; }
+.tag-section-header {
+flex: 0 0 100px; display: flex; align-items: center; justify-content: center; text-align: center;
+background: var(--pink); color: var(--text); border: 3px solid var(--border); border-radius: 0;
+box-shadow: 3px 3px 0 var(--border); font-weight: 800; text-transform: uppercase; font-size: 12px;
+padding: 8px 4px; letter-spacing: .02em;
+}
+.tag-section-tags {
+flex: 1; display: flex; flex-wrap: wrap; align-content: flex-start; align-items: flex-start; gap: 6px;
+background: var(--card-2); border-radius: 0; padding: 8px; min-height: 20px;
+}
+.tag-section-tags .tag-chip { border: none; }
+.tag-section-tags .tag-chip.custom { border: none; }
 .tag-chip.custom { background: var(--pink-soft); color: var(--pink); border-color: var(--pink); }
 .tag-chip.tag-removed { opacity: .35; text-decoration: line-through; }
 .tag-chip.readonly { cursor: pointer; }
