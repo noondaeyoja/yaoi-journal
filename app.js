@@ -212,6 +212,7 @@ let ALL_H_IMAGES = [];             // standalone H-tab uploads (not pulled from 
 let DETAIL_EDIT_MODE = false;      // whether the detail page's top fields are in edit mode
 let TAG_EDIT_MODE = false;
 let TAG_ADD_MODE = false;       // whether the inline "+ NEW TAG" input is showing
+let TAG_ADD_SECTION = null;     // #369: which section's "+ NEW TAG" panel is open (null = closed)
 let TAG_ADD_AUTOFOCUS = false;  // one-shot: only steal focus into the tag input when the panel was just opened or a tag was just typed -- NOT on every background re-render (that was fighting clicks on tag-pool chips via scroll/refocus)         // whether the Tags panel is showing its editable (toggle/add/save) UI
 let TAG_ENTRIES_FILTER = null;     // which tag name the "view entries with this tag" screen is showing
 let TAG_FILTER_OPEN = false;       // whether the homepage tag multi-select dropdown panel is open
@@ -512,6 +513,21 @@ async function saveEntry(entry) {
   if (idx > -1) ALL_ENTRIES[idx] = entry; else ALL_ENTRIES.push(entry);
   pushEntryToFirestore(entry);
 }
+
+// #370/#371: force whatever field is currently focused on the detail page
+// to save right now, by blurring it (which fires that field's own onblur
+// handler) and then saving the entry once more directly. Used both by the
+// visibilitychange/pagehide safety net below.
+async function forceSaveActiveField() {
+  if (STATE.view !== 'detail' || !STATE.entryId) return;
+  if (document.activeElement && typeof document.activeElement.blur === 'function') document.activeElement.blur();
+  const e = getEntry(STATE.entryId);
+  if (e) await saveEntry(e);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) forceSaveActiveField();
+});
+window.addEventListener('pagehide', () => { forceSaveActiveField(); });
 
 function getEntry(id) {
   return ALL_ENTRIES.find((e) => e.id === id);
@@ -2508,6 +2524,7 @@ function navigate(view, entryId, opts) {
   TAG_EDIT_MODE = false;
   TAG_FILTER_OPEN = false;
   TAG_ADD_MODE = false;
+  TAG_ADD_SECTION = null;
   TAG_ADD_AUTOFOCUS = false;
   window.scrollTo(0, 0);
   persistNavState();
@@ -7034,17 +7051,40 @@ function renderTagChipsInline(e) {
   const sectionOrder = ['Couple', 'Themes', 'Smut', 'General'];
   return sectionOrder.map((sec) => {
     const chips = bySection[sec].map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}" data-remove-tag="${escapeHtml(t)}" title="Click to remove">${escapeHtml(capTag(t))}</div>`).join('');
-    const addChip = `<div class="tag-chip add-tag-chip ${TAG_ADD_MODE ? 'active' : ''}" data-tag-add-toggle="1">+ NEW TAG</div>`;
+    const addChip = `<div class="tag-chip add-tag-chip ${TAG_ADD_SECTION === sec ? 'active' : ''}" data-tag-add-toggle="${sec}">+ NEW TAG</div>`;
     return `<div class="tag-section-row">
       <div class="tag-section-header">${sec}</div>
       <div class="tag-section-tags">${chips}${addChip}</div>
-    </div>`;
+    </div>
+    ${TAG_ADD_SECTION === sec ? renderTagAddPanelForSection(e, sec) : ''}`;
   }).join('');
 }
 
-function renderDetailTagPool(e) {
+// #369: the "+ NEW TAG" add panel for one specific Tags-container section --
+// its existing-tag pool is filtered to that section's own tags only, so
+// e.g. opening it from Couple only offers Couple tags (Muscle Top, etc.)
+// instead of the whole 240-tag pool. A brand-new tag typed here (one that
+// doesn't already exist anywhere) gets pinned to this section via
+// setTagSectionOverride so it shows up here next render instead of
+// defaulting to General.
+function renderTagAddPanelForSection(e, sec) {
+  return `
+    <div class="tag-ms-panel open" style="margin-top:6px;">
+      <div class="tag-picker-box">
+        <input type="text" id="new-tag-input-inline" class="tag-picker-input" placeholder="Type a tag and press Enter..." autocomplete="off">
+      </div>
+      <div class="tag-pool" id="detail-tag-pool">
+        ${renderDetailTagPool(e, sec) || '<div style="color:var(--text-dim);font-size:12px;padding:4px;">No tags yet.</div>'}
+      </div>
+    </div>`;
+}
+
+function renderDetailTagPool(e, sec) {
   const existingLower = new Set([...(e.tags || []), ...(e.customTags || [])].map((t) => t.toLowerCase()));
-  const all = Object.keys(allTagCounts()).filter((t) => !isHiddenTag(t)).sort((a, b) => a.localeCompare(b));
+  const all = Object.keys(allTagCounts())
+    .filter((t) => !isHiddenTag(t))
+    .filter((t) => !sec || sectionForTag(t) === sec)
+    .sort((a, b) => a.localeCompare(b));
   return all.map((t) => `<span class="tag-pool-chip ${existingLower.has(t.toLowerCase()) ? 'active' : ''}" data-toggle-detail-tag="${escapeHtml(t)}">${escapeHtml(capTag(t))}</span>`).join('');
 }
 
@@ -7186,10 +7226,6 @@ function renderDetail(e) {
         <h2>${escapeHtml(e.title)}</h2>
       </div>
       <div class="detail-actions-row">
-        <div class="icon-action">
-          <button class="icon-btn save" data-force-save="1" title="Save now">✅</button>
-          <span class="icon-label">Save</span>
-        </div>
         </div>
       </div>
     </div>
@@ -7213,6 +7249,7 @@ function renderDetail(e) {
           <div>
             ${topFieldsHtml}
             ${confirmedSummaryHtml}
+            ${crossRefRowHtml}
             ${matchColumnHtml ? `<div class="field-row" style="margin-top:12px;margin-bottom:18px;"><label>Summary</label>${matchColumnHtml}</div>` : ''}
           </div>
         </div>
@@ -7238,33 +7275,31 @@ function renderDetail(e) {
           <div class="panel-title" style="margin:0;">Stats</div>
           <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
         </div>
-        <div class="field-row"><label>Shelf</label>
+        <div class="stats-rows">
+        <div class="stats-row"><div class="stats-row-label">Shelf</div><div class="stats-row-content">
           <select class="shelf-select status-pill-select" data-shelf-select="1">
             ${SHELVES_READING.map((s) => `<option value="${escapeHtml(s)}" ${e.shelf === s ? 'selected' : ''}>${escapeHtml(shelfLabelForEntry(s, isReading))}</option>`).join('')}
           </select>
-        </div>
-        <div class="field-row"><label>Story Status</label>
+        </div></div>
+        <div class="stats-row"><div class="stats-row-label">Story Status</div><div class="stats-row-content">
           <select id="edit-status" class="shelf-select status-pill-select">
             <option value="" ${!e.status ? 'selected' : ''}>—</option>
             <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
             <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
             <option value="Discontinued" ${e.status === 'Discontinued' ? 'selected' : ''}>Discontinued</option>
           </select>
-        </div>
-        <div class="field-row"><label>Format</label>${mediaFormatSelect}</div>
-        <div class="field-row"><label>Style</label>
-          <div style="display:flex;gap:8px;flex:1;">
+        </div></div>
+        <div class="stats-row"><div class="stats-row-label">Format</div><div class="stats-row-content">${mediaFormatSelect}</div></div>
+        <div class="stats-row"><div class="stats-row-label">Style</div><div class="stats-row-content" style="display:flex;gap:8px;">
             <button type="button" class="ref-btn ${isBWStyle(e) ? 'active' : ''}" style="flex:1;" data-toggle-bw="1">B&amp;W</button>
             <button type="button" class="ref-btn ${isColorStyle(e) ? 'active' : ''}" style="flex:1;" data-toggle-color="1">Color</button>
-          </div>
-        </div>
-        <div class="field-row"><label>Flags</label>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;flex:1;">
+        </div></div>
+        <div class="stats-row"><div class="stats-row-label">Flags</div><div class="stats-row-content" style="display:flex;gap:8px;flex-wrap:wrap;">
             ${!isSFW() ? `<button type="button" class="ref-btn ${isHentai(e) ? 'active' : ''}" style="flex:1;" data-toggle-hentai="1">💦 NSFW</button>` : ''}
             <button type="button" class="ref-btn ${isOnDrive(e) ? 'active' : ''}" style="flex:1;" data-toggle-hd="1">💾 On HD</button>
             <button type="button" class="ref-btn ${e.favorite ? 'active' : ''}" style="flex:1;" data-toggle-fav="1">${e.favorite ? '💜' : '🤍'} Favorite</button>
             <button type="button" class="ref-btn ${isArtwork(e) ? 'active' : ''}" style="flex:1;" data-toggle-artwork="1">🎨 Artwork</button>
-          </div>
+        </div></div>
         </div>
       </div>
 
@@ -7275,18 +7310,7 @@ function renderDetail(e) {
           <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
         </div>
         <div class="tag-sections">${renderTagChipsInline(e)}</div>
-        ${TAG_ADD_MODE ? `
-        <div class="tag-ms-panel open" style="margin-top:10px;">
-          <div class="tag-picker-box">
-            <input type="text" id="new-tag-input-inline" class="tag-picker-input" placeholder="Type a tag and press Enter..." autocomplete="off">
-          </div>
-          <div class="tag-pool" id="detail-tag-pool">
-            ${renderDetailTagPool(e) || '<div style="color:var(--text-dim);font-size:12px;padding:4px;">No tags yet.</div>'}
-          </div>
-        </div>
-        ` : ''}
       </div>
-      ${crossRefRowHtml}
 
       <!-- 2. Ratings -->
       <div class="panel">
@@ -8628,16 +8652,6 @@ function attachRootHandlers() {
   });
 
   // Detail view handlers
-  const forceSaveBtn = root.querySelector('[data-force-save]');
-  if (forceSaveBtn) forceSaveBtn.onclick = async () => {
-    // Blur whatever field is currently focused first, so its own onblur
-    // handler (notes, char notes, etc.) fires and writes its latest value
-    // onto the entry object before this does one final explicit save.
-    if (document.activeElement && typeof document.activeElement.blur === 'function') document.activeElement.blur();
-    const e = getEntry(STATE.entryId);
-    if (e) await saveEntry(e);
-    showToast('✅ Saved');
-  };
   const favBtn = root.querySelector('[data-toggle-fav]');
   if (favBtn) favBtn.onclick = async () => {
     const e = getEntry(STATE.entryId);
@@ -8958,7 +8972,13 @@ function attachRootHandlers() {
     render();
   };
   root.querySelectorAll('[data-tag-add-toggle]').forEach((tagAddToggleBtn) => {
-    tagAddToggleBtn.onclick = () => { TAG_ADD_MODE = !TAG_ADD_MODE; TAG_ADD_AUTOFOCUS = TAG_ADD_MODE; render(); };
+    tagAddToggleBtn.onclick = () => {
+      const sec = tagAddToggleBtn.getAttribute('data-tag-add-toggle');
+      TAG_ADD_SECTION = TAG_ADD_SECTION === sec ? null : sec;
+      TAG_ADD_MODE = !!TAG_ADD_SECTION;
+      TAG_ADD_AUTOFOCUS = TAG_ADD_MODE;
+      render();
+    };
   });
   const newTagInputInline = root.querySelector('#new-tag-input-inline');
   if (newTagInputInline) {
@@ -8985,6 +9005,12 @@ function attachRootHandlers() {
         return;
       }
       e.customTags = [...(e.customTags || []), val];
+      // #369: a brand-new tag (never used anywhere before) gets pinned to
+      // whichever section box its "+ NEW TAG" was opened from, so it shows
+      // up there instead of defaulting to General.
+      if (!canonical && TAG_ADD_SECTION) {
+        await setTagSectionOverride(val, TAG_ADD_SECTION);
+      }
       await saveEntry(e);
       showToast('Tag added');
       TAG_ADD_AUTOFOCUS = true;
