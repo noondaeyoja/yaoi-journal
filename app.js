@@ -3481,6 +3481,14 @@ const TAG_SECTIONS = {
 function sectionForTag(t) {
   return TAG_SECTIONS[normalizeTagKey(t)] || 'General';
 }
+// #362: Tag Manager parenthetical marker -- only for tags that are actually
+// listed in TAG_SECTIONS (i.e. one of the 4 Tags-container buckets); tags
+// with no explicit section (flags, NSFW/On HD/style tags, brand-new custom
+// tags not yet categorized) get no marker.
+function tagMgrSectionSuffix(t) {
+  const sec = TAG_SECTIONS[normalizeTagKey(t)];
+  return sec ? ` <span class="tagmgr-section-tag">(${sec.toLowerCase()})</span>` : '';
+}
 
 // #335: display-only capitalization -- never touches stored tag text, only
 // how it's shown. Capitalizes the first letter of each word so tags read
@@ -3605,7 +3613,7 @@ function renderTagManager() {
     ? names.map((t) => `
         <div class="tagmgr-row" data-tag-name="${escapeHtml(t)}">
           <div class="tagmgr-click-area" data-tagmgr-view="${escapeHtml(t)}" title="View entries tagged &quot;${escapeHtml(t)}&quot;">
-            <div class="tagmgr-name">${escapeHtml(capTag(t))}</div>
+            <div class="tagmgr-name">${escapeHtml(capTag(t))}${tagMgrSectionSuffix(t)}</div>
             <div class="tagmgr-count">${counts[t]} entr${counts[t] === 1 ? 'y' : 'ies'}</div>
           </div>
           <div class="tagmgr-actions">
@@ -3618,7 +3626,7 @@ function renderTagManager() {
     : names.map((t) => `
         <div class="tagmgr-row" data-tag-name="${escapeHtml(t)}">
           <div class="tagmgr-click-area" data-tagmgr-view="${escapeHtml(t)}" title="View entries tagged &quot;${escapeHtml(t)}&quot;">
-            <div class="tagmgr-name">${escapeHtml(t)}</div>
+            <div class="tagmgr-name">${escapeHtml(t)}${tagMgrSectionSuffix(t)}</div>
             <div class="tagmgr-count">${counts[t]} entr${counts[t] === 1 ? 'y' : 'ies'}</div>
           </div>
           <div class="tagmgr-actions">
