@@ -3527,11 +3527,31 @@ function levenshteinDistance(a, b) {
 // `query` — substring matches (either direction) plus a small edit-distance
 // tolerance for typos/spacing/casing differences. Exact matches (already
 // caught by the "already exists" check in the Add handler) are excluded.
+// #366: singular/plural equivalence -- strips a trailing "s"/"es"/"ies" so
+// "Apocalypse"/"Apocalypses", "Vampire"/"Vampires", "Baby"/"Babies" all
+// collapse to the same key. Deliberately crude (no dictionary, no AI) but
+// covers the common English pluralization patterns the user asked for.
+function pluralNormalizeKey(normKey) {
+  if (normKey.endsWith('ies') && normKey.length > 5) return normKey.slice(0, -3) + 'y';
+  if (normKey.endsWith('es') && normKey.length > 4) return normKey.slice(0, -2);
+  if (normKey.endsWith('s') && normKey.length > 3) return normKey.slice(0, -1);
+  return normKey;
+}
+// #366: word-order-independent key for multi-word tags -- "Paid Killers
+// Mafia" and "Mafia Paid Killers" both become "killers mafia paid", so
+// reordered phrasings of the same words are caught even though they share
+// no useful substring and have a large edit distance.
+function tagWordOrderKey(name) {
+  const words = String(name || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).sort();
+  return words.length > 1 ? words.join(' ') : '';
+}
 function findSimilarTags(query) {
   const q = normalizeTagKey(query);
   if (!q || q.length < 2) return [];
   const names = Object.keys(allTagCounts());
   const results = [];
+  const qPlural = pluralNormalizeKey(q);
+  const qWordKey = tagWordOrderKey(query);
   for (const name of names) {
     const norm = normalizeTagKey(name);
     if (!norm || norm === q) continue;
@@ -3542,6 +3562,11 @@ function findSimilarTags(query) {
     if (!match) {
       const dist = levenshteinDistance(norm, q);
       if (dist <= 2 && Math.max(norm.length, q.length) >= 4) match = true;
+    }
+    if (!match && pluralNormalizeKey(norm) === qPlural) match = true;
+    if (!match) {
+      const nameWordKey = tagWordOrderKey(name);
+      if (nameWordKey && qWordKey && nameWordKey === qWordKey) match = true;
     }
     if (match) results.push(name);
   }
