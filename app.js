@@ -807,6 +807,12 @@ async function applyMetaSnapshot(data) {
     if (USER_HIDDEN_TAG_KEYS.size !== before) changed = true;
     await idbPut(STORE_META, { key: 'userHiddenTagKeys', value: Array.from(USER_HIDDEN_TAG_KEYS) });
   }
+  if (data.tagSectionOverrides && typeof data.tagSectionOverrides === 'object') {
+    const merged = { ...TAG_SECTION_OVERRIDES, ...data.tagSectionOverrides };
+    if (JSON.stringify(merged) !== JSON.stringify(TAG_SECTION_OVERRIDES)) changed = true;
+    TAG_SECTION_OVERRIDES = merged;
+    await idbPut(STORE_META, { key: 'tagSectionOverrides', value: TAG_SECTION_OVERRIDES });
+  }
   if (Array.isArray(data.ignoredTagSuggestions) && data.ignoredTagSuggestions.length) {
     const before = IGNORED_TAG_SUGGESTIONS.size;
     IGNORED_TAG_SUGGESTIONS = new Set([...IGNORED_TAG_SUGGESTIONS, ...data.ignoredTagSuggestions]);
@@ -3038,7 +3044,12 @@ let SHOW_HIDDEN_TAGS = false;
 // DELETED_TAG_KEYS, the underlying entry data is untouched; the tag just
 // stays off the homepage filter dropdown/tag displays until switched back on.
 let USER_HIDDEN_TAG_KEYS = new Set();
-// Which Tag Manager tab is showing: 'active' or 'hidden'.
+// #367: per-tag overrides that move a tag into a different Tags-container
+// section than its default in TAG_SECTIONS (user drag-and-drop in the Tag
+// Manager's Manage tab). Keyed by normalizeTagKey(tag) -> section name.
+// Persisted (idb + Firestore meta) the same way as USER_HIDDEN_TAG_KEYS.
+let TAG_SECTION_OVERRIDES = {};
+// Which Tag Manager tab is showing: 'active', 'hidden', or 'manage'.
 let TAG_MGR_TAB = 'active';
 // Search text to restore + re-apply after an auto tab-switch triggered by the Tag Manager search box.
 let TAG_MGR_SEARCH_PENDING = '';
@@ -3075,6 +3086,14 @@ async function setTagSoftHidden(name, hidden) {
   const arr = Array.from(USER_HIDDEN_TAG_KEYS);
   await idbPut(STORE_META, { key: 'userHiddenTagKeys', value: arr });
   pushMetaField('userHiddenTagKeys', arr);
+}
+// #367: user drag-and-drop in Tag Manager's Manage tab reassigns a tag to a
+// different section bucket than its TAG_SECTIONS default.
+async function setTagSectionOverride(name, section) {
+  const key = normalizeTagKey(name);
+  TAG_SECTION_OVERRIDES[key] = section;
+  await idbPut(STORE_META, { key: 'tagSectionOverrides', value: TAG_SECTION_OVERRIDES });
+  pushMetaField('tagSectionOverrides', TAG_SECTION_OVERRIDES);
 }
 async function dismissTagSuggestion(sig) {
   IGNORED_TAG_SUGGESTIONS.add(sig);
@@ -3483,7 +3502,8 @@ const TAG_SECTIONS = {
   'noheroacademia': 'General', 'videogame': 'General',
 };
 function sectionForTag(t) {
-  return TAG_SECTIONS[normalizeTagKey(t)] || 'General';
+  const key = normalizeTagKey(t);
+  return TAG_SECTION_OVERRIDES[key] || TAG_SECTIONS[key] || 'General';
 }
 // #362: Tag Manager parenthetical marker -- only for tags that are actually
 // listed in TAG_SECTIONS (i.e. one of the 4 Tags-container buckets); tags
@@ -3607,6 +3627,48 @@ function tagMergeSuggestions(activeNames, counts) {
   return out.sort((x, y) => x.combinedCount - y.combinedCount).slice(0, 6);
 }
 
+// #367: tags that are handled by dedicated toggle buttons elsewhere (flag
+// auto-tags, NSFW/On HD/Favorite/Artwork stat buttons, BW/Color style
+// buttons) never show up as draggable chips in the Manage Sections tab --
+// they aren't part of the Couple/Themes/Smut/General bucket system at all.
+const TAG_MGR_EXCLUDED_KEYS = new Set([
+  'greenflagmaincharacter', 'greenflagmainlead',
+  'redflagmaincharacter', 'redflagmainlead',
+  'blackflagmaincharacter', 'blackflagmainlead',
+  'onhd', 'hentai', 'artwork', 'favorite',
+  'bwcoloring', 'color',
+]);
+// #367: Tag Manager "Manage Sections" tab -- shows the 4 bucket headers
+// (reusing the same .tag-section-header/.tag-section-tags look built for
+// #361) with every real, non-excluded tag as a draggable chip inside
+// whichever bucket it currently resolves to via sectionForTag(). Dropping
+// a chip on a different bucket calls setTagSectionOverride() (wired below
+// in the drag/drop handlers) and re-renders.
+function renderTagManageBuckets() {
+  const counts = allTagCounts();
+  const names = Object.keys(counts)
+    .filter((t) => !isHiddenTag(t))
+    .filter((t) => !TAG_MGR_EXCLUDED_KEYS.has(normalizeTagKey(t)))
+    .sort((a, b) => a.localeCompare(b));
+  const buckets = { Couple: [], Themes: [], Smut: [], General: [] };
+  names.forEach((t) => { buckets[sectionForTag(t)].push(t); });
+  const sectionOrder = ['Couple', 'Themes', 'Smut', 'General'];
+  return `
+    <div style="color:var(--text-dim);font-size:12px;margin-bottom:10px;">
+      Drag a tag into a different bucket to move it to that section. Changes save automatically and sync across devices.
+    </div>
+    <div class="tag-manage-buckets">
+      ${sectionOrder.map((sec) => `
+        <div class="tag-section-row">
+          <div class="tag-section-header">${sec}</div>
+          <div class="tag-section-tags tag-manage-drop-zone" data-manage-dropzone="${sec}">
+            ${buckets[sec].map((t) => `<div class="tag-chip readonly manage-drag-chip" draggable="true" data-manage-tag="${escapeHtml(t)}" title="Drag to move to a different section">${escapeHtml(capTag(t))}</div>`).join('')}
+          </div>
+        </div>
+      `).join('')}
+    </div>`;
+}
+
 function renderTagManager() {
   const counts = allTagCounts();
   const allNames = Object.keys(counts).sort((a, b) => a.localeCompare(b));
@@ -3682,6 +3744,7 @@ function renderTagManager() {
     <div class="tagmgr-tabs">
       <button class="tagmgr-tab ${TAG_MGR_TAB === 'active' ? 'active' : ''}" data-tagmgr-tab="active">Active (${activeNames.length})</button>
       <button class="tagmgr-tab ${TAG_MGR_TAB === 'hidden' ? 'active' : ''}" data-tagmgr-tab="hidden">Hidden (${hiddenActiveNames.length + DELETED_TAG_KEYS.size})</button>
+      <button class="tagmgr-tab ${TAG_MGR_TAB === 'manage' ? 'active' : ''}" data-tagmgr-tab="manage">Manage Sections</button>
     </div>`;
 
   return `
@@ -3696,8 +3759,9 @@ function renderTagManager() {
       </div>
       ${suggestionsHtml}
       ${tabsHtml}
+      ${TAG_MGR_TAB === 'manage' ? renderTagManageBuckets() : `
       <div id="tagmgr-list">${rows || `<div class="empty-state">${TAG_MGR_TAB === 'hidden' ? 'No hidden tags.' : 'No tags yet.'}</div>`}</div>
-      ${deletedRows}
+      ${deletedRows}`}
     </main>
     ${renderBottomNav('tags')}
   `;
@@ -9430,6 +9494,29 @@ function attachRootHandlers() {
       render();
     };
   });
+  // #367: Manage Sections tab drag-and-drop wiring.
+  root.querySelectorAll('[data-manage-tag]').forEach((el) => {
+    el.addEventListener('dragstart', (ev) => {
+      ev.dataTransfer.setData('text/plain', el.getAttribute('data-manage-tag'));
+      ev.dataTransfer.effectAllowed = 'move';
+      el.classList.add('dragging');
+    });
+    el.addEventListener('dragend', () => { el.classList.remove('dragging'); });
+  });
+  root.querySelectorAll('[data-manage-dropzone]').forEach((zone) => {
+    zone.addEventListener('dragover', (ev) => { ev.preventDefault(); zone.classList.add('drag-over'); });
+    zone.addEventListener('dragleave', () => { zone.classList.remove('drag-over'); });
+    zone.addEventListener('drop', async (ev) => {
+      ev.preventDefault();
+      zone.classList.remove('drag-over');
+      const tagName = ev.dataTransfer.getData('text/plain');
+      const section = zone.getAttribute('data-manage-dropzone');
+      if (!tagName || !section || sectionForTag(tagName) === section) return;
+      await setTagSectionOverride(tagName, section);
+      showToast(`Moved "${capTag(tagName)}" to ${section}`);
+      render();
+    });
+  });
   root.querySelectorAll('[data-suggest-hide]').forEach((el) => {
     el.onclick = async () => {
       await setTagSoftHidden(el.getAttribute('data-suggest-hide'), true);
@@ -10349,6 +10436,8 @@ async function boot() {
     if (savedDeletedReactionIds && Array.isArray(savedDeletedReactionIds.value)) DELETED_REACTION_IDS = new Set(savedDeletedReactionIds.value);
     const savedUserHidden = await idbGet(STORE_META, 'userHiddenTagKeys');
     if (savedUserHidden && Array.isArray(savedUserHidden.value)) USER_HIDDEN_TAG_KEYS = new Set(savedUserHidden.value);
+    const savedTagSectionOverrides = await idbGet(STORE_META, 'tagSectionOverrides');
+    if (savedTagSectionOverrides && savedTagSectionOverrides.value && typeof savedTagSectionOverrides.value === 'object') TAG_SECTION_OVERRIDES = savedTagSectionOverrides.value;
     const savedIgnoredSugg = await idbGet(STORE_META, 'ignoredTagSuggestions');
     if (savedIgnoredSugg && Array.isArray(savedIgnoredSugg.value)) IGNORED_TAG_SUGGESTIONS = new Set(savedIgnoredSugg.value);
     const savedCustomMoods = await idbGet(STORE_META, 'customMoods');
