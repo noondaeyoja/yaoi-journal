@@ -800,6 +800,12 @@ border: 1px solid var(--border); border-radius: 0; margin-bottom: 8px;
 .tagmgr-click-area { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; cursor: pointer; }
 .tagmgr-name { flex: 1; font-size: 13.5px; color: var(--text); min-width: 0; }
 .tagmgr-section-tag { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: lowercase; }
+/* #367: Manage Sections tab -- reuses .tag-section-row/.tag-section-header/
+   .tag-section-tags from #361, plus drag state for the chips/drop zones. */
+.tag-manage-buckets { display: flex; flex-direction: column; gap: 10px; }
+.manage-drag-chip { cursor: grab; }
+.manage-drag-chip.dragging { opacity: 0.4; }
+.tag-manage-drop-zone.drag-over { outline: 3px dashed var(--pink); outline-offset: -3px; }
 .tagmgr-count { font-size: 11.5px; color: var(--text-dim); white-space: nowrap; }
 .tagmgr-actions { display: flex; gap: 8px; align-items: center; }
 .tagmgr-actions .icon-btn-inline { font-size: 16px; padding: 2px; }
