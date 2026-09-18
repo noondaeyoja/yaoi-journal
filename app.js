@@ -4542,6 +4542,14 @@ async function resetDismissedImageDupGroups() {
 }
 
 let IMAGES_TAB = 'attached'; // 'attached' | 'unattached' | 'duplicates'
+// #379: each of the Images/Reactions gallery tabs used to render EVERY
+// matching image into one innerHTML string in a single shot -- with images
+// stored as inline base64 data URIs, a full pool (1300+ images) produced a
+// 255MB+ HTML string that reliably crashed iOS Safari (both the installed
+// PWA and a regular tab) with "A problem repeatedly occurred". Render in
+// bounded pages instead; see renderImageMasonryBatch() below.
+const IMAGES_PAGE_SIZE = 60;
+let IMAGES_RENDER_LIMIT = IMAGES_PAGE_SIZE;
 let IMAGE_DUP_GROUPS = null; // null = not scanned yet this session
 let IMAGE_DUP_SCANNING = false;
 async function scanForImageDuplicates() {
@@ -4583,6 +4591,15 @@ async function scanForImageDuplicates() {
   IMAGE_DUP_GROUPS = groups;
   IMAGE_DUP_SCANNING = false;
   render();
+}
+
+function renderImageMasonryBatch(list) {
+  const visible = list.slice(0, IMAGES_RENDER_LIMIT);
+  const remaining = list.length - visible.length;
+  const loadMore = remaining > 0
+    ? `<button class="ref-btn" style="width:100%;margin-top:10px;" data-images-load-more="1">Load ${Math.min(remaining, IMAGES_PAGE_SIZE)} more (${remaining} left)</button>`
+    : '';
+  return `<div class="image-masonry">${visible.map((img) => masonryItem(img)).join('')}</div>${loadMore}`;
 }
 
 function renderReactionsLibrary() {
@@ -4646,9 +4663,9 @@ function renderReactionsLibrary() {
     // point is being able to click a mood chip and see every image tagged
     // with it in one place, same as Reactions/H already work, instead of
     // having to check Attached and Unattached separately for the same mood.
-    tabBody = items.length ? `<div class="image-masonry">${items.map((img) => masonryItem(img)).join('')}</div>` : `<div class="empty-state">No images match. Try clearing the filter/search.</div>`;
+    tabBody = items.length ? renderImageMasonryBatch(items) : `<div class="empty-state">No images match. Try clearing the filter/search.</div>`;
   } else if (IMAGES_TAB === 'unattached') {
-    tabBody = unattached.length ? `<div class="image-masonry">${unattached.map((img) => masonryItem(img)).join('')}</div>` : `<div class="empty-state">Everything's attached to a read. 🎉</div>`;
+    tabBody = unattached.length ? renderImageMasonryBatch(unattached) : `<div class="empty-state">Everything's attached to a read. 🎉</div>`;
   } else if (IMAGES_TAB === 'duplicates') {
     // A pair dismissed via "Not duplicates" is skipped by every future scan
     // forever (see IGNORED_IMAGE_DUP_GROUPS/imageDupSignature) — with no way
@@ -4677,7 +4694,7 @@ function renderReactionsLibrary() {
           </div>`).join('');
     }
   } else {
-    tabBody = attached.length ? `<div class="image-masonry">${attached.map((img) => masonryItem(img)).join('')}</div>` : `<div class="empty-state">No attached images yet.</div>`;
+    tabBody = attached.length ? renderImageMasonryBatch(attached) : `<div class="empty-state">No attached images yet.</div>`;
   }
 
   // Same built-ins-plus-custom list Reactions uses (allMoodOptions()) —
@@ -9315,12 +9332,13 @@ function attachRootHandlers() {
     render();
   };
   root.querySelectorAll('[data-images-tab]').forEach((el) => {
-    el.onclick = () => { IMAGES_TAB = el.getAttribute('data-images-tab'); render(); };
+    el.onclick = () => { IMAGES_TAB = el.getAttribute('data-images-tab'); IMAGES_RENDER_LIMIT = IMAGES_PAGE_SIZE; render(); };
   });
   root.querySelectorAll('[data-images-kind-filter]').forEach((el) => {
     el.onclick = () => {
       const kind = el.getAttribute('data-images-kind-filter');
       IMAGE_KIND_FILTER = IMAGE_KIND_FILTER === kind ? null : kind;
+      IMAGES_RENDER_LIMIT = IMAGES_PAGE_SIZE;
       render();
     };
   });
@@ -9328,11 +9346,14 @@ function attachRootHandlers() {
     el.onclick = () => {
       const g = el.getAttribute('data-images-group-filter');
       IMAGE_GROUP_FILTER = IMAGE_GROUP_FILTER === g ? null : g;
+      IMAGES_RENDER_LIMIT = IMAGES_PAGE_SIZE;
       render();
     };
   });
   const imagesUntaggedOnlyBtn = root.querySelector('[data-images-untagged-only]');
-  if (imagesUntaggedOnlyBtn) imagesUntaggedOnlyBtn.onclick = () => { IMAGES_UNTAGGED_ONLY = !IMAGES_UNTAGGED_ONLY; render(); };
+  if (imagesUntaggedOnlyBtn) imagesUntaggedOnlyBtn.onclick = () => { IMAGES_UNTAGGED_ONLY = !IMAGES_UNTAGGED_ONLY; IMAGES_RENDER_LIMIT = IMAGES_PAGE_SIZE; render(); };
+  const imagesLoadMoreBtn = root.querySelector('[data-images-load-more]');
+  if (imagesLoadMoreBtn) imagesLoadMoreBtn.onclick = () => { IMAGES_RENDER_LIMIT += IMAGES_PAGE_SIZE; render(); };
   const addImageGroupBtn = root.querySelector('[data-images-add-group]');
   if (addImageGroupBtn) addImageGroupBtn.onclick = () => {
     const key = addImageGroup(prompt('Name this new image group (e.g. "favorites", "wallpaper-worthy"):'));
