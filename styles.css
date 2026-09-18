@@ -416,6 +416,16 @@ border-bottom: 3px solid var(--border);
 .panel:has(> .filters-collapsible.collapsed) { padding-bottom: 0; }
 .panel:has(> .filters-collapsible.collapsed) > .panel-title-row { margin-bottom: 0; }
 .panel-triangles { cursor: pointer; }
+/* The Images/Reactions/NSFW gallery headers each nest their "Mood Tags"
+   filter panel one level inside .app-header, while the gallery grid panel
+   right below sits OUTSIDE .app-header as a sibling in <main>. .app-header
+   adds its own 12px horizontal padding on top of <main>'s 12px, so without
+   this the Mood Tags panel rendered 24px narrower overall than the grid
+   panel directly beneath it -- the edges visibly didn't line up. Bleeding
+   this panel out by exactly .app-header's padding (same trick .panel-title
+   already uses to bleed out of .panel's own padding, above) puts its outer
+   edge back in line with every other .panel in the app. */
+.app-header > .panel { margin-left: -12px; margin-right: -12px; }
 .tri-up, .tri-down { width: 0; height: 0; }
 .tri-up { border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 12px solid var(--yellow); }
 .tri-down { border-left: 8px solid transparent; border-right: 8px solid transparent; border-top: 12px solid var(--yellow); }

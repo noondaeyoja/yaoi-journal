@@ -4167,7 +4167,27 @@ function deleteImageGroup(key) {
   if (IMAGE_GROUP_FILTER === key) IMAGE_GROUP_FILTER = null;
   if (MEME_STATE.moodFilter === key) MEME_STATE.moodFilter = null;
 }
-function getImageTags(dataUrl) {
+// Building this once per render and reusing it is the whole fix for #391
+// (Images/Reactions feeling slower as the library grows): getImageTags()
+// used to re-scan the ENTIRE ALL_REACTIONS array (a strict === compare of
+// full base64 data URLs) for every single image, and it's called several
+// times per image per render (the untagged-first sort comparator alone
+// calls it via isImageUntagged() on both sides of every comparison, then
+// again for the untagged count, then again for the Untagged-only filter).
+// For a pool of 1000+ images against a similarly sized reactions library,
+// that's several full O(n*m) passes on every render. Indexing reactions by
+// dataUrl once turns each of those into an O(1) lookup instead.
+function buildReactionTagIndex() {
+  const index = new Map();
+  ALL_REACTIONS.forEach((r) => {
+    if (!r.dataUrl || !r.moodTags || !r.moodTags.length) return;
+    const existing = index.get(r.dataUrl);
+    if (existing) { r.moodTags.forEach((t) => existing.push(t)); }
+    else index.set(r.dataUrl, r.moodTags.slice());
+  });
+  return index;
+}
+function getImageTags(dataUrl, reactionTagIndex) {
   const own = IMAGE_TAG_MAP[imageKey(dataUrl)] || [];
   // An image that's ALSO been pulled into the Reactions library and sorted
   // into a mood there stores that tag on the reaction record's moodTags,
@@ -4175,15 +4195,17 @@ function getImageTags(dataUrl) {
   // galleries' groups are merged, that should count as "tagged" here too
   // instead of still showing Untagged until it's tagged a second time from
   // the Images side specifically.
-  const reactionTags = ALL_REACTIONS.filter((r) => r.dataUrl === dataUrl).flatMap((r) => r.moodTags || []);
+  const reactionTags = reactionTagIndex
+    ? (reactionTagIndex.get(dataUrl) || [])
+    : ALL_REACTIONS.filter((r) => r.dataUrl === dataUrl).flatMap((r) => r.moodTags || []);
   return reactionTags.length ? Array.from(new Set([...own, ...reactionTags])) : own;
 }
 // "Untagged" in the Images gallery means not sorted into ANY of: a mood
 // group, Semi only, or Uke only — being a semi/uke photo already counts as
 // "tagged" in her mental model, even before it's also given a mood group.
-function isImageUntagged(img) {
+function isImageUntagged(img, reactionTagIndex) {
   const kinds = img.kinds || [];
-  return !getImageTags(img.dataUrl).length && !kinds.includes('semi') && !kinds.includes('uke');
+  return !getImageTags(img.dataUrl, reactionTagIndex).length && !kinds.includes('semi') && !kinds.includes('uke');
 }
 function toggleImageTag(dataUrl, tag) {
   const key = imageKey(dataUrl);
@@ -4612,23 +4634,26 @@ function renderReactionsLibrary() {
   // never changed to say so. Capture the real total here, before any
   // filtering, so the header stays constant regardless of active filters.
   const totalPoolCount = items.length;
+  // Built once per render instead of letting getImageTags()/isImageUntagged()
+  // each re-scan all of ALL_REACTIONS per image — see buildReactionTagIndex().
+  const reactionTagIndex = buildReactionTagIndex();
   // Matches images that are AUTOMATICALLY semi/uke (kind-derived — current
   // or former semi/uke photo, see allAppImages()) OR manually flagged Semi/
   // Uke via the Groups chips in the individual item view.
   const kindTagName = IMAGE_KIND_FILTER === 'semi' ? SEMI_TAG : IMAGE_KIND_FILTER === 'uke' ? UKE_TAG : null;
-  if (IMAGE_KIND_FILTER) items = items.filter((i) => i.kinds.includes(IMAGE_KIND_FILTER) || getImageTags(i.dataUrl).includes(kindTagName));
-  if (IMAGE_GROUP_FILTER) items = items.filter((i) => getImageTags(i.dataUrl).includes(IMAGE_GROUP_FILTER));
+  if (IMAGE_KIND_FILTER) items = items.filter((i) => i.kinds.includes(IMAGE_KIND_FILTER) || getImageTags(i.dataUrl, reactionTagIndex).includes(kindTagName));
+  if (IMAGE_GROUP_FILTER) items = items.filter((i) => getImageTags(i.dataUrl, reactionTagIndex).includes(IMAGE_GROUP_FILTER));
   // Untagged-first, same rule as the Reactions gallery — images with no
   // group assigned yet (and not already a semi/uke photo — see
   // isImageUntagged) surface first so they're quick to spot and sort.
   items = items.slice().sort((a, b) => {
-    const aUntagged = isImageUntagged(a);
-    const bUntagged = isImageUntagged(b);
+    const aUntagged = isImageUntagged(a, reactionTagIndex);
+    const bUntagged = isImageUntagged(b, reactionTagIndex);
     if (aUntagged !== bUntagged) return aUntagged ? -1 : 1;
     return 0;
   });
-  const untaggedCount = items.filter((i) => !i.pending && isImageUntagged(i)).length;
-  if (IMAGES_UNTAGGED_ONLY) items = items.filter((i) => isImageUntagged(i));
+  const untaggedCount = items.filter((i) => !i.pending && isImageUntagged(i, reactionTagIndex)).length;
+  if (IMAGES_UNTAGGED_ONLY) items = items.filter((i) => isImageUntagged(i, reactionTagIndex));
   const attached = items.filter((i) => i.attachedEntries.length > 0);
   const unattached = items.filter((i) => i.attachedEntries.length === 0);
   IMAGES_NAV_LIST = (IMAGES_TAB === 'unattached' ? unattached : IMAGES_TAB === 'attached' ? attached : IMAGES_TAB === 'gallery' ? items : []).map((i) => i.dataUrl);
@@ -4651,7 +4676,7 @@ function renderReactionsLibrary() {
       ${!IMAGE_SELECT_MODE
         ? (forceDel
             ? `<span class="dup-del-hint" title="Tap to delete">✕</span>`
-            : (isImageUntagged(img)
+            : (isImageUntagged(img, reactionTagIndex)
                 ? `<span class="untagged-badge">Untagged</span>`
                 : (img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : '')))
         : ''}
@@ -10342,7 +10367,13 @@ async function compressAndUploadField(getUrl, setUrl, setDriveId, filename, kind
   const fileId = await tryUploadImageToDrive(toUpload, filename, kind);
   if (!fileId) return false;
   setDriveId(fileId);
-  if (toUpload !== original) setUrl(toUpload);
+  // Recompression changes the bytes, which changes imageKey(dataUrl) — same
+  // hazard the crop flow already guards against (see
+  // migrateImageKeyMetadata's comment). Without this, a tag applied before
+  // a failed-upload retry silently orphans onto the old, now-unreferenced
+  // key and the image reappears in Untagged even though nothing was
+  // actually untagged.
+  if (toUpload !== original) { migrateImageKeyMetadata(original, toUpload); setUrl(toUpload); }
   return true;
 }
 
@@ -10383,7 +10414,9 @@ async function retryFailedUpload(key) {
         const fileId = await tryUploadImageToDrive(toUpload, `${e.id}-screencap-${Date.now()}-${i}.jpg`, 'entry');
         if (!fileId) break; // still failing — stop here rather than skip ahead out of order
         e.screencapDriveIds.push(fileId);
-        if (toUpload !== original) e.screencaps[i] = toUpload;
+        // Same imageKey-orphaning hazard as compressAndUploadField() above —
+        // carry the tag over to the recompressed image's new key.
+        if (toUpload !== original) { migrateImageKeyMetadata(original, toUpload); e.screencaps[i] = toUpload; }
         anyOk = true;
       }
       ok = anyOk;
