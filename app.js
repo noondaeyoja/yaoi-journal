@@ -4282,6 +4282,13 @@ function openManageImageGroupsModal() {
 // from inside that entry's own page.
 let IMAGE_SELECT_MODE = false;
 let IMAGE_SELECTED = new Set();
+// Range-select anchor: the dataUrl of the last image tapped INTO selection.
+// Tapping a second, not-yet-selected image selects everything between the
+// anchor and that tap (inclusive) in IMAGES_NAV_LIST order, instead of just
+// that one image -- lets her select e.g. 40 untagged images in two taps
+// instead of 40. Tapping an already-selected image just deselects that one
+// image and doesn't touch the range anchor logic.
+let IMAGE_SELECT_RANGE_ANCHOR = null;
 // The exact dataUrl order the Attached/Unattached masonry grid was last
 // rendered in — kept up to date every render so the individual item modal
 // can offer prev/next arrows through the same set the user was actually
@@ -4369,6 +4376,7 @@ async function attachImagesToEntry(dataUrls, entryId) {
   closeModal();
   IMAGE_SELECT_MODE = false;
   IMAGE_SELECTED = new Set();
+  IMAGE_SELECT_RANGE_ANCHOR = null;
   showToast(`Attached ${added} image${added === 1 ? '' : 's'} to "${e.title}"`);
   render();
 }
@@ -4410,6 +4418,7 @@ function openTagSelectedImagesModal(dataUrls) {
       closeModal();
       IMAGE_SELECT_MODE = false;
       IMAGE_SELECTED = new Set();
+      IMAGE_SELECT_RANGE_ANCHOR = null;
       showToast(`Added ${dataUrls.length} image${dataUrls.length === 1 ? '' : 's'} to "${tag}"`);
       render();
     };
@@ -4422,6 +4431,7 @@ function openTagSelectedImagesModal(dataUrls) {
     closeModal();
     IMAGE_SELECT_MODE = false;
     IMAGE_SELECTED = new Set();
+    IMAGE_SELECT_RANGE_ANCHOR = null;
     showToast(`Added ${dataUrls.length} image${dataUrls.length === 1 ? '' : 's'} to "${key}"`);
     render();
   };
@@ -4676,7 +4686,12 @@ function renderReactionsLibrary() {
       ${!IMAGE_SELECT_MODE
         ? (forceDel
             ? `<span class="dup-del-hint" title="Tap to delete">✕</span>`
-            : (isImageUntagged(img, reactionTagIndex)
+            // The "Untagged" badge on every card is redundant once the
+            // Untagged-only filter is active -- at that point EVERY image
+            // on screen is untagged by definition (that's the whole point
+            // of the filter), so stamping the same label on all of them
+            // just adds visual noise instead of information.
+            : (isImageUntagged(img, reactionTagIndex) && !IMAGES_UNTAGGED_ONLY
                 ? `<span class="untagged-badge">Untagged</span>`
                 : (img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : '')))
         : ''}
@@ -4737,8 +4752,10 @@ function renderReactionsLibrary() {
         <button class="ref-btn" data-images-toggle-select="1">${IMAGE_SELECT_MODE ? '✕ Cancel select' : '☑️ Select'}</button>
       </div>
       ${IMAGE_SELECT_MODE ? `
+        <div style="font-size:11px;color:var(--text-dim);margin:-4px 0 6px;">Tap an image, then tap another to select everything between them.</div>
         <div class="export-row" style="margin-bottom:10px;background:var(--card);border:1px solid var(--purple);border-radius:var(--radius-sm);padding:8px;">
           <div style="flex:1;font-size:12.5px;color:var(--text-dim);align-self:center;">${IMAGE_SELECTED.size} selected</div>
+          ${IMAGES_NAV_LIST.length ? `<button class="ref-btn" data-images-select-all="1" title="${IMAGE_SELECTED.size >= IMAGES_NAV_LIST.length ? 'Clear the current selection' : `Select every image in this tab (${IMAGES_NAV_LIST.length}), e.g. to bulk-tag everything under Untagged`}">${IMAGE_SELECTED.size >= IMAGES_NAV_LIST.length ? '⬜ Deselect all' : `☑️ Select all ${IMAGES_NAV_LIST.length}`}</button>` : ''}
           <button class="ref-btn" data-images-attach-selected="1" ${IMAGE_SELECTED.size ? '' : 'disabled'}>📎 Attach to a read…</button>
           <button class="ref-btn" data-images-tag-selected="1" ${IMAGE_SELECTED.size ? '' : 'disabled'}>🏷️ Add to mood…</button>
           <button class="ref-btn" data-images-add-selected-reactions="1" ${IMAGE_SELECTED.size ? '' : 'disabled'}>🎭 Add as reactions</button>
@@ -9220,7 +9237,28 @@ function attachRootHandlers() {
     el.onclick = async () => {
       const url = el.getAttribute('data-images-item');
       if (IMAGE_SELECT_MODE) {
-        if (IMAGE_SELECTED.has(url)) IMAGE_SELECTED.delete(url); else IMAGE_SELECTED.add(url);
+        if (IMAGE_SELECTED.has(url)) {
+          // Deselecting is always just that one image -- never triggers
+          // range logic, and drops it as the anchor so the next tap on a
+          // fresh image starts a new range from scratch.
+          IMAGE_SELECTED.delete(url);
+          if (IMAGE_SELECT_RANGE_ANCHOR === url) IMAGE_SELECT_RANGE_ANCHOR = null;
+        } else {
+          // Tapping a second, not-yet-selected image selects the whole
+          // range between the last tapped image (the anchor) and this one
+          // -- see IMAGE_SELECT_RANGE_ANCHOR's declaration for why. Only
+          // kicks in when both ends are actually in the list currently on
+          // screen (IMAGES_NAV_LIST), so it can't reach across tabs/filters.
+          const anchorIdx = IMAGE_SELECT_RANGE_ANCHOR ? IMAGES_NAV_LIST.indexOf(IMAGE_SELECT_RANGE_ANCHOR) : -1;
+          const targetIdx = IMAGES_NAV_LIST.indexOf(url);
+          if (anchorIdx !== -1 && targetIdx !== -1) {
+            const [lo, hi] = anchorIdx < targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx];
+            for (let i = lo; i <= hi; i++) IMAGE_SELECTED.add(IMAGES_NAV_LIST[i]);
+          } else {
+            IMAGE_SELECTED.add(url);
+          }
+          IMAGE_SELECT_RANGE_ANCHOR = url;
+        }
         render();
       } else if (IMAGES_TAB === 'duplicates') {
         // Possible Duplicates is a fast triage screen — tapping a copy
@@ -9270,6 +9308,7 @@ function attachRootHandlers() {
   if (toggleSelectBtn) toggleSelectBtn.onclick = () => {
     IMAGE_SELECT_MODE = !IMAGE_SELECT_MODE;
     IMAGE_SELECTED = new Set();
+    IMAGE_SELECT_RANGE_ANCHOR = null;
     render();
   };
   // Same in-place DOM toggle the homepage's Hide/Show Filters button uses —
@@ -9301,6 +9340,17 @@ function attachRootHandlers() {
     }
     };
   }
+  // Selects/deselects everything in the CURRENT tab's filtered list
+  // (IMAGES_NAV_LIST already reflects whatever mood/kind/untagged-only
+  // filters are active) so she can e.g. flip on Untagged-only, hit Select
+  // all, then bulk-tag the whole batch in one "Add to mood" instead of
+  // tapping each thumbnail by hand.
+  const selectAllBtn = root.querySelector('[data-images-select-all]');
+  if (selectAllBtn) selectAllBtn.onclick = () => {
+    IMAGE_SELECTED = IMAGE_SELECTED.size >= IMAGES_NAV_LIST.length ? new Set() : new Set(IMAGES_NAV_LIST);
+    IMAGE_SELECT_RANGE_ANCHOR = IMAGES_NAV_LIST.length ? IMAGES_NAV_LIST[IMAGES_NAV_LIST.length - 1] : null;
+    render();
+  };
   const attachSelectedBtn = root.querySelector('[data-images-attach-selected]');
   if (attachSelectedBtn) attachSelectedBtn.onclick = () => {
     if (IMAGE_SELECTED.size) openAttachImagesToEntryModal(Array.from(IMAGE_SELECTED));
@@ -9319,6 +9369,7 @@ function attachRootHandlers() {
     }
     IMAGE_SELECT_MODE = false;
     IMAGE_SELECTED = new Set();
+    IMAGE_SELECT_RANGE_ANCHOR = null;
     showToast(`Added ${added} of ${urls.length} to Reactions${added < urls.length ? ' (rest were already in there)' : ''}`);
     render();
   };
@@ -9328,6 +9379,7 @@ function attachRootHandlers() {
     urls.forEach((url) => pullImageIntoH(url));
     IMAGE_SELECT_MODE = false;
     IMAGE_SELECTED = new Set();
+    IMAGE_SELECT_RANGE_ANCHOR = null;
     showToast(`Pulled ${urls.length} image${urls.length === 1 ? '' : 's'} into H`);
     render();
   };
@@ -9353,6 +9405,7 @@ function attachRootHandlers() {
     }
     IMAGE_SELECT_MODE = false;
     IMAGE_SELECTED = new Set();
+    IMAGE_SELECT_RANGE_ANCHOR = null;
     showToast('Deleted');
     render();
   };
