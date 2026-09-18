@@ -4593,13 +4593,13 @@ async function scanForImageDuplicates() {
   render();
 }
 
-function renderImageMasonryBatch(list) {
+function renderImageMasonryBatch(list, renderItem) {
   const visible = list.slice(0, IMAGES_RENDER_LIMIT);
   const remaining = list.length - visible.length;
   const loadMore = remaining > 0
     ? `<button class="ref-btn" style="width:100%;margin-top:10px;" data-images-load-more="1">Load ${Math.min(remaining, IMAGES_PAGE_SIZE)} more (${remaining} left)</button>`
     : '';
-  return `<div class="image-masonry">${visible.map((img) => masonryItem(img)).join('')}</div>${loadMore}`;
+  return `<div class="image-masonry">${visible.map((img) => renderItem(img)).join('')}</div>${loadMore}`;
 }
 
 function renderReactionsLibrary() {
@@ -4663,9 +4663,9 @@ function renderReactionsLibrary() {
     // point is being able to click a mood chip and see every image tagged
     // with it in one place, same as Reactions/H already work, instead of
     // having to check Attached and Unattached separately for the same mood.
-    tabBody = items.length ? renderImageMasonryBatch(items) : `<div class="empty-state">No images match. Try clearing the filter/search.</div>`;
+    tabBody = items.length ? renderImageMasonryBatch(items, masonryItem) : `<div class="empty-state">No images match. Try clearing the filter/search.</div>`;
   } else if (IMAGES_TAB === 'unattached') {
-    tabBody = unattached.length ? renderImageMasonryBatch(unattached) : `<div class="empty-state">Everything's attached to a read. 🎉</div>`;
+    tabBody = unattached.length ? renderImageMasonryBatch(unattached, masonryItem) : `<div class="empty-state">Everything's attached to a read. 🎉</div>`;
   } else if (IMAGES_TAB === 'duplicates') {
     // A pair dismissed via "Not duplicates" is skipped by every future scan
     // forever (see IGNORED_IMAGE_DUP_GROUPS/imageDupSignature) — with no way
@@ -4694,7 +4694,7 @@ function renderReactionsLibrary() {
           </div>`).join('');
     }
   } else {
-    tabBody = attached.length ? renderImageMasonryBatch(attached) : `<div class="empty-state">No attached images yet.</div>`;
+    tabBody = attached.length ? renderImageMasonryBatch(attached, masonryItem) : `<div class="empty-state">No attached images yet.</div>`;
   }
 
   // Same built-ins-plus-custom list Reactions uses (allMoodOptions()) —
