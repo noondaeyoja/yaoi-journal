@@ -4310,7 +4310,6 @@ let IMAGE_KIND_FILTER = null; // null | 'semi' | 'uke'
 const SEMI_TAG = 'Semi';
 const UKE_TAG = 'Uke';
 let IMAGE_GROUP_FILTER = null;
-let IMAGES_UNTAGGED_ONLY = false;
 // Groups/moods get the same hide + delete lifecycle Tag Manager already has
 // for tags: a soft "hide from chip rows" toggle that keeps every image's/
 // reaction's tag data intact, plus a full delete that strips the tag
@@ -4653,20 +4652,20 @@ function renderReactionsLibrary() {
   const kindTagName = IMAGE_KIND_FILTER === 'semi' ? SEMI_TAG : IMAGE_KIND_FILTER === 'uke' ? UKE_TAG : null;
   if (IMAGE_KIND_FILTER) items = items.filter((i) => i.kinds.includes(IMAGE_KIND_FILTER) || getImageTags(i.dataUrl, reactionTagIndex).includes(kindTagName));
   if (IMAGE_GROUP_FILTER) items = items.filter((i) => getImageTags(i.dataUrl, reactionTagIndex).includes(IMAGE_GROUP_FILTER));
-  // Untagged-first, same rule as the Reactions gallery — images with no
-  // group assigned yet (and not already a semi/uke photo — see
-  // isImageUntagged) surface first so they're quick to spot and sort.
-  items = items.slice().sort((a, b) => {
-    const aUntagged = isImageUntagged(a, reactionTagIndex);
-    const bUntagged = isImageUntagged(b, reactionTagIndex);
-    if (aUntagged !== bUntagged) return aUntagged ? -1 : 1;
-    return 0;
-  });
+  // #385: newest first, consistently, across every tab. This used to sort
+  // untagged images first instead, paired with a separate "N untagged"
+  // toggle that ANDed on top of whatever tab (Attached/Unattached/etc) was
+  // already selected -- so e.g. Unattached + untagged-only together could
+  // silently show 0 results even though each filter alone had matches, and
+  // the toggle's purple highlight didn't match the other tabs' pink active
+  // style either. Untagged is now its own tab below, mutually exclusive
+  // with the others exactly like they already were with each other.
+  items = items.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   const untaggedCount = items.filter((i) => !i.pending && isImageUntagged(i, reactionTagIndex)).length;
-  if (IMAGES_UNTAGGED_ONLY) items = items.filter((i) => isImageUntagged(i, reactionTagIndex));
   const attached = items.filter((i) => i.attachedEntries.length > 0);
   const unattached = items.filter((i) => i.attachedEntries.length === 0);
-  IMAGES_NAV_LIST = (IMAGES_TAB === 'unattached' ? unattached : IMAGES_TAB === 'attached' ? attached : IMAGES_TAB === 'gallery' ? items : []).map((i) => i.dataUrl);
+  const untaggedOnly = items.filter((i) => isImageUntagged(i, reactionTagIndex));
+  IMAGES_NAV_LIST = (IMAGES_TAB === 'unattached' ? unattached : IMAGES_TAB === 'attached' ? attached : IMAGES_TAB === 'untagged' ? untaggedOnly : IMAGES_TAB === 'gallery' ? items : []).map((i) => i.dataUrl);
 
   // `forceDel` is only passed true from the Possible Duplicates tab — it
   // makes every image in a duplicate comparison deletable (not just
@@ -4691,7 +4690,7 @@ function renderReactionsLibrary() {
             // on screen is untagged by definition (that's the whole point
             // of the filter), so stamping the same label on all of them
             // just adds visual noise instead of information.
-            : (isImageUntagged(img, reactionTagIndex) && !IMAGES_UNTAGGED_ONLY
+            : (isImageUntagged(img, reactionTagIndex) && IMAGES_TAB !== 'untagged'
                 ? `<span class="untagged-badge">Untagged</span>`
                 : (img.attachedEntries.length ? `<span class="reaction-count">${img.attachedEntries.length}</span>` : '')))
         : ''}
@@ -4706,6 +4705,8 @@ function renderReactionsLibrary() {
     tabBody = items.length ? renderImageMasonryBatch(items, masonryItem) : `<div class="empty-state">No images match. Try clearing the filter/search.</div>`;
   } else if (IMAGES_TAB === 'unattached') {
     tabBody = unattached.length ? renderImageMasonryBatch(unattached, masonryItem) : `<div class="empty-state">Everything's attached to a read. 🎉</div>`;
+  } else if (IMAGES_TAB === 'untagged') {
+    tabBody = untaggedOnly.length ? renderImageMasonryBatch(untaggedOnly, masonryItem) : `<div class="empty-state">Everything's tagged. 🎉</div>`;
   } else if (IMAGES_TAB === 'duplicates') {
     // A pair dismissed via "Not duplicates" is skipped by every future scan
     // forever (see IGNORED_IMAGE_DUP_GROUPS/imageDupSignature) — with no way
@@ -4768,9 +4769,10 @@ function renderReactionsLibrary() {
         <button class="tagmgr-tab ${IMAGES_TAB === 'attached' ? 'active' : ''}" data-images-tab="attached">Attached (${attached.length})</button>
         <button class="tagmgr-tab ${IMAGES_TAB === 'unattached' ? 'active' : ''}" data-images-tab="unattached">Unattached (${unattached.length})</button>
         <button class="tagmgr-tab ${IMAGES_TAB === 'duplicates' ? 'active' : ''}" data-images-tab="duplicates">Possible Duplicates${IMAGE_DUP_GROUPS !== null ? ` (${IMAGE_DUP_GROUPS.length})` : ''}</button>
-        ${IMAGES_TAB !== 'duplicates' ? `<button class="ref-btn ${IMAGES_UNTAGGED_ONLY ? 'active' : ''}" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;${IMAGES_UNTAGGED_ONLY ? 'background:var(--purple);color:#fff;' : ''}" data-images-untagged-only="1" title="Show images not yet grouped into a mood">${untaggedCount} untagged</button>` : ''}
+        <button class="tagmgr-tab ${IMAGES_TAB === 'untagged' ? 'active' : ''}" data-images-tab="untagged" title="Images with no mood tag and not marked semi/uke">${untaggedCount} untagged</button>
         <button class="ref-btn" style="flex:0 0 auto;padding:8px 12px;white-space:nowrap;" data-images-manage-groups="1" title="Manage image groups (rename/delete)">✏️ Manage</button>
       </div>
+    </div>
       ${IMAGES_TAB !== 'duplicates' ? `
         <div class="panel" style="margin-bottom:16px;">
           <div class="panel-title-row" style="margin-bottom:12px;">
@@ -4787,7 +4789,6 @@ function renderReactionsLibrary() {
           </div>
         </div>
       ` : ''}
-    </div>
     <div class="panel"><div class="panel-title-row" style="margin-bottom:10px;"><div class="panel-title" style="margin:0;">Images</div><span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span></div><div class="gallery-dropzone" style="margin:0;">${tabBody}</div></div>
     </main>
     ${renderBottomNav('reactions')}
@@ -9428,8 +9429,6 @@ function attachRootHandlers() {
       render();
     };
   });
-  const imagesUntaggedOnlyBtn = root.querySelector('[data-images-untagged-only]');
-  if (imagesUntaggedOnlyBtn) imagesUntaggedOnlyBtn.onclick = () => { IMAGES_UNTAGGED_ONLY = !IMAGES_UNTAGGED_ONLY; IMAGES_RENDER_LIMIT = IMAGES_PAGE_SIZE; render(); };
   const imagesLoadMoreBtn = root.querySelector('[data-images-load-more]');
   if (imagesLoadMoreBtn) imagesLoadMoreBtn.onclick = () => { IMAGES_RENDER_LIMIT += IMAGES_PAGE_SIZE; render(); };
   const addImageGroupBtn = root.querySelector('[data-images-add-group]');
@@ -9553,8 +9552,18 @@ function attachRootHandlers() {
       const oldName = el.getAttribute('data-tagmgr-rename');
       const newName = prompt('Rename tag "' + oldName + '" to:', oldName);
       if (!newName || !newName.trim() || newName.trim() === oldName) return;
-      const nn = newName.trim();
+      let nn = newName.trim();
       if (isHiddenTag(nn)) { showToast('That name is blocked/hidden — pick another'); return; }
+      // #384: if what was typed case/punctuation-insensitively matches a
+      // DIFFERENT tag that already exists, snap to that tag's exact stored
+      // spelling instead of the literal typed text -- otherwise a casing
+      // slip ("Based on a Web Novel" vs "Based On A Web Novel") silently
+      // creates a third near-duplicate string instead of actually merging,
+      // which is the whole point of renaming to an existing tag name.
+      const existingTagNames = Object.keys(allTagCounts());
+      const nnKey = normalizeTagKey(nn);
+      const canonicalMatch = existingTagNames.find((t) => t !== oldName && normalizeTagKey(t) === nnKey);
+      if (canonicalMatch) nn = canonicalMatch;
       for (const e of ALL_ENTRIES) {
         let changed = false;
         if ((e.tags || []).includes(oldName)) {
