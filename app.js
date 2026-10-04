@@ -3536,6 +3536,62 @@ const TAG_SECTIONS = {
 // Manage tab). The first four are the original sections; the rest were added
 // after reviewing the tag-categorization proposal spreadsheet.
 const TAG_SECTION_ORDER = ['Couple', 'Themes', 'Smut', 'General', 'Appearance', 'Tropes', 'Setting', 'Occupation', 'Time Period', 'Fandom', 'Format'];
+// #390: searchable merge-target picker for the Tag Manager's merge button.
+// Replaces the old free-text prompt(): shows a type-to-filter list of every
+// existing tag (except the one being merged) and resolves with the exact
+// stored spelling of the one the user picks, or null if cancelled.
+function pickMergeTarget(name) {
+  return new Promise((resolve) => {
+    const counts = allTagCounts();
+    const names = Object.keys(counts)
+      .filter((t) => t !== name && !isHiddenTag(t))
+      .sort((a, b) => capTag(a).localeCompare(capTag(b)));
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(11,15,43,.55);z-index:100000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    const title = escapeHtml(capTag(name));
+    ov.innerHTML =
+      '<div style="background:var(--card);border:3px solid var(--border);box-shadow:7px 7px 0 var(--border);width:100%;max-width:420px;max-height:80vh;display:flex;flex-direction:column;">' +
+      '<div style="background:var(--pink);border-bottom:3px solid var(--border);padding:10px 14px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;font-size:13px;color:var(--text);">Merge "' + title + '" into…</div>' +
+      '<div style="padding:12px 14px 6px;font-size:12px;color:var(--text-dim);">Its entries get the tag you pick, and "' + title + '" disappears.</div>' +
+      '<div style="padding:0 14px 10px;"><input type="text" id="merge-pick-input" placeholder="Start typing a tag…" autocomplete="off" style="width:100%;box-sizing:border-box;padding:10px;border:2px solid var(--border);font-size:16px;background:var(--card);color:var(--text);"></div>' +
+      '<div id="merge-pick-list" style="overflow-y:auto;flex:1 1 auto;border-top:2px solid var(--border);min-height:80px;"></div>' +
+      '<div style="padding:10px 14px;border-top:2px solid var(--border);text-align:right;"><button type="button" id="merge-pick-cancel" class="ref-btn" style="padding:8px 14px;">Cancel</button></div>' +
+      '</div>';
+    document.body.appendChild(ov);
+    const input = ov.querySelector('#merge-pick-input');
+    const list = ov.querySelector('#merge-pick-list');
+    let shown = [];
+    let hi = 0;
+    let onKey = null;
+    const finish = (val) => { document.removeEventListener('keydown', onKey, true); ov.remove(); resolve(val); };
+    const draw = () => {
+      const q = normalizeTagKey(input.value);
+      const rawQ = input.value.trim().toLowerCase();
+      shown = names.filter((t) => !q || normalizeTagKey(t).includes(q) || t.toLowerCase().includes(rawQ));
+      if (hi >= shown.length) hi = Math.max(0, shown.length - 1);
+      list.innerHTML = shown.length
+        ? shown.map((t, i) => '<div data-pick="' + i + '" style="padding:9px 14px;cursor:pointer;display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid var(--pink-soft);' + (i === hi ? 'background:var(--pink-soft);' : '') + '"><span>' + escapeHtml(capTag(t)) + '</span><span style="color:var(--text-dim);font-size:12px;">' + counts[t] + '</span></div>').join('')
+        : '<div style="padding:14px;color:var(--text-dim);font-size:13px;">No matching tags</div>';
+      list.querySelectorAll('[data-pick]').forEach((el) => {
+        el.onclick = () => finish(shown[Number(el.getAttribute('data-pick'))]);
+      });
+      const cur = list.querySelector('[data-pick="' + hi + '"]');
+      if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest' });
+    };
+    onKey = (ev) => {
+      if (ev.key === 'Escape') { ev.preventDefault(); finish(null); }
+      else if (ev.key === 'ArrowDown') { ev.preventDefault(); hi = Math.min(shown.length - 1, hi + 1); draw(); }
+      else if (ev.key === 'ArrowUp') { ev.preventDefault(); hi = Math.max(0, hi - 1); draw(); }
+      else if (ev.key === 'Enter') { ev.preventDefault(); if (shown[hi]) finish(shown[hi]); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    input.oninput = () => { hi = 0; draw(); };
+    ov.querySelector('#merge-pick-cancel').onclick = () => finish(null);
+    ov.addEventListener('mousedown', (ev) => { if (ev.target === ov) finish(null); });
+    draw();
+    input.focus();
+  });
+}
 function newTagBuckets() { const o = {}; TAG_SECTION_ORDER.forEach((s) => { o[s] = []; }); return o; }
 Object.assign(TAG_SECTIONS, {
   // Appearance
@@ -9610,10 +9666,8 @@ function attachRootHandlers() {
   root.querySelectorAll('[data-tagmgr-merge]').forEach((el) => {
     el.onclick = async () => {
       const name = el.getAttribute('data-tagmgr-merge');
-      const targetRaw = prompt(`Merge "${name}" into which existing tag? (its entries will get that tag instead, and "${name}" will disappear)`);
-      if (!targetRaw || !targetRaw.trim()) return;
-      const target = targetRaw.trim();
-      if (target.toLowerCase() === name.toLowerCase()) return;
+      const target = await pickMergeTarget(name);
+      if (!target || target === name) return;
       for (const e of ALL_ENTRIES) {
         let changed = false;
         if ((e.tags || []).includes(name)) {
