@@ -3532,9 +3532,31 @@ const TAG_SECTIONS = {
   'childrenaround': 'General', 'cutepet': 'General', 'dj': 'General', 'manipulation': 'General',
   'noheroacademia': 'General', 'videogame': 'General',
 };
+// #389: user-approved expanded section list (Tags container + Tag Manager's
+// Manage tab). The first four are the original sections; the rest were added
+// after reviewing the tag-categorization proposal spreadsheet.
+const TAG_SECTION_ORDER = ['Couple', 'Themes', 'Smut', 'General', 'Appearance', 'Tropes', 'Setting', 'Occupation', 'Time Period', 'Fandom', 'Format'];
+function newTagBuckets() { const o = {}; TAG_SECTION_ORDER.forEach((s) => { o[s] = []; }); return o; }
+Object.assign(TAG_SECTIONS, {
+  // Appearance
+  'cutebaby': 'Appearance', 'glasses': 'Appearance', 'handicapped': 'Appearance', 'musclebottom': 'Appearance', 'muscletop': 'Appearance', 'piercings': 'Appearance', 'prettybottom': 'Appearance', 'prettytop': 'Appearance', 'stockings': 'Appearance', 'tattooedlead': 'Appearance',
+  // Fandom
+  'genshinimpact': 'Fandom', 'gintama': 'Fandom', 'honkaistarrail': 'Fandom', 'jjk': 'Fandom', 'noheroacademia': 'Fandom',
+  // Format
+  'adaptation': 'Format', 'adaptedtoanime': 'Format', 'aibl': 'Format', 'anthology': 'Format', 'awardwinning': 'Format', 'basedonadoujinshi': 'Format', 'basedonananime': 'Format', 'basedonawebnovel': 'Format', 'boyslove': 'Format', 'danmei': 'Format', 'dj': 'Format', 'gl': 'Format', 'hiatus': 'Format', 'longstrip': 'Format', 'manhua': 'Format', 'oneshot': 'Format', 'selfpublished': 'Format', 'shortstory': 'Format', 'shounen': 'Format', 'shounenai': 'Format', 'unique': 'Format', 'webcomic': 'Format',
+  // Occupation
+  'baseball': 'Occupation', 'bodyguard': 'Occupation', 'bodyguards': 'Occupation', 'boxing': 'Occupation', 'camboy': 'Occupation', 'carracer': 'Occupation', 'ceosecretaryrelationship': 'Occupation', 'copcriminalpairing': 'Occupation', 'coworkers': 'Occupation', 'delinquents': 'Occupation', 'detectives': 'Occupation', 'doctors': 'Occupation', 'espionage': 'Occupation', 'gangsmafiapaidkillers': 'Occupation', 'hacker': 'Occupation', 'hockey': 'Occupation', 'idols': 'Occupation', 'knight': 'Occupation', 'mafia': 'Occupation', 'music': 'Occupation', 'nobility': 'Occupation', 'officeromance': 'Occupation', 'officeworkers': 'Occupation', 'photographer': 'Occupation', 'photography': 'Occupation', 'police': 'Occupation', 'royalty': 'Occupation', 'sexworker': 'Occupation', 'skateboarding': 'Occupation', 'sports': 'Occupation', 'worklife': 'Occupation',
+  // Setting
+  'africa': 'Setting', 'allboysschool': 'Setting', 'america': 'Setting', 'boardingschool': 'Setting', 'church': 'Setting', 'college': 'Setting', 'conveniencestore': 'Setting', 'countryside': 'Setting', 'egypt': 'Setting', 'highschool': 'Setting', 'prisonjail': 'Setting', 'russia': 'Setting', 'schoolfriends': 'Setting', 'schoollife': 'Setting', 'schoolmates': 'Setting', 'thai': 'Setting', 'transferstudents': 'Setting', 'western': 'Setting',
+  // Time Period
+  'ancientgreece': 'Time Period', 'apocalypse': 'Time Period', 'dystopianpostapocalypse': 'Time Period', 'future': 'Time Period', 'historical': 'Time Period', 'medieval': 'Time Period', 'postapocalyptic': 'Time Period', 'ww2': 'Time Period',
+  // Tropes
+  'adultcouples': 'Tropes', 'agegap': 'Tropes', 'amnesia': 'Tropes', 'awesomesidecouple': 'Tropes', 'blackmail': 'Tropes', 'childhoodfriends': 'Tropes', 'comingofage': 'Tropes', 'contract': 'Tropes', 'contractmarriage': 'Tropes', 'crazybottom': 'Tropes', 'deathofalovedone': 'Tropes', 'debt': 'Tropes', 'enemiestolovers': 'Tropes', 'fallingforthemark': 'Tropes', 'fatedlovers': 'Tropes', 'forcedproximity': 'Tropes', 'friendstolovers': 'Tropes', 'genderbender': 'Tropes', 'goodcommunication': 'Tropes', 'harem': 'Tropes', 'hiddenidentity': 'Tropes', 'imprisoned': 'Tropes', 'isekai': 'Tropes', 'jealousy': 'Tropes', 'malefemalepairing': 'Tropes', 'manipulation': 'Tropes', 'marriageproposal': 'Tropes', 'masterservantrelationship': 'Tropes', 'matureromance': 'Tropes', 'misunderstanding': 'Tropes', 'neighbors': 'Tropes', 'obsessivelove': 'Tropes', 'onebed': 'Tropes', 'onenightstand': 'Tropes', 'oppositesattract': 'Tropes', 'orphans': 'Tropes', 'personinastrangeworld': 'Tropes', 'polyamory': 'Tropes', 'possessivelovers': 'Tropes', 'psychobottom': 'Tropes', 'psychotop': 'Tropes', 'redthread': 'Tropes', 'reincarnation': 'Tropes', 'revenge': 'Tropes', 'richpoordynamics': 'Tropes', 'rivalstolovers': 'Tropes', 'roommates': 'Tropes', 'secretchild': 'Tropes', 'stalker': 'Tropes', 'stalking': 'Tropes', 'studentteacherrelationship': 'Tropes', 'timeloop': 'Tropes', 'timetravel': 'Tropes', 'trappedinavideogame': 'Tropes', 'unrequitedending': 'Tropes', 'unrequitedlove': 'Tropes', 'yanderebottom': 'Tropes', 'yanderetop': 'Tropes',
+});
 function sectionForTag(t) {
   const key = normalizeTagKey(t);
-  return TAG_SECTION_OVERRIDES[key] || TAG_SECTIONS[key] || 'General';
+  const s = TAG_SECTION_OVERRIDES[key] || TAG_SECTIONS[key] || 'General';
+  return TAG_SECTION_ORDER.includes(s) ? s : 'General';
 }
 // #362: Tag Manager parenthetical marker -- only for tags that are actually
 // listed in TAG_SECTIONS (i.e. one of the 4 Tags-container buckets); tags
@@ -3681,9 +3703,9 @@ function renderTagManageBuckets() {
     .filter((t) => !isHiddenTag(t))
     .filter((t) => !TAG_MGR_EXCLUDED_KEYS.has(normalizeTagKey(t)))
     .sort((a, b) => a.localeCompare(b));
-  const buckets = { Couple: [], Themes: [], Smut: [], General: [] };
+  const buckets = newTagBuckets();
   names.forEach((t) => { buckets[sectionForTag(t)].push(t); });
-  const sectionOrder = ['Couple', 'Themes', 'Smut', 'General'];
+  const sectionOrder = TAG_SECTION_ORDER;
   return `
     <div style="color:var(--text-dim);font-size:12px;margin-bottom:10px;">
       Drag a tag into a different bucket to move it to that section. Changes save automatically and sync across devices.
@@ -7120,9 +7142,9 @@ function renderTagChipsInline(e) {
   // same shared TAG_ADD_MODE add-panel below).
   const all = (e.tags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: false }))
     .concat((e.customTags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: true })));
-  const bySection = { Couple: [], Themes: [], Smut: [], General: [] };
+  const bySection = newTagBuckets();
   all.forEach((item) => { bySection[sectionForTag(item.t)].push(item); });
-  const sectionOrder = ['Couple', 'Themes', 'Smut', 'General'];
+  const sectionOrder = TAG_SECTION_ORDER;
   return sectionOrder.map((sec) => {
     const chips = bySection[sec].map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}" data-remove-tag="${escapeHtml(t)}" title="Click to remove">${escapeHtml(capTag(t))}</div>`).join('');
     const addChip = `<div class="tag-chip add-tag-chip ${TAG_ADD_SECTION === sec ? 'active' : ''}" data-tag-add-toggle="${sec}">+ NEW TAG</div>`;
