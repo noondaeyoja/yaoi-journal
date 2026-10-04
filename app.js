@@ -3535,10 +3535,10 @@ const TAG_SECTIONS = {
 // #389: user-approved expanded section list (Tags container + Tag Manager's
 // Manage tab). The first four are the original sections; the rest were added
 // after reviewing the tag-categorization proposal spreadsheet.
-const TAG_SECTION_ORDER = ['Couple', 'Occupation', 'Smut', 'Setting', 'Fandom', 'Format', 'General'];
+const TAG_SECTION_ORDER = ['Couple', 'Smut', 'Setting', 'Fandom', 'Format', 'General'];
 // Sections merged later at the user's request: Appearance folded into Couple,
 // Time Period folded into Setting. Aliases keep older mappings/overrides valid.
-const TAG_SECTION_ALIASES = { 'Appearance': 'Couple', 'Time Period': 'Setting', 'Themes': 'General', 'Tropes': 'Couple' };
+const TAG_SECTION_ALIASES = { 'Appearance': 'Couple', 'Time Period': 'Setting', 'Themes': 'General', 'Tropes': 'Couple', 'Occupation': 'Couple' };
 // #390: searchable merge-target picker for the Tag Manager's merge button.
 // Replaces the old free-text prompt(): shows a type-to-filter list of every
 // existing tag (except the one being merged) and resolves with the exact
