@@ -478,16 +478,21 @@ background-position: right 8px center, right 4px center; background-size: 4px 4p
 .details-divider-full { margin: 14px 0; }
 
 .rating-row { display: flex; align-items: stretch; justify-content: space-around; gap: 10px; }
-.rating-grid { display: flex; flex-direction: column; gap: 14px; }
-.rating-block { display: flex; align-items: center; gap: 12px; }
+.rating-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; align-items: end; }
+/* Bar-graph orientation: label button at the bottom, 5 boxes stacked above it
+   filling upward (level 1 at the bottom, level 5 at the top). */
+.rating-block { display: flex; flex-direction: column-reverse; align-items: stretch; gap: 10px; min-width: 0; }
+@media (max-width: 640px) {
+  .rating-grid { grid-template-columns: repeat(3, 1fr); row-gap: 18px; }
+}
 .rating-block .label {
-flex: 0 0 auto; min-width: 96px; text-align: center;
+flex: 0 0 auto; min-width: 0; text-align: center;
 font-size: 13px; color: var(--text); text-transform: uppercase; letter-spacing: .04em; font-weight: 800;
 background: var(--pink); border: 2px solid var(--border); border-radius: 0;
 padding: 9px 10px; box-shadow: 4px 4px 0 var(--border); margin-bottom: 0;
 }
-.rating-icons { flex: 1; display: flex; justify-content: space-between; align-items: center; gap: 4px; cursor: pointer; padding: 0 2px; }
-.rating-icons span { flex: 1; height: 26px; font-size: 0; background: var(--pink-soft); border: 2px solid var(--border); border-radius: 0; opacity: 1; transition: background .12s ease; }
+.rating-icons { display: flex; flex-direction: column-reverse; justify-content: flex-end; align-items: stretch; gap: 4px; cursor: pointer; padding: 0 2px; }
+.rating-icons span { flex: 0 0 auto; height: 26px; font-size: 0; background: var(--pink-soft); border: 2px solid var(--border); border-radius: 0; opacity: 1; transition: background .12s ease; }
 .rating-icons span.filled { background: var(--purple); }
 
 .char-cols { display: flex; gap: 12px; }
