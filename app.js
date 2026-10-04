@@ -3535,10 +3535,10 @@ const TAG_SECTIONS = {
 // #389: user-approved expanded section list (Tags container + Tag Manager's
 // Manage tab). The first four are the original sections; the rest were added
 // after reviewing the tag-categorization proposal spreadsheet.
-const TAG_SECTION_ORDER = ['Couple', 'Smut', 'Setting', 'Fandom', 'Format', 'General'];
+const TAG_SECTION_ORDER = ['Couple', 'Smut', 'Setting', 'Format', 'Themes', 'General'];
 // Sections merged later at the user's request: Appearance folded into Couple,
 // Time Period folded into Setting. Aliases keep older mappings/overrides valid.
-const TAG_SECTION_ALIASES = { 'Appearance': 'Couple', 'Time Period': 'Setting', 'Themes': 'General', 'Tropes': 'Couple', 'Occupation': 'Couple' };
+const TAG_SECTION_ALIASES = { 'Appearance': 'Couple', 'Time Period': 'Setting', 'Fandom': 'Format', 'Tropes': 'Couple', 'Occupation': 'Couple' };
 // #390: searchable merge-target picker for the Tag Manager's merge button.
 // Replaces the old free-text prompt(): shows a type-to-filter list of every
 // existing tag (except the one being merged) and resolves with the exact
@@ -3611,6 +3611,53 @@ Object.assign(TAG_SECTIONS, {
   'ancientgreece': 'Time Period', 'apocalypse': 'Time Period', 'dystopianpostapocalypse': 'Time Period', 'future': 'Time Period', 'historical': 'Time Period', 'medieval': 'Time Period', 'postapocalyptic': 'Time Period', 'ww2': 'Time Period',
   // Tropes
   'adultcouples': 'Tropes', 'agegap': 'Tropes', 'amnesia': 'Tropes', 'awesomesidecouple': 'Tropes', 'blackmail': 'Tropes', 'childhoodfriends': 'Tropes', 'comingofage': 'Tropes', 'contract': 'Tropes', 'contractmarriage': 'Tropes', 'crazybottom': 'Tropes', 'deathofalovedone': 'Tropes', 'debt': 'Tropes', 'enemiestolovers': 'Tropes', 'fallingforthemark': 'Tropes', 'fatedlovers': 'Tropes', 'forcedproximity': 'Tropes', 'friendstolovers': 'Tropes', 'genderbender': 'Tropes', 'goodcommunication': 'Tropes', 'harem': 'Tropes', 'hiddenidentity': 'Tropes', 'imprisoned': 'Tropes', 'isekai': 'Tropes', 'jealousy': 'Tropes', 'malefemalepairing': 'Tropes', 'manipulation': 'Tropes', 'marriageproposal': 'Tropes', 'masterservantrelationship': 'Tropes', 'matureromance': 'Tropes', 'misunderstanding': 'Tropes', 'neighbors': 'Tropes', 'obsessivelove': 'Tropes', 'onebed': 'Tropes', 'onenightstand': 'Tropes', 'oppositesattract': 'Tropes', 'orphans': 'Tropes', 'personinastrangeworld': 'Tropes', 'polyamory': 'Tropes', 'possessivelovers': 'Tropes', 'psychobottom': 'Tropes', 'psychotop': 'Tropes', 'redthread': 'Tropes', 'reincarnation': 'Tropes', 'revenge': 'Tropes', 'richpoordynamics': 'Tropes', 'rivalstolovers': 'Tropes', 'roommates': 'Tropes', 'secretchild': 'Tropes', 'stalker': 'Tropes', 'stalking': 'Tropes', 'studentteacherrelationship': 'Tropes', 'timeloop': 'Tropes', 'timetravel': 'Tropes', 'trappedinavideogame': 'Tropes', 'unrequitedending': 'Tropes', 'unrequitedlove': 'Tropes', 'yanderebottom': 'Tropes', 'yanderetop': 'Tropes',
+});
+Object.assign(TAG_SECTIONS, {
+  'action': 'Themes',
+  'adventure': 'Themes',
+  'fantasy': 'Themes',
+  'supernatural': 'Themes',
+  'horror': 'Themes',
+  'mystery': 'Themes',
+  'thriller': 'Themes',
+  'drama': 'Themes',
+  'romance': 'Themes',
+  'scifi': 'Themes',
+  'sliceoflife': 'Themes',
+  'dark': 'Themes',
+  'angst': 'Themes',
+  'funny': 'Themes',
+  'sooooosweet': 'Themes',
+  'psychological': 'Themes',
+  'philosophical': 'Themes',
+  'emotionaldamagetragedy': 'Themes',
+  'sadending': 'Themes',
+  'crime': 'Themes',
+  'survival': 'Themes',
+  'magic': 'Themes',
+  'superpowers': 'Themes',
+  'psychicpowers': 'Themes',
+  'vampire': 'Themes',
+  'zombies': 'Themes',
+  'ghosts': 'Themes',
+  'demons': 'Themes',
+  'monsters': 'Themes',
+  'aliens': 'Themes',
+  'goblin': 'Themes',
+  'gods': 'Themes',
+  'mermaid': 'Themes',
+  'curse': 'Themes',
+  'cats': 'Themes',
+  'dogs': 'Themes',
+  'snakes': 'Themes',
+  'animals': 'Themes',
+  'animalcharacteristics': 'Themes',
+  'animaltransformation': 'Themes',
+  'cutepet': 'Themes',
+  'cute': 'Themes',
+  'christmas': 'Themes',
+  'halloween': 'Themes',
+  'egyptianmythology': 'Themes',
 });
 function sectionForTag(t) {
   const key = normalizeTagKey(t);
