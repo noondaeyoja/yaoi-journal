@@ -3535,7 +3535,10 @@ const TAG_SECTIONS = {
 // #389: user-approved expanded section list (Tags container + Tag Manager's
 // Manage tab). The first four are the original sections; the rest were added
 // after reviewing the tag-categorization proposal spreadsheet.
-const TAG_SECTION_ORDER = ['Couple', 'Themes', 'Smut', 'General', 'Appearance', 'Tropes', 'Setting', 'Occupation', 'Time Period', 'Fandom', 'Format'];
+const TAG_SECTION_ORDER = ['Couple', 'Occupation', 'Smut', 'Themes', 'Tropes', 'Setting', 'Fandom', 'Format', 'General'];
+// Sections merged later at the user's request: Appearance folded into Couple,
+// Time Period folded into Setting. Aliases keep older mappings/overrides valid.
+const TAG_SECTION_ALIASES = { 'Appearance': 'Couple', 'Time Period': 'Setting' };
 // #390: searchable merge-target picker for the Tag Manager's merge button.
 // Replaces the old free-text prompt(): shows a type-to-filter list of every
 // existing tag (except the one being merged) and resolves with the exact
@@ -3611,7 +3614,8 @@ Object.assign(TAG_SECTIONS, {
 });
 function sectionForTag(t) {
   const key = normalizeTagKey(t);
-  const s = TAG_SECTION_OVERRIDES[key] || TAG_SECTIONS[key] || 'General';
+  const raw = TAG_SECTION_OVERRIDES[key] || TAG_SECTIONS[key] || 'General';
+  const s = TAG_SECTION_ALIASES[raw] || raw;
   return TAG_SECTION_ORDER.includes(s) ? s : 'General';
 }
 // #362: Tag Manager parenthetical marker -- only for tags that are actually
