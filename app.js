@@ -4826,7 +4826,7 @@ function renderReactionsLibrary() {
     ? `<div class="masonry-item" data-images-pending-entry="${escapeHtml(img.entryId)}" title="Still downloading from Drive — tap to open ${escapeHtml(img.entryTitle || '')}">
         <div class="cover-placeholder" style="height:100%;">⏳</div>
       </div>`
-    : `<div class="masonry-item ${IMAGE_SELECT_MODE ? 'selectable' : ''} ${IMAGE_SELECTED.has(img.dataUrl) ? 'selected' : ''}" data-images-item="${escapeHtml(img.dataUrl)}">
+    : `<div class="masonry-item ${IMAGE_SELECT_MODE ? 'selectable' : ''} ${IMAGE_SELECTED.has(img.dataUrl) ? 'selected' : ''}" data-images-item="${escapeHtml(img.dataUrl)}" data-images-rid="${escapeHtml(img.reactionId || '')}">
       ${isVideoUrl(img.dataUrl) ? `<video src="${img.dataUrl}" autoplay loop muted playsinline></video>` : `<img src="${img.dataUrl}" alt="" loading="lazy">`}
       ${IMAGE_SELECT_MODE ? `<span class="select-check">${IMAGE_SELECTED.has(img.dataUrl) ? '✅' : '⬜'}</span>` : ''}
       ${!IMAGE_SELECT_MODE
@@ -5163,7 +5163,7 @@ function mediaToggleButtonsHtml(dataUrl, inReactions, inH, showReactionsToggle =
   `;
 }
 
-async function openImageAttachmentsModal(dataUrl) {
+async function openImageAttachmentsModal(dataUrl, reactionId) {
   const entries = ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(dataUrl));
   // Built-ins-plus-custom, same list Reactions uses — the 4 built-in moods
   // should be toggleable from Images too, not just custom groups.
@@ -5177,7 +5177,7 @@ async function openImageAttachmentsModal(dataUrl) {
   // has to go through deleteReaction directly rather than the entry-cleanup
   // loop in deleteImageFromGalleryEverywhere (which has nothing to find for
   // it if it's not attached anywhere).
-  const standaloneReaction = entries.length === 0 ? ALL_REACTIONS.find((r) => r.dataUrl === dataUrl && r.source === 'images') : null;
+  const standaloneReaction = entries.length === 0 ? ((reactionId && ALL_REACTIONS.find((r) => r.id === reactionId)) || ALL_REACTIONS.find((r) => r.dataUrl === dataUrl)) : null;
   const { prev, next } = mediaModalNavNeighbors(IMAGES_NAV_LIST, dataUrl);
   openModal(`
     <div class="modal-close-corner-wrap">
@@ -9412,6 +9412,7 @@ function attachRootHandlers() {
   root.querySelectorAll('[data-images-item]').forEach((el) => {
     el.onclick = async () => {
       const url = el.getAttribute('data-images-item');
+      const rid = el.getAttribute('data-images-rid') || null;
       if (IMAGE_SELECT_MODE) {
         if (IMAGE_SELECTED.has(url)) {
           // Deselecting is always just that one image -- never triggers
@@ -9449,14 +9450,14 @@ function attachRootHandlers() {
         // "deleted" image again since it was never actually gone. Look up
         // the real record so reaction-backed images route through
         // deleteReaction like they're supposed to.
-        const match = allAppImages().find((i) => i.dataUrl === url);
+        const match = allAppImages().find((i) => i.dataUrl === url && (i.reactionId || null) === rid) || allAppImages().find((i) => i.dataUrl === url);
         // Before it's gone for good, hand off anything this copy had —
         // mood/group tags, Reactions/NSFW membership — to whichever other
         // copy(ies) remain in this same comparison, so tapping the "wrong"
         // one to delete never costs already-done sorting work.
         const dupGroup = (IMAGE_DUP_GROUPS || []).find((g) => g.some((img) => img.dataUrl === url));
         if (dupGroup) {
-          const survivorImageUrls = dupGroup.filter((img) => img.dataUrl !== url).map((img) => img.dataUrl);
+          const survivorImageUrls = dupGroup.filter((img) => !(img.dataUrl === url && (img.reactionId || null) === (match ? (match.reactionId || null) : null))).map((img) => img.dataUrl);
           await transferDuplicateTagsOnDelete(url, survivorImageUrls, match ? match.reactionId : null);
           // Do this BEFORE the actual delete below — once the entry's photo
           // reference has already been swapped to the survivor, deleteImage-
@@ -9467,13 +9468,13 @@ function attachRootHandlers() {
         await deleteImageFromGalleryEverywhere({ dataUrl: url, reactionId: match ? match.reactionId : null });
         if (IMAGE_DUP_GROUPS) {
           IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS
-            .map((g) => g.filter((x) => x.dataUrl !== url))
+            .map((g) => g.filter((x) => !(x.dataUrl === url && (x.reactionId || null) === (match ? (match.reactionId || null) : null))))
             .filter((g) => g.length > 1);
         }
         showToast('Deleted');
         render();
       } else {
-        openImageAttachmentsModal(url);
+        openImageAttachmentsModal(url, rid);
       }
     };
   });
@@ -10332,7 +10333,7 @@ document.addEventListener('click', async (ev) => {
     const reactionId = t.getAttribute('data-delete-image-reaction-id') || null;
     if (await confirmModal('Delete this image? Any reads it\'s attached to lose their copy.')) {
       await deleteImageFromGalleryEverywhere({ dataUrl, reactionId });
-      if (IMAGE_DUP_GROUPS) IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS.filter((g) => !g.some((img) => img.dataUrl === dataUrl));
+      if (IMAGE_DUP_GROUPS) IMAGE_DUP_GROUPS = IMAGE_DUP_GROUPS.map((g) => g.filter((img) => !(img.dataUrl === dataUrl && (img.reactionId || null) === reactionId))).filter((g) => g.length > 1);
       closeModal();
       showToast('Deleted');
       render();
