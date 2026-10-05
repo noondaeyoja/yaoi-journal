@@ -7487,7 +7487,7 @@ function renderDetail(e) {
           </div>
         </div></div>
         <div class="stats-row"><div class="stats-row-label">Story Status</div><div class="stats-row-content">
-          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;width:100%;">
             ${['WIP','Finished','Discontinued'].map((s) => `<button type="button" class="ref-btn ${e.status === s ? 'active' : ''}" style="flex:1 1 auto;" data-status-btn="${s}">${s}</button>`).join('')}
           </div>
         </div></div>
