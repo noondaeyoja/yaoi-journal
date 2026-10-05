@@ -2527,6 +2527,7 @@ function restoreNavState() {
   } catch (err) { /* corrupt/missing — just boots to Home like before */ }
 }
 function navigate(view, entryId, opts) {
+  if (view === 'meme') view = 'reactions'; // Reactions merged into the Images gallery
   RENDER_DEFERRED = false;
   const isBack = !!(opts && opts.isBack);
   // A modal (e.g. the Suggested Match Review carousel) is a separate overlay
@@ -2883,7 +2884,7 @@ document.body.dataset.bg = BG_MODE;
   else if (STATE.view === 'tags') body = renderTagManager();
   else if (STATE.view === 'tagEntries') body = renderTagEntries();
   else if (STATE.view === 'reactions') body = renderReactionsLibrary();
-  else if (STATE.view === 'meme') body = renderMemeLibrary();
+  else if (STATE.view === 'meme') body = renderReactionsLibrary();
   else if (STATE.view === 'h') body = renderHLibrary();
   else if (STATE.view === 'database') body = renderDatabase();
   else if (STATE.view === 'review') body = renderReviewQueue();
@@ -3447,7 +3448,6 @@ function renderBottomNav(active) {
       <button data-nav="home" class="${active === 'home' ? 'active' : ''}"><span class="icon">📔</span>Journal</button>
       <button data-nav="tags" class="${active === 'tags' ? 'active' : ''}"><span class="icon">🏷️</span>Tags</button>
       <button data-nav="reactions" class="${active === 'reactions' ? 'active' : ''}"><span class="icon">🖼️</span>Images</button>
-      <button data-nav="meme" class="${active === 'meme' ? 'active' : ''}"><span class="icon">🎭</span>Reactions</button>
       ${!isSFW() ? `<button data-nav="h" class="${active === 'h' ? 'active' : ''}"><span class="icon">💦</span>NSFW</button>` : ''}
       <button data-nav="database" class="${active === 'database' ? 'active' : ''}"><span class="icon">🗂️</span>Database</button>
     </div>`;
@@ -4082,7 +4082,7 @@ function allAppImages() {
   // through the Images tab (source: 'images') or is genuinely attached to an
   // entry (covered separately by `hydrated` above, independent of source).
   const standaloneReactions = ALL_REACTIONS
-    .filter((r) => r.dataUrl && !map.has(r.dataUrl) && !H_IMAGE_KEYS.has(imageKey(r.dataUrl)) && r.source === 'images')
+    .filter((r) => r.dataUrl && !map.has(r.dataUrl) && !H_IMAGE_KEYS.has(imageKey(r.dataUrl)))
     .map((r) => ({
       dataUrl: r.dataUrl,
       reactionId: r.id,
@@ -4276,12 +4276,19 @@ function groupUsageCount(key) {
 function visibleGroupList() {
   return Array.from(IMAGE_GROUPS).filter((k) => !isHiddenGroup(k)).sort((a, b) => moodSortKey(a).localeCompare(moodSortKey(b)));
 }
+// Group/mood names match ignoring capitalization, spaces and emoji, so
+// "🍆Dick", "Dick" and "dick" are all the same group.
+function groupNameKey(s) {
+  const raw = String(s || '');
+  const k = raw.replace(/[^\p{L}\p{N}]+/gu, '').toLowerCase();
+  return k || raw.toLowerCase();
+}
 function addImageGroup(rawName) {
   const name = String(rawName || '').trim();
   if (!name) return null;
   const deleted = Array.from(DELETED_GROUP_KEYS).find((k) => k.toLowerCase() === name.toLowerCase());
   if (deleted) { showToast(`"${deleted}" was deleted — restore it from Manage > Hidden first`); return null; }
-  const existing = Array.from(IMAGE_GROUPS).find((k) => k.toLowerCase() === name.toLowerCase());
+  const existing = Array.from(IMAGE_GROUPS).find((k) => groupNameKey(k) === groupNameKey(name));
   const key = existing || name;
   if (!existing) { IMAGE_GROUPS.add(key); persistSharedGroups(); }
   return key;
@@ -4290,7 +4297,7 @@ function renameImageGroup(oldKey, rawNewName) {
   const newName = String(rawNewName || '').trim();
   if (!newName || newName === oldKey) return;
   IMAGE_GROUPS.delete(oldKey);
-  const mergedInto = Array.from(IMAGE_GROUPS).find((k) => k.toLowerCase() === newName.toLowerCase());
+  const mergedInto = Array.from(IMAGE_GROUPS).find((k) => groupNameKey(k) === groupNameKey(newName));
   const finalKey = mergedInto || newName;
   if (!mergedInto) IMAGE_GROUPS.add(finalKey);
   persistSharedGroups();
@@ -4344,7 +4351,8 @@ function getImageTags(dataUrl, reactionTagIndex) {
 // "tagged" in her mental model, even before it's also given a mood group.
 function isImageUntagged(img, reactionTagIndex) {
   const kinds = img.kinds || [];
-  return !getImageTags(img.dataUrl, reactionTagIndex).length && !kinds.includes('semi') && !kinds.includes('uke');
+  void kinds; // untagged = not in any mood group (Semi/Uke no longer exempt)
+  return !getImageTags(img.dataUrl, reactionTagIndex).length;
 }
 function toggleImageTag(dataUrl, tag) {
   const key = imageKey(dataUrl);
@@ -5196,7 +5204,7 @@ async function openImageAttachmentsModal(dataUrl) {
     <div class="field-row">
       <label>Also in</label>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
-        ${mediaToggleButtonsHtml(dataUrl, inReactions, inH)}
+        ${mediaToggleButtonsHtml(dataUrl, inReactions, inH, false)}
       </div>
     </div>
     <div class="modal-actions">
@@ -5248,7 +5256,7 @@ function addCustomMood(rawName) {
   if (!name) return null;
   const deleted = Array.from(DELETED_GROUP_KEYS).find((k) => k.toLowerCase() === name.toLowerCase());
   if (deleted) { showToast(`"${deleted}" was deleted — restore it from Manage > Hidden first`); return null; }
-  const existing = [...MOOD_OPTIONS.map((m) => m.key), ...CUSTOM_MOODS].find((k) => k.toLowerCase() === name.toLowerCase());
+  const existing = [...MOOD_OPTIONS.map((m) => m.key), ...CUSTOM_MOODS].find((k) => groupNameKey(k) === groupNameKey(name));
   const key = existing || name;
   if (!existing) { CUSTOM_MOODS.add(key); persistSharedGroups(); }
   return key;
