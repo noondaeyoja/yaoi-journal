@@ -3671,6 +3671,7 @@ Object.assign(TAG_SECTIONS, {
 });
 function sectionForTag(t) {
   const key = normalizeTagKey(t);
+  if (/\b(green|red|black) flag\b/.test(key) && !TAG_SECTION_OVERRIDES[key]) return 'Couple';
   const raw = TAG_SECTION_OVERRIDES[key] || TAG_SECTIONS[key] || 'General';
   const s = TAG_SECTION_ALIASES[raw] || raw;
   return TAG_SECTION_ORDER.includes(s) ? s : 'General';
