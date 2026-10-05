@@ -7491,7 +7491,7 @@ function renderDetail(e) {
             ${['WIP','Finished','Discontinued'].map((s) => `<button type="button" class="ref-btn ${e.status === s ? 'active' : ''}" style="flex:1 1 auto;" data-status-btn="${s}">${s}</button>`).join('')}
           </div>
         </div></div>
-        <div class="stats-row"><div class="stats-row-label">Format</div><div class="stats-row-content">${mediaFormatSelect}</div></div>
+        <div class="stats-row"><div class="stats-row-label">Format</div><div class="stats-row-content"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;width:100%;">${MEDIA_FORMATS.map((f) => `<button type="button" class="ref-btn ${e.mediaFormat === f.value ? 'active' : ''}" data-mediaformat-btn="${f.value}">${f.label}</button>`).join('')}</div></div></div>
         <div class="stats-row"><div class="stats-row-label">Style</div><div class="stats-row-content" style="display:flex;gap:8px;">
             <button type="button" class="ref-btn ${isBWStyle(e) ? 'active' : ''}" style="flex:1;" data-toggle-bw="1">B&amp;W</button>
             <button type="button" class="ref-btn ${isColorStyle(e) ? 'active' : ''}" style="flex:1;" data-toggle-color="1">Color</button>
@@ -9026,6 +9026,16 @@ function attachRootHandlers() {
     showToast('Status updated');
     render();
   };
+  root.querySelectorAll('[data-mediaformat-btn]').forEach((btn) => {
+    btn.onclick = async () => {
+      const e = getEntry(STATE.entryId);
+      const val = btn.getAttribute('data-mediaformat-btn');
+      e.mediaFormat = (e.mediaFormat === val) ? null : val;
+      await saveEntry(e);
+      showToast('Format updated');
+      render();
+    };
+  });
   const mediaFormatSelectEl = root.querySelector('[data-mediaformat-select]');
   if (mediaFormatSelectEl) mediaFormatSelectEl.onchange = async () => {
     const e = getEntry(STATE.entryId);
