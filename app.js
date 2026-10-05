@@ -5213,7 +5213,7 @@ async function openImageAttachmentsModal(dataUrl, reactionId) {
     ${entries.length
       ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;">${entries.map((e) => `
           <button class="ref-btn" style="text-align:left;" data-goto-entry-from-modal="${e.id}">${escapeHtml(e.title)}</button>`).join('')}</div>`
-      : `<div class="empty-state">Not attached to any read yet.</div>`}
+      : `<div class="empty-state" style="padding:4px 0;margin:0 0 8px;font-size:13px;line-height:1.3;">Not attached to any read yet.</div>`}
     <button class="ref-btn" style="width:100%;margin-bottom:10px;" data-attach-this-image="${escapeHtml(dataUrl)}">📎 Attach to a read…</button>
     <div class="field-row">
       <label>Groups</label>
