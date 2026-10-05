@@ -4780,7 +4780,28 @@ function renderImageMasonryBatch(list, renderItem) {
   return `<div class="image-masonry">${visible.map((img) => renderItem(img)).join('')}</div>${loadMore}`;
 }
 
+// Images that are Semi/Uke by origin (an entry's Semi/Uke photo or its photo
+// history) also get a real Semi/Uke tag, so they show as tagged (and under the
+// Semi/Uke chips) instead of looking untagged. Runs on every render but only
+// writes when something is actually missing.
+function ensureKindTags() {
+  const touched = [];
+  allAppImages().forEach((img) => {
+    if (img.pending || !img.dataUrl) return;
+    const ks = img.kinds || [];
+    const need = [];
+    if (ks.includes('semi')) need.push(SEMI_TAG);
+    if (ks.includes('uke')) need.push(UKE_TAG);
+    if (!need.length) return;
+    const key = imageKey(img.dataUrl);
+    const cur = IMAGE_TAG_MAP[key] || [];
+    const add = need.filter((tg) => !cur.includes(tg));
+    if (add.length) { IMAGE_TAG_MAP[key] = [...cur, ...add]; touched.push(key); }
+  });
+  if (touched.length) persistImageTagMap(touched);
+}
 function renderReactionsLibrary() {
+  ensureKindTags();
   let items = allAppImages();
   // #328: the header line below says "across the app" implying the true
   // app-wide total, but items gets reassigned to whatever mood/kind/group
