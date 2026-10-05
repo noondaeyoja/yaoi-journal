@@ -7482,17 +7482,14 @@ function renderDetail(e) {
         </div>
         <div class="stats-rows">
         <div class="stats-row"><div class="stats-row-label">Shelf</div><div class="stats-row-content">
-          <select class="shelf-select status-pill-select" data-shelf-select="1">
-            ${SHELVES_READING.map((s) => `<option value="${escapeHtml(s)}" ${e.shelf === s ? 'selected' : ''}>${escapeHtml(shelfLabelForEntry(s, isReading))}</option>`).join('')}
-          </select>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            ${SHELVES_READING.map((s) => `<button type="button" class="ref-btn ${e.shelf === s ? 'active' : ''}" style="flex:1 1 auto;" data-shelf-btn="${escapeHtml(s)}">${escapeHtml(shelfLabelForEntry(s, isReading))}</button>`).join('')}
+          </div>
         </div></div>
         <div class="stats-row"><div class="stats-row-label">Story Status</div><div class="stats-row-content">
-          <select id="edit-status" class="shelf-select status-pill-select">
-            <option value="" ${!e.status ? 'selected' : ''}>—</option>
-            <option value="WIP" ${e.status === 'WIP' ? 'selected' : ''}>WIP</option>
-            <option value="Finished" ${e.status === 'Finished' ? 'selected' : ''}>Finished</option>
-            <option value="Discontinued" ${e.status === 'Discontinued' ? 'selected' : ''}>Discontinued</option>
-          </select>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            ${['WIP','Finished','Discontinued'].map((s) => `<button type="button" class="ref-btn ${e.status === s ? 'active' : ''}" style="flex:1 1 auto;" data-status-btn="${s}">${s}</button>`).join('')}
+          </div>
         </div></div>
         <div class="stats-row"><div class="stats-row-label">Format</div><div class="stats-row-content">${mediaFormatSelect}</div></div>
         <div class="stats-row"><div class="stats-row-label">Style</div><div class="stats-row-content" style="display:flex;gap:8px;">
@@ -8992,6 +8989,25 @@ function attachRootHandlers() {
           btn.onclick = () => { closeModal(); mergeDuplicateGroupItem(sourceId, btn.getAttribute('data-merge-group-pick')); };
         });
       }
+    };
+  });
+  root.querySelectorAll('[data-shelf-btn]').forEach((btn) => {
+    btn.onclick = async () => {
+      const e = getEntry(STATE.entryId);
+      e.shelf = btn.getAttribute('data-shelf-btn');
+      await saveEntry(e);
+      showToast('Shelf updated');
+      render();
+    };
+  });
+  root.querySelectorAll('[data-status-btn]').forEach((btn) => {
+    btn.onclick = async () => {
+      const e = getEntry(STATE.entryId);
+      const val = btn.getAttribute('data-status-btn');
+      e.status = (e.status === val) ? '' : val;
+      await saveEntry(e);
+      showToast('Saved!');
+      render();
     };
   });
   const shelfSelectEl = root.querySelector('[data-shelf-select]');
