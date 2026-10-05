@@ -507,6 +507,14 @@ async function loadAllEntries() {
 
 async function saveEntry(entry) {
   normalizeEntry(entry);
+  // Track when a read was marked Completed (for most-recently-completed-first
+  // ordering). Reads already Completed with no stamp fall back to their last
+  // update time; leaving Completed clears the stamp.
+  if (entry.shelf === 'Completed') {
+    if (!entry.completedAt) entry.completedAt = entry.updatedAt || entry.createdAt || new Date().toISOString();
+  } else if (entry.completedAt) {
+    entry.completedAt = null;
+  }
   entry.updatedAt = new Date().toISOString();
   await idbPut(STORE_ENTRIES, entry);
   const idx = ALL_ENTRIES.findIndex((e) => e.id === entry.id);
@@ -3339,6 +3347,8 @@ function renderHome() {
     shelvesToShow.forEach((shelf) => {
       const group = entries.filter((e) => e.shelf === shelf);
       if (group.length === 0) return;
+      // Completed shelf: most recently marked complete first.
+      if (shelf === 'Completed') group.sort((a, b) => new Date(b.completedAt || b.updatedAt || 0) - new Date(a.completedAt || a.updatedAt || 0));
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
       body += homeSectionHtml(rowId, shelfLabel(shelf), group.length, group.map((e) => renderCoverCard(e)).join(''));
     });
@@ -8994,7 +9004,9 @@ function attachRootHandlers() {
   root.querySelectorAll('[data-shelf-btn]').forEach((btn) => {
     btn.onclick = async () => {
       const e = getEntry(STATE.entryId);
+      const prevShelf = e.shelf;
       e.shelf = btn.getAttribute('data-shelf-btn');
+      if (e.shelf === 'Completed' && prevShelf !== 'Completed') e.completedAt = new Date().toISOString();
       await saveEntry(e);
       showToast('Shelf updated');
       render();
@@ -9994,6 +10006,8 @@ function renderHomeInPlace() {
     shelvesToShow.forEach((shelf) => {
       const group = entries.filter((e) => e.shelf === shelf);
       if (group.length === 0) return;
+      // Completed shelf: most recently marked complete first.
+      if (shelf === 'Completed') group.sort((a, b) => new Date(b.completedAt || b.updatedAt || 0) - new Date(a.completedAt || a.updatedAt || 0));
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
       body += homeSectionHtml(rowId, shelfLabel(shelf), group.length, group.map((e) => renderCoverCard(e)).join(''));
     });
