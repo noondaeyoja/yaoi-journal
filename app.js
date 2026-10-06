@@ -2551,6 +2551,14 @@ function navigate(view, entryId, opts) {
   TAG_ADD_AUTOFOCUS = false;
   window.scrollTo(0, 0);
   persistNavState();
+  if (!(opts && opts.fromPop) && !isBack) {
+    try {
+      const st = history.state;
+      const ns = { yj: 1, view: view, entryId: entryId || null };
+      if (st && st.yj && st.view === ns.view && st.entryId === ns.entryId) history.replaceState(ns, '');
+      else history.pushState(ns, '');
+    } catch (err) {}
+  }
   render();
   // Best-effort retries for Drive-backed images that may have missed their
   // only previous hydration attempt (e.g. this device's Drive token wasn't
@@ -2570,6 +2578,13 @@ function navigateBack() {
   if (prev) navigate(prev.view, prev.entryId, { isBack: true });
   else navigate('home');
 }
+// Browser/OS swipe back & forward: every in-app navigation pushes a history entry
+// (see navigate()), so the native back/forward gesture walks the same screens.
+try { history.replaceState({ yj: 1, view: STATE.view, entryId: STATE.entryId || null }, ''); } catch (err) {}
+window.addEventListener('popstate', (ev) => {
+  const s = ev.state;
+  if (s && s.yj) navigate(s.view, s.entryId, { isBack: true, fromPop: true });
+});
 
 /* ---------------------------------------------------------------------- */
 /* Auth screen — gates the whole app behind a signed-in Firebase account  */
@@ -3947,7 +3962,7 @@ function renderTagEntries() {
   return `
     <div class="app-header">
       <div class="brand-row">
-        <button class="back-btn" data-nav-back="1">← Back</button>
+        
         <h1>🏷️ ${escapeHtml(t || '')}</h1>
       </div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} tagged "${escapeHtml(t || '')}"</div>
@@ -7469,7 +7484,7 @@ function renderDetail(e) {
     ${detailNeighbors.next ? `<button class="detail-nav-arrow detail-nav-next" data-open-entry="${escapeHtml(detailNeighbors.next)}" title="Next result">›</button>` : ''}
     <div class="detail-header">
       <div class="detail-header-row">
-        <button class="back-btn" data-nav-back="1">← Back</button>
+        
         <h2>${escapeHtml(e.title)}</h2>
       </div>
       <div class="detail-actions-row">
@@ -7747,10 +7762,12 @@ function renderDatabase() {
         ${isAdmin() ? `<button class="ref-btn" data-preview-crossref-modal="1">🔍 Preview cross-reference popup</button>` : ''}
         <div class="field-row">
         <label>Page Background</label>
-        <div style="display:flex;gap:8px;">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button type="button" data-bg-mode-pick="cyan" class="chip ${BG_MODE === 'cyan' ? 'active' : ''}" style="flex:1;">Cyan</button>
           <button type="button" data-bg-mode-pick="purple" class="chip ${BG_MODE === 'purple' ? 'active' : ''}" style="flex:1;">Purple</button>
           <button type="button" data-bg-mode-pick="pink" class="chip ${BG_MODE === 'pink' ? 'active' : ''}" style="flex:1;">Pink</button>
+          <button type="button" data-bg-mode-pick="grid" class="chip ${BG_MODE === 'grid' ? 'active' : ''}" style="flex:1 1 45%;">Grid</button>
+          <button type="button" data-bg-mode-pick="grid-blue" class="chip ${BG_MODE === 'grid-blue' ? 'active' : ''}" style="flex:1 1 45%;">Blue Grid</button>
         </div>
       </div>
       <div class="field-row">
@@ -7898,7 +7915,7 @@ function renderReviewQueue() {
   return `
     <div class="app-header">
       <div class="brand-row">
-        <button class="back-btn" data-nav-back="1">← Back</button>
+        
         <h1>Review Missing Cover/Reference</h1>
       </div>
       <div style="color:var(--text-dim);font-size:12px;padding:0 2px;">${items.length} item${items.length === 1 ? '' : 's'} to check. Approving applies the suggested cover, tags, author, and reference link to your journal entry.</div>
@@ -8130,7 +8147,7 @@ function renderDuplicates() {
   return `
     <div class="app-header">
       <div class="brand-row">
-        <button class="back-btn" data-nav-back="1">← Back</button>
+        
         <h1>Review Duplicates</h1>
       </div>
       <div style="color:var(--text-dim);font-size:12px;padding:0 2px;">${groups.length} possible duplicate group${groups.length === 1 ? '' : 's'}. Compare the details, then delete the one you don't want to keep.</div>
@@ -10935,9 +10952,18 @@ async function boot() {
 /* hijacked into reloading the whole app mid-scroll).                     */
 /* ---------------------------------------------------------------------- */
 (function setupPullToRefresh() {
-  const THRESHOLD = 80; // px of downward drag before it counts as a "pull"
+  const THRESHOLD = 170; // long pull: roughly twice the old distance, with a visible indicator
   let startY = null;
   let armed = false;
+  let ind = null;
+  function indicator() {
+    if (ind) return ind;
+    ind = document.createElement('div');
+    ind.style.cssText = 'position:fixed;top:0;left:50%;transform:translate(-50%,-60px);z-index:9999;background:#fff;border:2px solid #0b0f2b;border-radius:999px;padding:7px 14px;font:800 12px/1 -apple-system,sans-serif;color:#0b0f2b;pointer-events:none;box-shadow:2px 2px 0 #0b0f2b;';
+    document.body.appendChild(ind);
+    return ind;
+  }
+  function hideInd() { if (ind) ind.style.transform = 'translate(-50%,-60px)'; }
   window.addEventListener('touchstart', (ev) => {
     const overlay = document.getElementById('overlay');
     if (overlay && overlay.classList.contains('open')) { startY = null; return; }
@@ -10948,11 +10974,44 @@ async function boot() {
   window.addEventListener('touchmove', (ev) => {
     if (startY === null) return;
     const dy = ev.touches[0].clientY - startY;
-    if (dy > THRESHOLD && window.scrollY === 0) armed = true;
+    if (dy > 30 && window.scrollY === 0) {
+      const el = indicator();
+      armed = dy > THRESHOLD;
+      el.textContent = armed ? '↑ Release to refresh' : '↓ Pull to refresh';
+      el.style.transform = 'translate(-50%,' + (Math.min(dy, THRESHOLD) / 3 + 8) + 'px)';
+    } else {
+      armed = false;
+      hideInd();
+    }
   }, { passive: true });
   window.addEventListener('touchend', () => {
-    if (armed) { armed = false; startY = null; location.reload(); return; }
+    if (armed) { armed = false; startY = null; if (ind) ind.textContent = 'Refreshing…'; location.reload(); return; }
     startY = null;
+    hideInd();
+  });
+})();
+
+// Installed (home-screen) mode has no native swipe-back, so mimic it: swipe in from the
+// left edge = back, from the right edge = forward. Skipped in a normal browser tab,
+// where the browser's own gesture already does this.
+(function setupEdgeSwipe() {
+  const standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+  if (!standalone) return;
+  let sx = null, sy = null, side = null;
+  window.addEventListener('touchstart', (ev) => {
+    if (ev.touches.length !== 1) { sx = null; return; }
+    const x = ev.touches[0].clientX;
+    side = x < 24 ? 'left' : (x > window.innerWidth - 24 ? 'right' : null);
+    sx = side ? x : null;
+    sy = ev.touches[0].clientY;
+  }, { passive: true });
+  window.addEventListener('touchend', (ev) => {
+    if (sx === null || !ev.changedTouches.length) return;
+    const dx = ev.changedTouches[0].clientX - sx;
+    const dy = Math.abs(ev.changedTouches[0].clientY - sy);
+    if (dy < 60 && side === 'left' && dx > 70) history.back();
+    else if (dy < 60 && side === 'right' && dx < -70) history.forward();
+    sx = null;
   });
 })();
 
