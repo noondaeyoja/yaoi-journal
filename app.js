@@ -2543,6 +2543,7 @@ function navigate(view, entryId, opts) {
   }
   STATE.view = view;
   STATE.entryId = entryId || null;
+  if (view === 'reactions') IMAGES_TAB = 'gallery'; // Images menu always opens on the Gallery tab
   DETAIL_EDIT_MODE = false;
   TAG_EDIT_MODE = false;
   TAG_FILTER_OPEN = false;
@@ -4735,7 +4736,7 @@ async function resetDismissedImageDupGroups() {
   render();
 }
 
-let IMAGES_TAB = 'attached'; // 'attached' | 'unattached' | 'duplicates'
+let IMAGES_TAB = 'gallery'; // 'attached' | 'unattached' | 'duplicates'
 // #379: each of the Images/Reactions gallery tabs used to render EVERY
 // matching image into one innerHTML string in a single shot -- with images
 // stored as inline base64 data URIs, a full pool (1300+ images) produced a
@@ -7762,12 +7763,12 @@ function renderDatabase() {
         ${isAdmin() ? `<button class="ref-btn" data-preview-crossref-modal="1">🔍 Preview cross-reference popup</button>` : ''}
         <div class="field-row">
         <label>Page Background</label>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button type="button" data-bg-mode-pick="cyan" class="chip ${BG_MODE === 'cyan' ? 'active' : ''}" style="flex:1;">Cyan</button>
-          <button type="button" data-bg-mode-pick="purple" class="chip ${BG_MODE === 'purple' ? 'active' : ''}" style="flex:1;">Purple</button>
-          <button type="button" data-bg-mode-pick="pink" class="chip ${BG_MODE === 'pink' ? 'active' : ''}" style="flex:1;">Pink</button>
-          <button type="button" data-bg-mode-pick="grid" class="chip ${BG_MODE === 'grid' ? 'active' : ''}" style="flex:1 1 45%;">Grid</button>
-          <button type="button" data-bg-mode-pick="grid-blue" class="chip ${BG_MODE === 'grid-blue' ? 'active' : ''}" style="flex:1 1 45%;">Blue Grid</button>
+        <div style="display:flex;gap:6px;flex-wrap:nowrap;width:100%;">
+          <button type="button" data-bg-mode-pick="cyan" class="chip ${BG_MODE === 'cyan' ? 'active' : ''}" style="flex:1 1 0;min-width:0;padding:8px 2px;font-size:12px;white-space:nowrap;">Cyan</button>
+          <button type="button" data-bg-mode-pick="purple" class="chip ${BG_MODE === 'purple' ? 'active' : ''}" style="flex:1 1 0;min-width:0;padding:8px 2px;font-size:12px;white-space:nowrap;">Purple</button>
+          <button type="button" data-bg-mode-pick="pink" class="chip ${BG_MODE === 'pink' ? 'active' : ''}" style="flex:1 1 0;min-width:0;padding:8px 2px;font-size:12px;white-space:nowrap;">Pink</button>
+          <button type="button" data-bg-mode-pick="grid" class="chip ${BG_MODE === 'grid' ? 'active' : ''}" style="flex:1 1 0;min-width:0;padding:8px 2px;font-size:12px;white-space:nowrap;">Grid</button>
+          <button type="button" data-bg-mode-pick="grid-blue" class="chip ${BG_MODE === 'grid-blue' ? 'active' : ''}" style="flex:1 1 0;min-width:0;padding:8px 2px;font-size:12px;white-space:nowrap;">Blue Grid</button>
         </div>
       </div>
       <div class="field-row">
