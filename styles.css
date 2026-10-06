@@ -953,3 +953,10 @@ background: var(--cyan); color: var(--text); font-weight: 800; font-size: 14px; 
 margin: -18px -18px 14px; padding: 12px 18px; border-bottom: 3px solid var(--border);
 }
 .crossref-modal-body { background: var(--yellow); margin: 0 -18px -18px; padding: 16px 18px; }
+
+
+/* Mobile: homepage filter dropdowns/buttons match the blue chips; Stats format buttons in 2 columns */
+@media (max-width: 700px) {
+  .filter-select, .rating-filter-select, .tag-ms-toggle { font-size: 12px !important; letter-spacing: .02em; }
+  .stats-format-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+}
