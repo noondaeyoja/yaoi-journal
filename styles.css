@@ -960,3 +960,11 @@ margin: -18px -18px 14px; padding: 12px 18px; border-bottom: 3px solid var(--bor
   .filter-select, .rating-filter-select, .tag-ms-toggle { font-size: 12px !important; letter-spacing: .02em; }
   .stats-format-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
 }
+
+
+/* Moleskine-style grid page backgrounds. The grid is a fixed full-viewport layer so it always reaches the bottom of the screen. */
+body[data-bg="grid"], body[data-bg="grid-blue"] { background-color: #fff; }
+body[data-bg="grid"]::before, body[data-bg="grid-blue"]::before { content: ""; position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: -1; pointer-events: none; background-color: #fff; }
+body[data-bg="grid"]::before { background-image: linear-gradient(#d9d9d9 1px, transparent 1px), linear-gradient(90deg, #d9d9d9 1px, transparent 1px); background-size: 30px 30px; }
+body[data-bg="grid-blue"]::before { background-image: linear-gradient(#6fd6f5 1px, transparent 1px), linear-gradient(90deg, #6fd6f5 1px, transparent 1px); background-size: 15px 15px; }
+body[data-bg="grid"] .app-header, body[data-bg="grid-blue"] .app-header, body[data-bg="grid"] .detail-header, body[data-bg="grid-blue"] .detail-header { background: #fff; }
