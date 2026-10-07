@@ -9382,8 +9382,14 @@ function attachRootHandlers() {
         : '<div style="color:var(--text-dim);font-size:12px;padding:6px 8px;">No matches.</div>';
       similarResultsEl.style.display = '';
     };
-    similarSearchInput.onblur = () => { setTimeout(() => { similarResultsEl.style.display = 'none'; }, 150); };
+    // On phones, tapping a result blurs the input first; the old 150ms hide
+    // removed the list before the tap's click fired, so nothing attached.
+    // Remember that a press started on the list and don't hide in that case.
+    similarResultsEl.addEventListener('pointerdown', () => { similarResultsEl._keep = true; setTimeout(() => { similarResultsEl._keep = false; }, 2500); });
+    similarResultsEl.addEventListener('touchstart', () => { similarResultsEl._keep = true; setTimeout(() => { similarResultsEl._keep = false; }, 2500); }, { passive: true });
+    similarSearchInput.onblur = () => { setTimeout(() => { if (!similarResultsEl._keep) similarResultsEl.style.display = 'none'; }, 250); };
     similarResultsEl.onclick = async (ev) => {
+      similarResultsEl._keep = false;
       const chip = ev.target.closest('[data-add-similar]');
       if (!chip) return;
       const sid = chip.getAttribute('data-add-similar');
