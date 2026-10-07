@@ -825,9 +825,24 @@ async function applyMetaSnapshot(data) {
     if (DELETED_REACTION_IDS.size !== before) changed = true;
     await idbPut(STORE_META, { key: 'deletedReactionIds', value: Array.from(DELETED_REACTION_IDS) });
   }
+  if (data.tagHideTs && typeof data.tagHideTs === 'object') {
+    const remoteHidden = new Set(Array.isArray(data.userHiddenTagKeys) ? data.userHiddenTagKeys : []);
+    for (const k of Object.keys(data.tagHideTs)) {
+      const rts = Number(data.tagHideTs[k]) || 0;
+      if (rts > (TAG_HIDE_TS[k] || 0)) {
+        TAG_HIDE_TS[k] = rts;
+        if (remoteHidden.has(k)) USER_HIDDEN_TAG_KEYS.add(k); else USER_HIDDEN_TAG_KEYS.delete(k);
+        changed = true;
+      }
+    }
+    await idbPut(STORE_META, { key: 'tagHideTs', value: TAG_HIDE_TS });
+    await idbPut(STORE_META, { key: 'userHiddenTagKeys', value: Array.from(USER_HIDDEN_TAG_KEYS) });
+  }
   if (Array.isArray(data.userHiddenTagKeys) && data.userHiddenTagKeys.length) {
     const before = USER_HIDDEN_TAG_KEYS.size;
-    USER_HIDDEN_TAG_KEYS = new Set([...USER_HIDDEN_TAG_KEYS, ...data.userHiddenTagKeys]);
+    // Skip keys the user explicitly unhid here (timestamped) -- a stale list from another device must not re-hide them.
+    const incomingHidden = data.userHiddenTagKeys.filter((k) => !(TAG_HIDE_TS[k] && !USER_HIDDEN_TAG_KEYS.has(k)));
+    USER_HIDDEN_TAG_KEYS = new Set([...USER_HIDDEN_TAG_KEYS, ...incomingHidden]);
     if (USER_HIDDEN_TAG_KEYS.size !== before) changed = true;
     await idbPut(STORE_META, { key: 'userHiddenTagKeys', value: Array.from(USER_HIDDEN_TAG_KEYS) });
   }
@@ -3136,12 +3151,17 @@ function isHiddenTag(t) {
   const norm = normalizeTagKey(t);
   return HIDDEN_TAG_KEYS.has(norm) || DELETED_TAG_KEYS.has(norm) || USER_HIDDEN_TAG_KEYS.has(norm);
 }
+// Per-tag timestamp of the last hide/unhide so an unhide can't be undone by
+// another device's stale "hidden" list being merged back in.
+let TAG_HIDE_TS = {};
 async function setTagSoftHidden(name, hidden) {
   const key = normalizeTagKey(name);
   if (hidden) USER_HIDDEN_TAG_KEYS.add(key); else USER_HIDDEN_TAG_KEYS.delete(key);
+  TAG_HIDE_TS[key] = Date.now();
   const arr = Array.from(USER_HIDDEN_TAG_KEYS);
   await idbPut(STORE_META, { key: 'userHiddenTagKeys', value: arr });
-  pushMetaField('userHiddenTagKeys', arr);
+  await idbPut(STORE_META, { key: 'tagHideTs', value: TAG_HIDE_TS });
+  pushMetaFields({ userHiddenTagKeys: arr, tagHideTs: TAG_HIDE_TS });
 }
 // #367: user drag-and-drop in Tag Manager's Manage tab reassigns a tag to a
 // different section bucket than its TAG_SECTIONS default.
@@ -9300,7 +9320,12 @@ function attachRootHandlers() {
       ev.preventDefault();
       const raw = newTagInputInline.value.trim();
       if (!raw) { TAG_ADD_MODE = false; render(); return; }
-      if (isHiddenTag(raw)) { showToast("That tag is blocked or was deleted before — it's hidden on purpose"); return; }
+      {
+        const _hk = normalizeTagKey(raw);
+        if (USER_HIDDEN_TAG_KEYS.has(_hk) && !HIDDEN_TAG_KEYS.has(_hk) && !DELETED_TAG_KEYS.has(_hk)) {
+          await setTagSoftHidden(raw, false); // user is deliberately using it -> unhide
+        } else if (isHiddenTag(raw)) { showToast("That tag is blocked or was deleted before — it's hidden on purpose"); return; }
+      }
       const e = getEntry(STATE.entryId);
       const existingTags = [...(e.tags || []), ...(e.customTags || [])];
       const allGlobalTags = Object.keys(allTagCounts());
@@ -9335,6 +9360,7 @@ function attachRootHandlers() {
         showToast('Tag removed');
       } else {
         e.customTags = [...(e.customTags || []), t];
+        if (USER_HIDDEN_TAG_KEYS.has(normalizeTagKey(t))) await setTagSoftHidden(t, false);
         showToast('Tag added');
       }
       await saveEntry(e);
@@ -10825,6 +10851,8 @@ async function boot() {
     if (savedDeletedReactionIds && Array.isArray(savedDeletedReactionIds.value)) DELETED_REACTION_IDS = new Set(savedDeletedReactionIds.value);
     const savedUserHidden = await idbGet(STORE_META, 'userHiddenTagKeys');
     if (savedUserHidden && Array.isArray(savedUserHidden.value)) USER_HIDDEN_TAG_KEYS = new Set(savedUserHidden.value);
+    const savedTagHideTs = await idbGet(STORE_META, 'tagHideTs');
+    if (savedTagHideTs && savedTagHideTs.value && typeof savedTagHideTs.value === 'object') TAG_HIDE_TS = savedTagHideTs.value;
     const savedTagSectionOverrides = await idbGet(STORE_META, 'tagSectionOverrides');
     if (savedTagSectionOverrides && savedTagSectionOverrides.value && typeof savedTagSectionOverrides.value === 'object') TAG_SECTION_OVERRIDES = savedTagSectionOverrides.value;
     const savedIgnoredSugg = await idbGet(STORE_META, 'ignoredTagSuggestions');
