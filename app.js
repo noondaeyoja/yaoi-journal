@@ -7613,7 +7613,7 @@ function renderDetail(e) {
           <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
         </div>
         <div class="notes-lead-cols">
-          <div class="notes-lead-col">
+          <div class="notes-lead-col" data-flag="${e.semi.flag || ''}">
             <div class="notes-lead-head">MAIN LEAD</div>
             <label class="char-photo-slot polaroid-frame" style="cursor:pointer;">
               ${renderCharPhoto(e.semi.photo)}
@@ -7622,7 +7622,7 @@ function renderDetail(e) {
             <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="semi" value="${escapeHtml(e.semi.name || '')}">
             ${!isSFW() ? `<div class="flag-picker">${renderFlagPicker(e.semi.flag, 'semi')}</div>` : ''}
           </div>
-          <div class="notes-lead-col">
+          <div class="notes-lead-col" data-flag="${e.uke.flag || ''}">
             <div class="notes-lead-head">MAIN CHARACTER</div>
             <label class="char-photo-slot polaroid-frame" style="cursor:pointer;">
               ${renderCharPhoto(e.uke.photo)}
@@ -8678,6 +8678,10 @@ async function submitAdd() {
 /* Event delegation                                                       */
 /* ---------------------------------------------------------------------- */
 
+// User-chosen open/closed state of collapsible panels; survives render()
+// so a closed container stays closed until the user opens it again.
+const PANEL_COLLAPSE_STATE = {};
+
 function attachRootHandlers() {
   const root = document.getElementById('view-root');
 
@@ -8692,9 +8696,18 @@ function attachRootHandlers() {
     const row = tri.closest('.panel-title-row');
     if (!row) return;
     row.style.cursor = 'pointer';
+    const _pnl = tri.closest('.panel');
+    const _ttl = row.querySelector('.panel-title');
+    const _pkey = (STATE.view || '') + '|' + (STATE.entryId || '') + '|' + (_ttl ? _ttl.textContent.trim() : '');
+    if (_pnl && Object.prototype.hasOwnProperty.call(PANEL_COLLAPSE_STATE, _pkey)) {
+      _pnl.classList.toggle('panel-collapsed', !!PANEL_COLLAPSE_STATE[_pkey]);
+    }
     row.onclick = () => {
       const panel = tri.closest('.panel');
-      if (panel) panel.classList.toggle('panel-collapsed');
+      if (panel) {
+        panel.classList.toggle('panel-collapsed');
+        PANEL_COLLAPSE_STATE[_pkey] = panel.classList.contains('panel-collapsed');
+      }
     };
   });
 
