@@ -7604,6 +7604,22 @@ function renderDetail(e) {
             <div class="rating-icons" data-rating="qualityRating">${renderRatingIcons(e.qualityRating, '❤️')}</div>
           </div>
           <div class="rating-block">
+            <div class="label">Visuals</div>
+            <div class="rating-icons" data-rating="visualsRating">${renderRatingIcons(e.visualsRating, '🎨')}</div>
+          </div>
+          <div class="rating-block">
+            <div class="label">Plot</div>
+            <div class="rating-icons" data-rating="plotRating">${renderRatingIcons(e.plotRating, '📖')}</div>
+          </div>
+          <div class="rating-block">
+            <div class="label">Ending</div>
+            <div class="rating-icons" data-rating="endingRating">${renderRatingIcons(e.endingRating, '🎬')}</div>
+          </div>
+          <div class="rating-block">
+            <div class="label">Romance</div>
+            <div class="rating-icons" data-rating="romanceRating">${renderRatingIcons(e.romanceRating, '💕')}</div>
+          </div>
+          <div class="rating-block">
             <div class="label">${isSFW() ? 'Cute' : 'Smut'}</div>
             <div class="rating-icons" data-rating="smutRating">${renderRatingIcons(e.smutRating, themeIcon())}</div>
           </div>
@@ -7996,7 +8012,7 @@ function mergeEntryData(target, source) {
   target.lolRating = Math.max(target.lolRating || 0, source.lolRating || 0);
   target.cryRating = Math.max(target.cryRating || 0, source.cryRating || 0);
   target.wtfRating = Math.max(target.wtfRating || 0, source.wtfRating || 0);
-  target.darknessRating = Math.max(target.darknessRating || 0, source.darknessRating || 0);
+  target.darknessRating = Math.max(target.darknessRating || 0, source.darknessRating || 0); target.visualsRating = Math.max(target.visualsRating || 0, source.visualsRating || 0); target.plotRating = Math.max(target.plotRating || 0, source.plotRating || 0); target.endingRating = Math.max(target.endingRating || 0, source.endingRating || 0); target.romanceRating = Math.max(target.romanceRating || 0, source.romanceRating || 0);
   target.notes = mergeText(target.notes, source.notes);
 
   ['semi', 'uke'].forEach((k) => {
