@@ -976,3 +976,12 @@ body[data-bg="grid"] .app-header, body[data-bg="grid-blue"] .app-header, body[da
 .notes-lead-col[data-flag="green"] .lead-name-input { border-color: #1e6b3a; background: #d6ecdd; color: #000; }
 .notes-lead-col[data-flag="red"] .lead-name-input { border-color: #b71c1c; background: #f6d6d6; color: #000; }
 .notes-lead-col[data-flag="black"] .lead-name-input { border-color: #000; background: #dcdcdc; color: #000; }
+
+/* Rating container: 10 categories, 5 per row */
+.rating-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; row-gap: 18px; }
+@media (max-width: 700px) {
+  .rating-grid { gap: 4px; row-gap: 14px; }
+  .rating-block .label { font-size: 8.5px; letter-spacing: 0; padding: 6px 1px; box-shadow: 2px 2px 0 var(--border); overflow: hidden; }
+  .rating-icons { padding: 0; gap: 3px; }
+  .rating-icons span { height: 22px; }
+}
