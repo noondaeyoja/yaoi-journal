@@ -3712,6 +3712,14 @@ function sectionForTag(t) {
   const s = TAG_SECTION_ALIASES[raw] || raw;
   return TAG_SECTION_ORDER.includes(s) ? s : 'General';
 }
+// A tag is "unassigned" until it has an explicit section (built-in map or the
+// user's own drag/assign). Shown in a temporary bucket in Manage Sections.
+function isUnassignedTag(t) {
+  const key = normalizeTagKey(t);
+  if (TAG_SECTION_OVERRIDES[key] || TAG_SECTIONS[key]) return false;
+  if (/^(green|red|black) ?flag/.test(key)) return false;
+  return true;
+}
 // #362: Tag Manager parenthetical marker -- only for tags that are actually
 // listed in TAG_SECTIONS (i.e. one of the 4 Tags-container buckets); tags
 // with no explicit section (flags, NSFW/On HD/style tags, brand-new custom
@@ -3858,13 +3866,21 @@ function renderTagManageBuckets() {
     .filter((t) => !TAG_MGR_EXCLUDED_KEYS.has(normalizeTagKey(t)))
     .sort((a, b) => a.localeCompare(b));
   const buckets = newTagBuckets();
-  names.forEach((t) => { buckets[sectionForTag(t)].push(t); });
+  const unassigned = [];
+  names.forEach((t) => { if (isUnassignedTag(t)) unassigned.push(t); else buckets[sectionForTag(t)].push(t); });
   const sectionOrder = TAG_SECTION_ORDER;
   return `
     <div style="color:var(--text-dim);font-size:12px;margin-bottom:10px;">
       Drag a tag into a different bucket to move it to that section. Changes save automatically and sync across devices.
     </div>
     <div class="tag-manage-buckets">
+      ${unassigned.length ? `
+        <div class="tag-section-row">
+          <div class="tag-section-header">Unassigned (${unassigned.length}) — sort these into a section</div>
+          <div class="tag-section-tags">
+            ${unassigned.map((t) => `<div style="display:inline-flex;align-items:center;gap:6px;margin:0 8px 8px 0;"><div class="tag-chip readonly manage-drag-chip" draggable="true" data-manage-tag="${escapeHtml(t)}" title="Drag to a section, or use the menu">${escapeHtml(capTag(t))}</div><select data-assign-section="${escapeHtml(t)}" style="font-size:12px;padding:4px;"><option value="">Move to…</option>${sectionOrder.map((sec) => `<option value="${sec}">${sec}</option>`).join('')}</select></div>`).join('')}
+          </div>
+        </div>` : ''}
       ${sectionOrder.map((sec) => `
         <div class="tag-section-row">
           <div class="tag-section-header">${sec}</div>
@@ -9938,11 +9954,21 @@ function attachRootHandlers() {
       zone.classList.remove('drag-over');
       const tagName = ev.dataTransfer.getData('text/plain');
       const section = zone.getAttribute('data-manage-dropzone');
-      if (!tagName || !section || sectionForTag(tagName) === section) return;
+      if (!tagName || !section || (sectionForTag(tagName) === section && !isUnassignedTag(tagName))) return;
       await setTagSectionOverride(tagName, section);
       showToast(`Moved "${capTag(tagName)}" to ${section}`);
       render();
     });
+  });
+  root.querySelectorAll('[data-assign-section]').forEach((sel) => {
+    sel.onchange = async () => {
+      const tagName = sel.getAttribute('data-assign-section');
+      const section = sel.value;
+      if (!tagName || !section) return;
+      await setTagSectionOverride(tagName, section);
+      showToast(`Moved "${capTag(tagName)}" to ${section}`);
+      render();
+    };
   });
   root.querySelectorAll('[data-suggest-hide]').forEach((el) => {
     el.onclick = async () => {
