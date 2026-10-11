@@ -3878,7 +3878,7 @@ function renderTagManageBuckets() {
         <div class="tag-section-row">
           <div class="tag-section-header">Unassigned (${unassigned.length}) — sort these into a section</div>
           <div class="tag-section-tags">
-            ${unassigned.map((t) => `<div style="display:inline-flex;align-items:center;gap:6px;margin:0 8px 8px 0;"><div class="tag-chip readonly manage-drag-chip" draggable="true" data-manage-tag="${escapeHtml(t)}" title="Drag to a section, or use the menu">${escapeHtml(capTag(t))}</div><select data-assign-section="${escapeHtml(t)}" style="font-size:12px;padding:4px;"><option value="">Move to…</option>${sectionOrder.map((sec) => `<option value="${sec}">${sec}</option>`).join('')}</select></div>`).join('')}
+            ${unassigned.map((t) => `<div style="display:inline-flex;align-items:center;gap:6px;margin:0 8px 8px 0;"><div class="tag-chip readonly manage-drag-chip" draggable="true" data-manage-tag="${escapeHtml(t)}" title="Drag to a section">${escapeHtml(capTag(t))}</div></div>`).join('')}
           </div>
         </div>` : ''}
       ${sectionOrder.map((sec) => `
@@ -9960,17 +9960,7 @@ function attachRootHandlers() {
       render();
     });
   });
-  root.querySelectorAll('[data-assign-section]').forEach((sel) => {
-    sel.onchange = async () => {
-      const tagName = sel.getAttribute('data-assign-section');
-      const section = sel.value;
-      if (!tagName || !section) return;
-      await setTagSectionOverride(tagName, section);
-      showToast(`Moved "${capTag(tagName)}" to ${section}`);
-      render();
-    };
-  });
-  root.querySelectorAll('[data-suggest-hide]').forEach((el) => {
+    root.querySelectorAll('[data-suggest-hide]').forEach((el) => {
     el.onclick = async () => {
       await setTagSoftHidden(el.getAttribute('data-suggest-hide'), true);
       showToast('Hidden');
