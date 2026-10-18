@@ -4409,9 +4409,20 @@ function isImageUntagged(img, reactionTagIndex) {
 }
 function toggleImageTag(dataUrl, tag) {
   const key = imageKey(dataUrl);
-  const tags = new Set(IMAGE_TAG_MAP[key] || []);
-  if (tags.has(tag)) tags.delete(tag); else tags.add(tag);
-  IMAGE_TAG_MAP[key] = Array.from(tags);
+  const own = new Set(IMAGE_TAG_MAP[key] || []);
+  // Active state shown in the UI is own tags UNION the moodTags of any
+  // Reactions record sharing this image. Toggling must act on that same union,
+  // otherwise a mood that comes from the reaction record can never be removed
+  // (the click just re-adds it to the image map).
+  const reactionHas = (ALL_REACTIONS || []).filter((r) => r.dataUrl === dataUrl && (r.moodTags || []).includes(tag));
+  const active = own.has(tag) || reactionHas.length > 0;
+  if (active) {
+    own.delete(tag);
+    reactionHas.forEach((r) => { r.moodTags = r.moodTags.filter((t) => t !== tag); saveReaction(r); });
+  } else {
+    own.add(tag);
+  }
+  IMAGE_TAG_MAP[key] = Array.from(own);
   persistImageTagMap(key);
 }
 // Shared manage-groups modal — same row layout as Tag Manager (count,
