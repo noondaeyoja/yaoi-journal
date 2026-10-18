@@ -8012,7 +8012,13 @@ function mergeText(a, b) {
 function mergeEntryData(target, source) {
   const preferTarget = ['title', 'altTitle', 'novelAuthor', 'author', 'artist', 'officialLink', 'status',
     'currentlyReadingRaw', 'downloaded', 'currentChapter', 'shelf', 'coverUrl', 'referenceUrl', 'referenceSite', 'referenceStatus', 'pdfLink', 'mediaFormat'];
+  const _coverFromSource = !target.coverUrl && source.coverUrl;
   preferTarget.forEach((k) => { if (!target[k] && source[k]) target[k] = source[k]; });
+  if (_coverFromSource) {
+    if (source.coverDriveId) target.coverDriveId = source.coverDriveId;
+    if (source.coverIsUserUploaded) target.coverIsUserUploaded = source.coverIsUserUploaded;
+    if (source.coverTooLargeForSync) target.coverTooLargeForSync = source.coverTooLargeForSync;
+  }
 
   if (!target.totalSeasons && source.totalSeasons) target.totalSeasons = source.totalSeasons;
   if (!target.totalChapters && source.totalChapters) target.totalChapters = source.totalChapters;
@@ -8035,13 +8041,55 @@ function mergeEntryData(target, source) {
     target[k] = target[k] || { flag: null, notes: '', photo: null };
     const s = source[k] || {};
     if (!target[k].flag && s.flag) target[k].flag = s.flag;
-    if (!target[k].photo && s.photo) target[k].photo = s.photo;
+    if (!target[k].name && s.name) target[k].name = s.name;
+    if (!target[k].photo && s.photo) {
+      target[k].photo = s.photo;
+      if (s.photoDriveId) target[k].photoDriveId = s.photoDriveId;
+      if (source[k + 'PhotoTooLargeForSync']) target[k + 'PhotoTooLargeForSync'] = true;
+    } else if (target[k].photo && s.photo && target[k].photo !== s.photo) {
+      s.photoHistory = [...(s.photoHistory || []), s.photo];
+    }
+    if (Array.isArray(s.photoHistory) && s.photoHistory.length) {
+      target[k].photoHistory = Array.from(new Set([...(target[k].photoHistory || []), ...s.photoHistory]));
+    }
     target[k].notes = mergeText(target[k].notes, s.notes);
   });
 
   target.tags = Array.from(new Set([...(target.tags || []), ...(source.tags || [])]));
   target.customTags = Array.from(new Set([...(target.customTags || []), ...(source.customTags || [])]));
-  target.screencaps = Array.from(new Set([...(target.screencaps || []), ...(source.screencaps || [])]));
+  // Screenshots: keep each image paired with its Drive id (arrays are index-aligned).
+  {
+    const caps = (target.screencaps || []).slice();
+    const ids = caps.map((_, i) => (target.screencapDriveIds && target.screencapDriveIds[i]) || null);
+    (source.screencaps || []).forEach((cap, i) => {
+      if (!cap) return;
+      const sid = (source.screencapDriveIds && source.screencapDriveIds[i]) || null;
+      const k = caps.indexOf(cap);
+      if (k === -1) { caps.push(cap); ids.push(sid); }
+      else if (!ids[k] && sid) ids[k] = sid;
+    });
+    target.screencaps = caps;
+    if (ids.some(Boolean)) target.screencapDriveIds = ids;
+    if (source.screencapsTooLargeForSync) target.screencapsTooLargeForSync = true;
+  }
+  // Fields the original merge skipped. The other read's title is kept as an
+  // alt title so it isn't lost.
+  {
+    const nk = (x) => normalizeTagKey(x || '');
+    const pieces = [target.altTitle, source.title, source.altTitle]
+      .map((x) => String(x || '').split(' / ')).reduce((a, b) => a.concat(b), [])
+      .map((x) => x.trim()).filter(Boolean);
+    const seen = new Set([nk(target.title)]);
+    const out = [];
+    pieces.forEach((p) => { const key = nk(p); if (key && !seen.has(key)) { seen.add(key); out.push(p); } });
+    target.altTitle = out.join(' / ');
+  }
+  if (!target.readingLink && source.readingLink) target.readingLink = source.readingLink;
+  if (!target.completedAt && source.completedAt) target.completedAt = source.completedAt;
+  if (source.legacyNote) target.legacyNote = mergeText(target.legacyNote, source.legacyNote);
+  target.similarIds = Array.from(new Set([...(target.similarIds || []), ...(source.similarIds || [])]))
+    .filter((id) => id !== target.id && id !== source.id);
+  if (!target.similarIds.length) delete target.similarIds;
   return target;
 }
 
