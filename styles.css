@@ -33,11 +33,28 @@ margin: 0;
 height: 100%;
 color: var(--text);
 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+/* Pairs with the .bottom-nav fix below: vertical rubber-band overscroll
+   (bouncing past the top/bottom of the page) is the other half of the
+   iOS "floating footer" bug -- each bounce briefly resizes the visible
+   viewport, which is exactly when a `position: fixed` bar visibly jumps.
+   Killing the vertical bounce removes that trigger. Left at `auto` so
+   horizontal edge-swipe (setupEdgeSwipe, below) and normal horizontal
+   scrollers like .bottom-nav itself still work. */
+overscroll-behavior-y: none;
 }
 
 body {
 background-color: var(--bg-cyan);
 min-height: 100vh;
+/* 100vh is the layout viewport, which on mobile Safari stays sized for
+   the collapsed toolbar even while the real, visible viewport is
+   shorter -- every toolbar show/hide after that is a viewport-height
+   mismatch the page has to reflow around, which is what makes a `fixed`
+   bottom bar appear to jump. `100dvh` ("dynamic viewport height")
+   tracks the actual visible area instead; kept as a second declaration
+   so older browsers that don't understand `dvh` just keep the 100vh
+   fallback above. */
+min-height: 100dvh;
 }
 body[data-bg="pink"] { background-color: var(--bg-pink); }
 body[data-bg="cyan"] { background-color: var(--bg-cyan); }
@@ -270,6 +287,16 @@ display: flex; background: rgba(11,15,43,0.96); backdrop-filter: blur(10px);
 border-top: 1px solid var(--border);
 padding-bottom: env(safe-area-inset-bottom, 0px);
 overflow-x: auto;
+/* Mobile bug: a `position: fixed` bar combined with `backdrop-filter: blur`
+   is the classic trigger for iOS Safari/PWA "floating footer" -- the blur
+   is expensive enough that the compositor drops frames during momentum
+   scroll, so the fixed layer visibly lags/detaches from the real viewport
+   edge until scrolling settles. Forcing this element onto its own GPU
+   compositing layer (translate3d/will-change) keeps it pinned in lockstep
+   with the viewport instead of being re-flowed on the main thread each
+   scroll frame -- the standard fix for this exact symptom. */
+-webkit-transform: translate3d(0, 0, 0); transform: translate3d(0, 0, 0);
+will-change: transform;
 }
 .bottom-nav button {
 flex: 1; min-width: 54px; background: none; border: none; color: var(--text-dim); padding: 8px 2px 7px; font-size: 9.5px;

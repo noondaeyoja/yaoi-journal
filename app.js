@@ -9310,6 +9310,16 @@ function attachRootHandlers() {
         const e = getEntry(STATE.entryId);
         const val = transform(el.value);
         e[field] = (field === 'title' && !val) ? e.title : val;
+        // Filling in Novel (author) means she's just told the app this is
+        // adapted from a web novel -- tag it the same way she'd tag it by
+        // hand instead of leaving her to remember to do it separately.
+        // Only ever adds the tag, never removes it on clearing the field
+        // back out -- she may have kept/edited that tag for her own reasons
+        // since, and blanking one field shouldn't silently undo that.
+        if (field === 'novelAuthor' && val) {
+          const already = [...(e.tags || []), ...(e.customTags || [])].some((t) => normalizeTagKey(t) === normalizeTagKey('Based on a Web Novel'));
+          if (!already && !isHiddenTag('Based on a Web Novel')) e.customTags = [...(e.customTags || []), 'Based on a Web Novel'];
+        }
         await saveEntry(e);
       };
     });
@@ -9393,7 +9403,16 @@ function attachRootHandlers() {
       const sec = tagAddToggleBtn.getAttribute('data-tag-add-toggle');
       TAG_ADD_SECTION = TAG_ADD_SECTION === sec ? null : sec;
       TAG_ADD_MODE = !!TAG_ADD_SECTION;
-      TAG_ADD_AUTOFOCUS = TAG_ADD_MODE;
+      // Bug fix: this used to set TAG_ADD_AUTOFOCUS = TAG_ADD_MODE, which
+      // called .focus() on the inline text input the instant the panel
+      // opened -- on mobile, focusing a text input is exactly what pops the
+      // keyboard up, so just tapping "+ NEW TAG" to open the panel (to
+      // browse/tap existing tag-pool chips below it, say) yanked the
+      // keyboard open too. Autofocus should only fire after she's already
+      // typing -- see the Enter-key handler below, which still sets it
+      // after a tag is added so she can chain-add another without having to
+      // re-tap the box. Opening the panel itself should leave focus alone;
+      // the keyboard should only appear once she taps inside the white box.
       render();
     };
   });
@@ -11148,7 +11167,17 @@ async function boot() {
     if (sx === null || !ev.changedTouches.length) return;
     const dx = ev.changedTouches[0].clientX - sx;
     const dy = Math.abs(ev.changedTouches[0].clientY - sy);
-    if (dy < 60 && side === 'left' && dx > 70) history.back();
+    // Bug fix: this used to call history.back() directly. On the very first
+    // screen of a session (or any time NAV_HISTORY is already exhausted --
+    // e.g. after a few of these swipes in a row), there's nothing behind the
+    // app's own root history entry, so history.back() walked the installed
+    // PWA's webview itself back past its one loaded document instead of
+    // doing nothing -- which is what left it on a blank blue screen needing
+    // a force-close. navigateBack() is the same function the in-app "←
+    // Back" button calls: it only ever touches STATE/NAV_HISTORY and falls
+    // back to Home when the stack is empty, so it can never exit the
+    // document the way a raw history.back() could.
+    if (dy < 60 && side === 'left' && dx > 70) navigateBack();
     else if (dy < 60 && side === 'right' && dx < -70) history.forward();
     sx = null;
   });
