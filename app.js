@@ -1029,6 +1029,7 @@ async function applyMetaSnapshot(data) {
     changed = true;
     await idbPut(STORE_META, { key: 'bgMode', value: BG_MODE });
   }
+  if (await mergeRemoteCollections(data)) changed = true;
   return changed;
 }
 
@@ -1047,7 +1048,7 @@ async function pullMetaState() {
     // never repainted the already-open gallery -- the stale, since-resolved group
     // just sat there looking unresolved until something else happened to re-render.
     const changed299 = await applyMetaSnapshot(snap.data());
-    if (changed299 && ['reactions', 'meme', 'h', 'tags', 'tagEntries', 'home'].includes(STATE.view)) render();
+    if (changed299 && ['reactions', 'meme', 'h', 'tags', 'tagEntries', 'home', 'collection', 'detail'].includes(STATE.view)) render();
   } catch (err) {
     console.error('Meta pull failed:', err);
   }
@@ -1070,7 +1071,7 @@ function startMetaFirestoreListener(user) {
     if (!skippedFirst) { skippedFirst = true; return; }
     if (!snap.exists) return;
     const changed = await applyMetaSnapshot(snap.data());
-    if (changed && ['reactions', 'meme', 'h', 'tags', 'tagEntries', 'home'].includes(STATE.view)) { if (isEditingTextField()) RENDER_DEFERRED = true; else render(); }
+    if (changed && ['reactions', 'meme', 'h', 'tags', 'tagEntries', 'home', 'collection', 'detail'].includes(STATE.view)) { if (isEditingTextField()) RENDER_DEFERRED = true; else render(); }
   }, (err) => console.error('Meta listener error:', err));
 }
 
@@ -2565,6 +2566,10 @@ function navigate(view, entryId, opts) {
   TAG_ADD_MODE = false;
   TAG_ADD_SECTION = null;
   TAG_ADD_AUTOFOCUS = false;
+  COLL_ADD_KIND = null;
+  // The side-arrow list only survives while moving between the Missing
+  // cover/summary page and reads opened from it.
+  if (view !== 'detail' && view !== 'missingInfo') DETAIL_NAV_LIST = null;
   window.scrollTo(0, 0);
   persistNavState();
   if (!(opts && opts.fromPop) && !isBack) {
@@ -2920,8 +2925,13 @@ document.body.dataset.bg = BG_MODE;
   else if (STATE.view === 'database') body = renderDatabase();
   else if (STATE.view === 'review') body = renderReviewQueue();
   else if (STATE.view === 'duplicates') body = renderDuplicates();
+  else if (STATE.view === 'collection') body = renderCollectionPage();
+  else if (STATE.view === 'missingInfo') body = renderMissingInfoPage();
+  if (STATE.view === 'detail') body += detailNavArrowsHtml();
   root.innerHTML = renderGlobalHeader() + body;
   attachRootHandlers();
+  attachCollectionHandlers(root);
+  attachDetailNavHandlers(root);
   resetHeaderScrollHide();
   if (__preRenderScrollY > 0) window.scrollTo(0, __preRenderScrollY);
 }
@@ -3352,6 +3362,412 @@ function recentsSectionHtml(entries) {
   return homeSectionHtml('row-recents', '🕒 Recents', recents.length, recents.map((e) => renderCoverCard(e)).join(''));
 }
 
+/* ---------------------------------------------------------------------- */
+/* PLAYLISTS & AWARDS (user-made "blue" collections)                      */
+/* ---------------------------------------------------------------------- */
+// Registry of every playlist/award: { [id]: { id, kind, name, order,      */
+// deleted, system } }. Which reads are IN a collection is stored on the   */
+// read itself (e.collections = [id, ...]) -- same idea as tags, so a read */
+// can sit in any number of them and that membership syncs with the read's */
+// normal per-entry Firestore doc. Ids (not names) are stored on reads so  */
+// renaming a playlist never has to rewrite hundreds of entries.           */
+//
+// The registry syncs through the meta doc with PER-KEY timestamps
+// (COLLECTIONS_TS), the same fix used for IMAGE_TAG_MAP: a whole-map
+// "last write wins" would let one device creating playlist A silently
+// wipe out playlist B that another device just created. Deletions are a
+// `deleted: true` tombstone (not a removed key) for the same reason the
+// entry deletions use tombstones -- otherwise a stale device would
+// resurrect it.
+//
+// Three built-in "system" playlists (Favorites / Artwork / Funny) aren't
+// stored membership lists at all: they're live views of the existing
+// Favorite toggle, Artwork toggle and Funny tag, so marking a read
+// Favorite anywhere in the app puts it in that row automatically. Adding
+// or removing a read from one of them just flips that underlying tag.
+let COLLECTIONS = {};
+let COLLECTIONS_TS = {};
+const SYSTEM_COLLECTIONS = [
+  { id: 'sys-favorites', name: 'Favorites', tagKey: 'favorite', tagName: 'Favorite' },
+  { id: 'sys-artwork', name: 'Artwork', tagKey: 'artwork', tagName: 'Artwork' },
+  { id: 'sys-funny', name: 'Funny', tagKey: 'funny', tagName: 'Funny' },
+];
+let COLL_ADD_KIND = null; // which Stats row ("playlist" | "award") has its add panel open
+let COLL_EDIT_MODE = false; // playlist page: show the remove (x) buttons on covers
+
+function ensureSystemCollections() {
+  SYSTEM_COLLECTIONS.forEach((s, i) => {
+    if (!COLLECTIONS[s.id]) COLLECTIONS[s.id] = { id: s.id, kind: 'playlist', name: s.name, order: i, deleted: false, system: true };
+  });
+}
+function systemDef(id) { return SYSTEM_COLLECTIONS.find((s) => s.id === id) || null; }
+function collectionsOfKind(kind) {
+  ensureSystemCollections();
+  return Object.values(COLLECTIONS)
+    .filter((c) => c && !c.deleted && c.kind === kind)
+    .sort((a, b) => (a.order || 0) - (b.order || 0) || String(a.name).localeCompare(String(b.name)));
+}
+function entryHasTagKey(e, key) {
+  return [...(e.tags || []), ...(e.customTags || [])].some((t) => normalizeTagKey(t) === key);
+}
+function collectionMembers(c) {
+  const sys = systemDef(c.id);
+  if (sys) return ALL_ENTRIES.filter((e) => entryHasTagKey(e, sys.tagKey));
+  return ALL_ENTRIES.filter((e) => (e.collections || []).includes(c.id));
+}
+function entryCollections(e, kind) {
+  return collectionsOfKind(kind).filter((c) => {
+    const sys = systemDef(c.id);
+    return sys ? entryHasTagKey(e, sys.tagKey) : (e.collections || []).includes(c.id);
+  });
+}
+async function persistCollections(changedIds) {
+  const now = Date.now();
+  (changedIds || []).forEach((id) => { COLLECTIONS_TS[id] = now; });
+  await idbPut(STORE_META, { key: 'collections', value: COLLECTIONS });
+  await idbPut(STORE_META, { key: 'collectionsTs', value: COLLECTIONS_TS });
+  pushMetaFields({ collections: COLLECTIONS, collectionsTs: COLLECTIONS_TS });
+}
+async function createCollection(kind, name) {
+  name = String(name || '').trim();
+  if (!name) return null;
+  const existing = collectionsOfKind(kind).find((c) => c.name.toLowerCase() === name.toLowerCase());
+  if (existing) return existing;
+  const id = uid(kind === 'award' ? 'award' : 'pl');
+  const maxOrder = collectionsOfKind(kind).reduce((m, c) => Math.max(m, c.order || 0), -1);
+  COLLECTIONS[id] = { id, kind, name, order: maxOrder + 1, deleted: false };
+  await persistCollections([id]);
+  return COLLECTIONS[id];
+}
+async function addEntryToCollection(e, c) {
+  const sys = systemDef(c.id);
+  if (sys) {
+    if (!entryHasTagKey(e, sys.tagKey)) e.customTags = [...(e.customTags || []), sys.tagName];
+  } else {
+    if (!(e.collections || []).includes(c.id)) e.collections = [...(e.collections || []), c.id];
+  }
+  await saveEntry(e);
+}
+async function removeEntryFromCollection(e, c) {
+  const sys = systemDef(c.id);
+  if (sys) {
+    e.tags = (e.tags || []).filter((t) => normalizeTagKey(t) !== sys.tagKey);
+    e.customTags = (e.customTags || []).filter((t) => normalizeTagKey(t) !== sys.tagKey);
+  } else {
+    e.collections = (e.collections || []).filter((id) => id !== c.id);
+  }
+  await saveEntry(e);
+}
+
+// Merge an incoming meta snapshot's registry key-by-key (newest ts wins).
+async function mergeRemoteCollections(data) {
+  if (!data || !data.collections || typeof data.collections !== 'object') return false;
+  const ts = (data.collectionsTs && typeof data.collectionsTs === 'object') ? data.collectionsTs : {};
+  let changed = false;
+  Object.keys(data.collections).forEach((id) => {
+    const rts = Number(ts[id]) || 0;
+    if (!COLLECTIONS[id] || rts > (COLLECTIONS_TS[id] || 0)) {
+      COLLECTIONS[id] = data.collections[id];
+      COLLECTIONS_TS[id] = rts;
+      changed = true;
+    }
+  });
+  if (changed) {
+    await idbPut(STORE_META, { key: 'collections', value: COLLECTIONS });
+    await idbPut(STORE_META, { key: 'collectionsTs', value: COLLECTIONS_TS });
+  }
+  return changed;
+}
+
+/* Homepage: one blue row per playlist (incl. Favorites/Artwork/Funny),
+   then one per award, below the pink shelf rows. Each starts with a dashed
+   portrait "+" tile for adding a read. */
+function collectionRowHtml(c) {
+  const rowId = 'row-coll-' + c.id;
+  const collapsed = HOME_COLLAPSED_SECTIONS.has(rowId);
+  const members = collectionMembers(c);
+  const icon = c.kind === 'award' ? '🏆' : (c.id === 'sys-favorites' ? '💜' : c.id === 'sys-artwork' ? '🎨' : c.id === 'sys-funny' ? '😂' : '🎵');
+  return `
+    <div class='panel home-section-panel coll-panel'>
+      <div class='panel-title-row home-section-title' data-toggle-home-section='${rowId}' style='cursor:pointer;'>
+        <div class='panel-title'><span class='home-section-chevron'>${collapsed ? '▸' : '▾'}</span> ${icon} ${escapeHtml(c.name)} <span style='opacity:.7;font-weight:600;'>(${members.length})</span></div>
+        <button type='button' class='coll-open-btn' data-coll-open='${escapeHtml(c.id)}'>Open ›</button>
+      </div>
+      <div class='home-section-body ${collapsed ? 'collapsed' : ''}' id='${rowId}'>
+        <div class='cover-grid'>${collAddTileHtml(c)}${members.map((e) => renderCoverCard(e)).join('')}</div>
+      </div>
+    </div>`;
+}
+function collAddTileHtml(c) {
+  return `<div class="cover-card coll-add-tile" data-coll-add-read="${escapeHtml(c.id)}" title="Add a read">
+      <div class="cover-thumb coll-add-thumb"><span>＋</span></div>
+      <div class="cover-title">Add a read</div>
+    </div>`;
+}
+function collectionsHomeHtml() {
+  return [...collectionsOfKind('playlist'), ...collectionsOfKind('award')].map(collectionRowHtml).join('');
+}
+
+/* Full page for one playlist/award. */
+function renderCollectionPage() {
+  ensureSystemCollections();
+  const c = COLLECTIONS[STATE.entryId];
+  if (!c || c.deleted) {
+    return `<div class="app-header"><div class="brand-row"><h1>Not found</h1></div></div><main><div class="empty-state">This playlist was deleted.</div></main>${renderBottomNav('home')}`;
+  }
+  const members = collectionMembers(c);
+  const isSys = !!systemDef(c.id);
+  const kindLabel = c.kind === 'award' ? 'award' : 'playlist';
+  const siblings = collectionsOfKind(c.kind);
+  const idx = siblings.findIndex((x) => x.id === c.id);
+  const cards = members.map((e) => `
+    <div class="coll-card-wrap">
+      ${renderCoverCard(e)}
+      ${COLL_EDIT_MODE ? `<button type="button" class="coll-remove-x" data-coll-remove="${escapeHtml(e.id)}" title="Remove from this ${kindLabel}">✕</button>` : ''}
+    </div>`).join('');
+  return `
+    <div class="app-header">
+      <div class="brand-row"><h1>${c.kind === 'award' ? '🏆' : '🎵'} ${escapeHtml(c.name)}</h1></div>
+      <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${members.length} read${members.length === 1 ? '' : 's'} in this ${kindLabel}${isSys ? ' — fills in automatically from the ' + escapeHtml(systemDef(c.id).tagName) + ' ' + (c.id === 'sys-funny' ? 'tag' : 'button') : ''}</div>
+      <div class="coll-toolbar">
+        <button type="button" class="ref-btn ${COLL_EDIT_MODE ? 'active' : ''}" data-coll-edit-toggle="1">${COLL_EDIT_MODE ? 'Done' : 'Remove reads'}</button>
+        <button type="button" class="ref-btn" data-coll-move="-1" ${idx <= 0 ? 'disabled' : ''}>▲ Move up</button>
+        <button type="button" class="ref-btn" data-coll-move="1" ${idx >= siblings.length - 1 ? 'disabled' : ''}>▼ Move down</button>
+        ${isSys ? '' : `<button type="button" class="ref-btn" data-coll-rename="1">Rename</button>
+        <button type="button" class="ref-btn" data-coll-delete="1">Delete</button>`}
+      </div>
+    </div>
+    <main><div class="panel coll-panel"><div class="cover-grid">${collAddTileHtml(c)}${cards}</div></div></main>
+    ${renderBottomNav('home')}`;
+}
+
+/* Detail page -> Stats: "Playlist" and "Awards" rows (pink label on the
+   left like Shelf/Format/etc). Blue chips for each one the read is in
+   (tap = open that page); an empty light-pink bar when it's in none; and a
+   "+ NEW ..." chip that opens a tag-style picker of existing ones plus a
+   box to type a brand-new one. */
+function statsCollectionRowHtml(e, kind) {
+  const label = kind === 'award' ? 'Awards' : 'Playlist';
+  const mine = entryCollections(e, kind);
+  const chips = mine.length
+    ? mine.map((c) => `<button type="button" class="coll-chip" data-coll-open="${escapeHtml(c.id)}">${escapeHtml(c.name)}</button>`).join('')
+    : `<div class="coll-empty-bar"></div>`;
+  const addChip = `<button type="button" class="tag-chip add-tag-chip coll-add-chip ${COLL_ADD_KIND === kind ? 'active' : ''}" data-coll-add-toggle="${kind}">+ NEW ${kind === 'award' ? 'AWARD' : 'PLAYLIST'}</button>`;
+  let panel = '';
+  if (COLL_ADD_KIND === kind) {
+    const pool = collectionsOfKind(kind).map((c) => {
+      const on = mine.some((m) => m.id === c.id);
+      return `<span class="tag-pool-chip ${on ? 'active' : ''}" data-toggle-coll="${escapeHtml(c.id)}">${escapeHtml(c.name)}</span>`;
+    }).join('');
+    panel = `
+      <div class="tag-ms-panel open" style="margin-top:6px;width:100%;">
+        <div class="tag-picker-box">
+          <input type="text" id="new-coll-input" class="tag-picker-input" data-coll-kind="${kind}" placeholder="Type a new ${kind === 'award' ? 'award' : 'playlist'} name and press Enter..." autocomplete="off">
+        </div>
+        <div class="tag-pool" id="coll-pool">${pool || `<div style="color:var(--text-dim);font-size:12px;padding:4px;">No ${kind === 'award' ? 'awards' : 'playlists'} yet.</div>`}</div>
+      </div>`;
+  }
+  return `<div class="stats-row"><div class="stats-row-label">${label}</div><div class="stats-row-content coll-row-content">
+      <div class="coll-chip-wrap">${chips}${addChip}</div>${panel}
+    </div></div>`;
+}
+
+function openCreatePlaylistModal() {
+  openModal(`
+    <h3>Create playlist</h3>
+    <div class="field-row"><label>Playlist title *</label><input type="text" id="new-playlist-title" autocomplete="off"></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" data-close-modal="1">Cancel</button>
+      <button class="btn-primary" id="new-playlist-create">Create</button>
+    </div>`, { centered: true });
+  const input = document.getElementById('new-playlist-title');
+  const go = async () => {
+    const name = input.value.trim();
+    if (!name) { showToast('Give the playlist a title'); return; }
+    const c = await createCollection('playlist', name);
+    closeModal();
+    showToast('Playlist created');
+    navigate('collection', c.id);
+  };
+  document.getElementById('new-playlist-create').onclick = go;
+  input.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); go(); } };
+  setTimeout(() => input.focus(), 50);
+}
+
+function openAddReadToCollectionModal(collId) {
+  const c = COLLECTIONS[collId];
+  if (!c) return;
+  openModal(`
+    <h3>Add a read to ${escapeHtml(c.name)}</h3>
+    <div class="field-row"><input type="text" id="coll-read-search" placeholder="Search your reads..." autocomplete="off"></div>
+    <div id="coll-read-results" class="coll-read-results"><div style="color:var(--text-dim);font-size:12px;padding:6px;">Start typing a title.</div></div>
+    <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Cancel</button></div>`, { centered: true });
+  const input = document.getElementById('coll-read-search');
+  const out = document.getElementById('coll-read-results');
+  const memberIds = new Set(collectionMembers(c).map((e) => e.id));
+  input.oninput = () => {
+    const q = input.value.trim().toLowerCase();
+    if (!q) { out.innerHTML = '<div style="color:var(--text-dim);font-size:12px;padding:6px;">Start typing a title.</div>'; return; }
+    const hits = ALL_ENTRIES.filter((e) => !memberIds.has(e.id) && ((e.title || '').toLowerCase().includes(q) || String(e.altTitle || '').toLowerCase().includes(q))).slice(0, 40);
+    out.innerHTML = hits.length
+      ? hits.map((e) => `<button type="button" class="coll-read-hit" data-coll-pick="${escapeHtml(e.id)}">${e.coverUrl ? `<img src="${escapeHtml(e.coverUrl)}" alt="" referrerpolicy="no-referrer">` : '<span class="coll-read-noimg"></span>'}<span>${escapeHtml(e.title)}</span></button>`).join('')
+      : '<div style="color:var(--text-dim);font-size:12px;padding:6px;">No matches (reads already in here are hidden).</div>';
+    out.querySelectorAll('[data-coll-pick]').forEach((b) => {
+      b.onclick = async () => {
+        const e = getEntry(b.getAttribute('data-coll-pick'));
+        await addEntryToCollection(e, c);
+        closeModal();
+        showToast('Added to ' + c.name);
+        render();
+      };
+    });
+  };
+  setTimeout(() => input.focus(), 50);
+}
+
+function attachCollectionHandlers(root) {
+  const createBtn = root.querySelector('[data-create-playlist]');
+  if (createBtn) createBtn.onclick = openCreatePlaylistModal;
+  root.querySelectorAll('[data-coll-open]').forEach((el) => {
+    el.onclick = (ev) => { ev.stopPropagation(); COLL_EDIT_MODE = false; navigate('collection', el.getAttribute('data-coll-open')); };
+  });
+  root.querySelectorAll('[data-coll-add-read]').forEach((el) => {
+    el.onclick = (ev) => { ev.stopPropagation(); openAddReadToCollectionModal(el.getAttribute('data-coll-add-read')); };
+  });
+  root.querySelectorAll('[data-coll-add-toggle]').forEach((el) => {
+    el.onclick = () => { const k = el.getAttribute('data-coll-add-toggle'); COLL_ADD_KIND = COLL_ADD_KIND === k ? null : k; render(); };
+  });
+  root.querySelectorAll('[data-toggle-coll]').forEach((el) => {
+    el.onclick = async () => {
+      const c = COLLECTIONS[el.getAttribute('data-toggle-coll')];
+      const e = getEntry(STATE.entryId);
+      if (!c || !e) return;
+      const inIt = entryCollections(e, c.kind).some((x) => x.id === c.id);
+      if (inIt) await removeEntryFromCollection(e, c); else await addEntryToCollection(e, c);
+      showToast(inIt ? 'Removed from ' + c.name : 'Added to ' + c.name);
+      render();
+    };
+  });
+  const newCollInput = root.querySelector('#new-coll-input');
+  if (newCollInput) {
+    newCollInput.oninput = () => {
+      const q = newCollInput.value.toLowerCase();
+      root.querySelectorAll('#coll-pool .tag-pool-chip').forEach((chip) => {
+        chip.style.display = chip.textContent.toLowerCase().includes(q) ? '' : 'none';
+      });
+    };
+    newCollInput.onkeydown = async (ev) => {
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      const name = newCollInput.value.trim();
+      if (!name) return;
+      const kind = newCollInput.getAttribute('data-coll-kind');
+      const c = await createCollection(kind, name);
+      await addEntryToCollection(getEntry(STATE.entryId), c);
+      showToast('Added to ' + c.name);
+      render();
+    };
+  }
+  if (STATE.view === 'collection') {
+    const c = COLLECTIONS[STATE.entryId];
+    const editBtn = root.querySelector('[data-coll-edit-toggle]');
+    if (editBtn) editBtn.onclick = () => { COLL_EDIT_MODE = !COLL_EDIT_MODE; render(); };
+    root.querySelectorAll('[data-coll-remove]').forEach((el) => {
+      el.onclick = async (ev) => {
+        ev.stopPropagation();
+        const e = getEntry(el.getAttribute('data-coll-remove'));
+        if (!e || !c) return;
+        await removeEntryFromCollection(e, c);
+        showToast('Removed');
+        render();
+      };
+    });
+    root.querySelectorAll('[data-coll-move]').forEach((el) => {
+      el.onclick = async () => {
+        const dir = Number(el.getAttribute('data-coll-move'));
+        const sibs = collectionsOfKind(c.kind);
+        const i = sibs.findIndex((x) => x.id === c.id);
+        const j = i + dir;
+        if (j < 0 || j >= sibs.length) return;
+        [sibs[i], sibs[j]] = [sibs[j], sibs[i]];
+        sibs.forEach((x, k) => { x.order = k; });
+        await persistCollections(sibs.map((x) => x.id));
+        render();
+      };
+    });
+    const renameBtn = root.querySelector('[data-coll-rename]');
+    if (renameBtn) renameBtn.onclick = () => {
+      openModal(`
+        <h3>Rename</h3>
+        <div class="field-row"><input type="text" id="coll-rename-input" value="${escapeHtml(c.name)}" autocomplete="off"></div>
+        <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Cancel</button><button class="btn-primary" id="coll-rename-save">Save</button></div>`, { centered: true });
+      const inp = document.getElementById('coll-rename-input');
+      const save = async () => {
+        const v = inp.value.trim();
+        if (!v) return;
+        c.name = v;
+        await persistCollections([c.id]);
+        closeModal();
+        render();
+      };
+      document.getElementById('coll-rename-save').onclick = save;
+      inp.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); save(); } };
+    };
+    const delBtn = root.querySelector('[data-coll-delete]');
+    if (delBtn) delBtn.onclick = async () => {
+      if (!(await confirmModal('Delete "' + c.name + '"? The reads themselves stay in your journal.', 'DELETE'))) return;
+      c.deleted = true;
+      await persistCollections([c.id]);
+      showToast('Deleted');
+      navigate('home');
+    };
+  }
+}
+
+/* ---------------------------------------------------------------------- */
+/* MISSING COVER/SUMMARY page + side arrows on the detail page            */
+/* ---------------------------------------------------------------------- */
+// A plain grid of every read with no cover or no summary. Opening one from
+// here remembers the list (DETAIL_NAV_LIST) so the detail page shows
+// left/right arrows to step through the rest without coming back here.
+let DETAIL_NAV_LIST = null;
+function missingInfoEntries() {
+  return ALL_ENTRIES
+    .filter((e) => (!e.coverUrl && !e.coverDriveId) || !String(e.summaryCache || '').trim())
+    .sort((a, b) => String(a.title).localeCompare(String(b.title)));
+}
+function renderMissingInfoPage() {
+  const items = missingInfoEntries();
+  DETAIL_NAV_LIST = items.map((e) => e.id);
+  const body = items.length
+    ? `<div class="cover-grid">${items.map((e) => renderCoverCard(e)).join('')}</div>`
+    : `<div class="empty-state">Every read has a cover and a summary. 🎉</div>`;
+  return `
+    <div class="app-header">
+      <div class="brand-row"><h1>Missing Cover/Summary</h1></div>
+      <div style="color:var(--text-dim);font-size:12px;padding:0 2px;">${items.length} read${items.length === 1 ? '' : 's'} with no cover or no summary. Tap one, then use the side arrows to move through the list.</div>
+    </div>
+    <main>${body}</main>
+    ${renderBottomNav('database')}`;
+}
+function detailNavArrowsHtml() {
+  if (STATE.view !== 'detail' || !DETAIL_NAV_LIST) return '';
+  const i = DETAIL_NAV_LIST.indexOf(STATE.entryId);
+  if (i < 0 || DETAIL_NAV_LIST.length < 2) return '';
+  const n = DETAIL_NAV_LIST.length;
+  const prev = DETAIL_NAV_LIST[(i - 1 + n) % n];
+  const next = DETAIL_NAV_LIST[(i + 1) % n];
+  return `
+    <button type="button" class="detail-nav-arrow left" data-detail-nav="${escapeHtml(prev)}" title="Previous">‹</button>
+    <button type="button" class="detail-nav-arrow right" data-detail-nav="${escapeHtml(next)}" title="Next">›</button>
+    <div class="detail-nav-count">${i + 1} / ${n}</div>`;
+}
+function attachDetailNavHandlers(root) {
+  root.querySelectorAll('[data-detail-nav]').forEach((el) => {
+    el.onclick = (ev) => { ev.stopPropagation(); navigate('detail', el.getAttribute('data-detail-nav'), { keepNavList: true }); };
+  });
+}
+
 function renderHome() {
   const entries = filteredEntries();
   const tags = topTags(ALL_ENTRIES.filter((e) => !STATE.format || e.format === STATE.format));
@@ -3389,6 +3805,8 @@ function renderHome() {
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
       body += homeSectionHtml(rowId, shelfLabel(shelf), group.length, group.map((e) => renderCoverCard(e)).join(''));
     });
+    // User-made playlists/awards (blue rows) sit below the pink shelf rows.
+    body += collectionsHomeHtml();
     if (!body) body = `<div class="empty-state">Nothing here yet. Tap + to add a ${STATE.format === 'reading' ? 'manhwa/manga' : STATE.format === 'watching' ? 'anime' : 'title'}.</div>`;
   } else {
     body = entries.length
@@ -3471,6 +3889,7 @@ function renderHome() {
         ${tagMultiselect}
         <div class="rating-pick-row">${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}</div>
         <div class="filter-dropdown-row rating-emoji-row">${qualityChips}${smutChips}${lolChips}${cryChips}${wtfChips}${darknessChips}</div>
+        <div class="create-playlist-row"><button type="button" class="create-playlist-btn" data-create-playlist="1">+ Create playlist</button></div>
       </div>
     </div>
     <main>${body}</main>
@@ -7607,6 +8026,8 @@ function renderDetail(e) {
             <button type="button" class="ref-btn ${e.favorite ? 'active' : ''}" style="flex:1;" data-toggle-fav="1">${e.favorite ? '💜' : '🤍'} Favorite</button>
             <button type="button" class="ref-btn ${isArtwork(e) ? 'active' : ''}" style="flex:1;" data-toggle-artwork="1">🎨 Artwork</button>
         </div></div>
+        ${statsCollectionRowHtml(e, 'playlist')}
+        ${statsCollectionRowHtml(e, 'award')}
         </div>
       </div>
 
@@ -7777,7 +8198,6 @@ function needsReview(e) {
 
 function renderDatabase() {
   const rows = ALL_ENTRIES.slice().sort((a, b) => a.title.localeCompare(b.title));
-  const reviewCount = ALL_ENTRIES.filter(needsReview).length;
   const dupCount = findDuplicateGroups().length;
   // Semi/Uke flag columns drop out entirely for SFW accounts (the feature
   // itself is hidden on the entry page, so there's never anything to show
@@ -7848,21 +8268,10 @@ function renderDatabase() {
       <div class="panel" style="margin-bottom:14px;">
         <div class="panel-title">Data Cleanup Tools</div>
         <div class="export-row">
-          <button class="ref-btn" data-nav="review">🔎 Review missing cover/reference (${reviewCount})</button>
+          <button class="ref-btn" data-nav="missingInfo">🖼️ Missing cover/summary (${missingInfoEntries().length})</button>
           <button class="ref-btn" data-nav="duplicates">🧬 Review duplicates (${dupCount})</button>
         </div>
-        <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">Entries missing a cover image or reference link, and possible duplicate titles — both flagged automatically as you add and cross-reference entries.</p>
-        ${BULK_SWEEP.running ? `
-          <div class="export-row" style="margin-top:8px;">
-            <div style="flex:1;font-size:12.5px;color:var(--text-dim);">🔄 Checking ${BULK_SWEEP.checked}/${BULK_SWEEP.total} against Anime-Planet/MangaGo — ${BULK_SWEEP.found} found so far</div>
-            <button class="ref-btn" data-stop-bulk-sweep="1">Stop</button>
-          </div>
-        ` : `
-          <div class="export-row" style="margin-top:8px;">
-            <button class="ref-btn" data-run-bulk-sweep="1">🚀 Run match sweep now (${bulkSweepCandidates().length} unmatched)</button>
-          </div>
-          <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">Searches Anime-Planet/MangaGo for every unmatched entry in one pass instead of the usual 20-a-day auto-sweep — paced to be gentle on the proxy, so it can take a while for a big backlog. Requires a proxy URL below.</p>
-        `}
+        <p style="font-size:11px;color:var(--text-dim);margin:6px 0 0;">Missing cover/summary: every read with no cover or no summary yet — open one and use the side arrows to step through them while you fill them in (Cross-reference on the read does the lookup). Duplicates: possible duplicate titles, flagged automatically.</p>
         ${IMAGE_BACKFILL.running ? `
           <div class="export-row" style="margin-top:8px;">
             <div style="flex:1;font-size:12.5px;color:var(--text-dim);">☁️ Uploading ${IMAGE_BACKFILL.checked}/${IMAGE_BACKFILL.total} — ${IMAGE_BACKFILL.uploaded} sent to Drive so far</div>
@@ -10217,6 +10626,8 @@ function renderHomeInPlace() {
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
       body += homeSectionHtml(rowId, shelfLabel(shelf), group.length, group.map((e) => renderCoverCard(e)).join(''));
     });
+    // User-made playlists/awards (blue rows) sit below the pink shelf rows.
+    body += collectionsHomeHtml();
     if (!body) body = `<div class="empty-state">Nothing here yet.</div>`;
   } else {
     body = entries.length
@@ -10225,6 +10636,7 @@ function renderHomeInPlace() {
   }
   if (main) {
     main.innerHTML = body;
+    attachCollectionHandlers(main);
     main.querySelectorAll('[data-open-entry]').forEach((el) => {
       el.onclick = () => navigate('detail', el.getAttribute('data-open-entry'));
     });
@@ -10987,6 +11399,10 @@ async function boot() {
       CUSTOM_MOODS = mergedGroups;
       IMAGE_GROUPS = mergedGroups;
     }
+    const savedCollections = await idbGet(STORE_META, 'collections');
+    if (savedCollections && savedCollections.value && typeof savedCollections.value === 'object') COLLECTIONS = savedCollections.value;
+    const savedCollectionsTs = await idbGet(STORE_META, 'collectionsTs');
+    if (savedCollectionsTs && savedCollectionsTs.value && typeof savedCollectionsTs.value === 'object') COLLECTIONS_TS = savedCollectionsTs.value;
     const savedImageTagMap = await idbGet(STORE_META, 'imageTagMap');
     if (savedImageTagMap && savedImageTagMap.value && typeof savedImageTagMap.value === 'object') IMAGE_TAG_MAP = savedImageTagMap.value;
     const savedImageTagMapTs = await idbGet(STORE_META, 'imageTagMapTs');
@@ -11066,7 +11482,8 @@ async function boot() {
           showToast("Couldn't sync — check your connection");
         }
         SYNC_BUSY = false;
-        autoMatchSweepIfDue();
+        // Daily auto match-sweep removed (Oct 2026): the proxy can only reach
+        // MangaDex (Anime-Planet blocks Apps Script), which gave poor matches.
         runFavoriteTagMigrationOnce();
         runFlagTagBackfillOnce();
       }
