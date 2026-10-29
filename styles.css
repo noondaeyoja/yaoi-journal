@@ -645,7 +645,7 @@ padding: 6px 10px; font-size: 13px; color: var(--text); box-sizing: border-box;
 }
 .tag-picker-selected:not(:empty) + .tag-picker-input { margin-top: 6px; }
 .tag-pool {
-display: flex; flex-wrap: wrap; gap: 6px; background: var(--cyan); border: 2px solid var(--border);
+display: flex; flex-wrap: wrap; gap: 6px; background: #ffffff; border: 2px solid var(--border);
 border-radius: 0; padding: 10px; max-height: 240px; overflow-y: auto;
 }
 .tag-pool-chip {
@@ -883,7 +883,7 @@ border: 1px solid var(--border); border-radius: 0; margin-bottom: 8px;
 .manage-drag-chip.dragging { opacity: 0.4; }
 .tag-manage-drop-zone.drag-over { outline: 3px dashed var(--pink); outline-offset: -3px; }
 .tagmgr-count { font-size: 11.5px; color: var(--text-dim); white-space: nowrap; }
-.tagmgr-actions { display: flex; gap: 8px; align-items: center; }
+.tagmgr-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .tagmgr-actions .icon-btn-inline { font-size: 16px; padding: 2px; }
 
 /* "Saving…" / "Saved" status on the entry detail header -- see the

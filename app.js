@@ -3594,7 +3594,7 @@ function collectionRowHtml(c) {
   const rowId = 'row-coll-' + c.id;
   const collapsed = HOME_COLLAPSED_SECTIONS.has(rowId);
   const members = collectionMembers(c);
-  const icon = c.kind === 'award' ? '🏆' : (c.id === 'sys-favorites' ? '💜' : c.id === 'sys-artwork' ? '🎨' : c.id === 'sys-funny' ? '😂' : '🎵');
+  const icon = c.kind === 'award' ? '🏆' : (c.id === 'sys-favorites' ? '💜' : c.id === 'sys-artwork' ? '🎨' : c.id === 'sys-funny' ? '😂' : '📜');
   return `
     <div class='panel home-section-panel coll-panel'>
       <div class='panel-title-row home-section-title' data-toggle-home-section='${rowId}' style='cursor:pointer;'>
@@ -3635,7 +3635,7 @@ function renderCollectionPage() {
     </div>`).join('');
   return `
     <div class="app-header">
-      <div class="brand-row"><h1>${c.kind === 'award' ? '🏆' : '🎵'} ${escapeHtml(c.name)}</h1></div>
+      <div class="brand-row"><h1>${c.kind === 'award' ? '🏆' : '📜'} ${escapeHtml(c.name)}</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${members.length} read${members.length === 1 ? '' : 's'} in this ${kindLabel}${isSys ? ' — fills in automatically from the ' + escapeHtml(systemDef(c.id).tagName) + ' ' + (c.id === 'sys-funny' ? 'tag' : 'button') : ''}</div>
       <div class="coll-toolbar">
         <button type="button" class="ref-btn ${COLL_EDIT_MODE ? 'active' : ''}" data-coll-edit-toggle="1">${COLL_EDIT_MODE ? 'Done' : 'Remove reads'}</button>
@@ -4153,6 +4153,75 @@ function pickMergeTarget(name) {
     input.focus();
   });
 }
+// Same searchable merge-target picker as pickMergeTarget above, just over
+// COLLECTIONS (awards/playlists) instead of tags. System collections
+// (Favorites/Artwork/Funny) are left out of the candidate list -- they're
+// live tag views, not a real membership list, so merging into one doesn't
+// mean anything.
+function pickCollectionMergeTarget(c) {
+  return new Promise((resolve) => {
+    const candidates = collectionsOfKind(c.kind).filter((x) => x.id !== c.id && !systemDef(x.id));
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(11,15,43,.55);z-index:100000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    const title = escapeHtml(c.name);
+    const label = c.kind === 'award' ? 'award' : 'playlist';
+    const article = c.kind === 'award' ? 'an' : 'a';
+    ov.innerHTML =
+      '<div style="background:var(--card);border:3px solid var(--border);box-shadow:7px 7px 0 var(--border);width:100%;max-width:420px;max-height:80vh;display:flex;flex-direction:column;">' +
+      '<div style="background:var(--pink);border-bottom:3px solid var(--border);padding:10px 14px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;font-size:13px;color:var(--text);">Merge "' + title + '" into…</div>' +
+      '<div style="padding:12px 14px 6px;font-size:12px;color:var(--text-dim);">Its reads move to the ' + label + ' you pick, and "' + title + '" disappears.</div>' +
+      '<div style="padding:0 14px 10px;"><input type="text" id="coll-merge-pick-input" placeholder="Start typing ' + article + ' ' + label + '…" autocomplete="off" style="width:100%;box-sizing:border-box;padding:10px;border:2px solid var(--border);font-size:16px;background:var(--card);color:var(--text);"></div>' +
+      '<div id="coll-merge-pick-list" style="overflow-y:auto;flex:1 1 auto;border-top:2px solid var(--border);min-height:80px;"></div>' +
+      '<div style="padding:10px 14px;border-top:2px solid var(--border);text-align:right;"><button type="button" id="coll-merge-pick-cancel" class="ref-btn" style="padding:8px 14px;">Cancel</button></div>' +
+      '</div>';
+    document.body.appendChild(ov);
+    const input = ov.querySelector('#coll-merge-pick-input');
+    const list = ov.querySelector('#coll-merge-pick-list');
+    let shown = [];
+    let hi = 0;
+    let onKey = null;
+    const finish = (val) => { document.removeEventListener('keydown', onKey, true); ov.remove(); resolve(val); };
+    const draw = () => {
+      const q = input.value.trim().toLowerCase();
+      shown = candidates.filter((x) => !q || x.name.toLowerCase().includes(q));
+      if (hi >= shown.length) hi = Math.max(0, shown.length - 1);
+      list.innerHTML = shown.length
+        ? shown.map((x, i) => '<div data-pick="' + i + '" style="padding:9px 14px;cursor:pointer;display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid var(--pink-soft);' + (i === hi ? 'background:var(--pink-soft);' : '') + '"><span>' + escapeHtml(x.name) + '</span><span style="color:var(--text-dim);font-size:12px;">' + collectionMembers(x).length + '</span></div>').join('')
+        : '<div style="padding:14px;color:var(--text-dim);font-size:13px;">No other ' + label + 's</div>';
+      list.querySelectorAll('[data-pick]').forEach((el) => {
+        el.onclick = () => finish(shown[Number(el.getAttribute('data-pick'))]);
+      });
+      const cur = list.querySelector('[data-pick="' + hi + '"]');
+      if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest' });
+    };
+    onKey = (ev) => {
+      if (ev.key === 'Escape') { ev.preventDefault(); finish(null); }
+      else if (ev.key === 'ArrowDown') { ev.preventDefault(); hi = Math.min(shown.length - 1, hi + 1); draw(); }
+      else if (ev.key === 'ArrowUp') { ev.preventDefault(); hi = Math.max(0, hi - 1); draw(); }
+      else if (ev.key === 'Enter') { ev.preventDefault(); if (shown[hi]) finish(shown[hi]); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    input.oninput = () => { hi = 0; draw(); };
+    ov.querySelector('#coll-merge-pick-cancel').onclick = () => finish(null);
+    ov.addEventListener('mousedown', (ev) => { if (ev.target === ov) finish(null); });
+    draw();
+    input.focus();
+  });
+}
+// Merges c into target: every entry carrying c's id in its `collections`
+// array gets target's id added (deduped) and c's removed, then c itself is
+// deleted. Mirrors tag-merge semantics (pickMergeTarget's handler above).
+async function mergeCollections(c, target) {
+  for (const e of ALL_ENTRIES) {
+    const cols = e.collections || [];
+    if (!cols.includes(c.id)) continue;
+    e.collections = cols.filter((id) => id !== c.id);
+    if (!e.collections.includes(target.id)) e.collections.push(target.id);
+    await saveEntry(e);
+  }
+  c.deleted = true;
+  await persistCollections([c.id]);
+}
 function newTagBuckets() { const o = {}; TAG_SECTION_ORDER.forEach((s) => { o[s] = []; }); return o; }
 Object.assign(TAG_SECTIONS, {
   // Appearance
@@ -4413,19 +4482,23 @@ function tagsKindSwitchHtml() {
   return `
     <div class="tagmgr-tabs" style="margin-bottom:8px;">
       <button class="tagmgr-tab ${TAG_MGR_KIND === 'tags' ? 'active' : ''}" data-tagmgr-kind="tags">🏷️ Tags</button>
+      ${TAG_MGR_KIND === 'tags' ? `<button class="tagmgr-tab ${TAG_MGR_TAB === 'manage' ? 'active' : ''}" data-tagmgr-tab="manage">🗂️ Manage Sections</button>` : ''}
       <button class="tagmgr-tab ${TAG_MGR_KIND === 'award' ? 'active' : ''}" data-tagmgr-kind="award">🏆 Awards</button>
-      <button class="tagmgr-tab ${TAG_MGR_KIND === 'playlist' ? 'active' : ''}" data-tagmgr-kind="playlist">🎵 Playlists</button>
+      <button class="tagmgr-tab ${TAG_MGR_KIND === 'playlist' ? 'active' : ''}" data-tagmgr-kind="playlist">📜 Playlists</button>
     </div>`;
 }
 
-// Awards/Playlists' "Manage" tab -- reorder, rename, delete. No section
-// buckets (unlike tags' Manage Sections): awards/playlists aren't
-// categorized the same way, per her call on the scope of this.
+// Awards/Playlists manager. Active/Hidden are filters (shared tab row with
+// Tags -- see renderTagManager); every row carries the full action set --
+// hide/show, merge, rename, delete, reorder -- same as Tags' Active rows,
+// per her call on the scope of this. No separate "Manage" tab/page anymore:
+// it used to hold reorder+rename+delete behind its own click, but that's
+// all inline now.
 function renderCollectionManager(kind) {
   ensureSystemCollections();
   const label = kind === 'award' ? 'Award' : 'Playlist';
   const labelPlural = kind === 'award' ? 'Awards' : 'Playlists';
-  const icon = kind === 'award' ? '🏆' : '🎵';
+  const icon = kind === 'award' ? '🏆' : '📜';
   const all = collectionsOfKind(kind);
   const activeList = activeCollectionsOfKind(kind);
   const hiddenList = hiddenCollectionsOfKind(kind);
@@ -4433,7 +4506,12 @@ function renderCollectionManager(kind) {
 
   // data-tag-name is deliberately reused (not a new attribute) so the one
   // existing #tagmgr-search filter below works unmodified for these rows too.
-  const rowHtml = (c) => `
+  // Move up/down and its disabled state are computed against the *full*
+  // kind-wide order (`all`), not whichever active/hidden subset is showing,
+  // so order stays one single, consistent sequence across both tabs.
+  const rowHtml = (c) => {
+    const idx = all.findIndex((x) => x.id === c.id);
+    return `
     <div class="tagmgr-row" data-tag-name="${escapeHtml(c.name)}">
       <div class="tagmgr-click-area" data-collmgr-view="${escapeHtml(c.id)}" title="Open &quot;${escapeHtml(c.name)}&quot;">
         <div class="tagmgr-name">${icon} ${escapeHtml(c.name)}</div>
@@ -4442,31 +4520,22 @@ function renderCollectionManager(kind) {
       <div class="tagmgr-actions">
         ${systemDef(c.id)
           ? `<span style="color:var(--text-dim);font-size:11px;">Built-in</span>`
-          : `<button class="toggle-switch ${!c.hidden ? 'on' : ''}" data-collmgr-hide="${escapeHtml(c.id)}" title="${c.hidden ? 'Show in filters again' : 'Hide from filters (keeps the data)'}" role="switch" aria-checked="${!c.hidden}"><span class="toggle-knob"></span></button>`}
+          : `
+          <button class="icon-btn-inline" data-collmgr-move="${escapeHtml(c.id)}:-1" title="Move up" ${idx <= 0 ? 'disabled' : ''}>▲</button>
+          <button class="icon-btn-inline" data-collmgr-move="${escapeHtml(c.id)}:1" title="Move down" ${idx === -1 || idx === all.length - 1 ? 'disabled' : ''}>▼</button>
+          <button class="toggle-switch ${!c.hidden ? 'on' : ''}" data-collmgr-hide="${escapeHtml(c.id)}" title="${c.hidden ? 'Show in filters again' : 'Hide from filters (keeps the data)'}" role="switch" aria-checked="${!c.hidden}"><span class="toggle-knob"></span></button>
+          <button class="icon-btn-inline" data-collmgr-merge="${escapeHtml(c.id)}" title="Merge into another ${label.toLowerCase()}">🔀</button>
+          <button class="icon-btn-inline" data-collmgr-rename="${escapeHtml(c.id)}" title="Rename">✏️</button>
+          <button class="icon-btn-inline" data-collmgr-delete="${escapeHtml(c.id)}" title="Delete">🗑️</button>`}
       </div>
     </div>`;
+  };
   const rows = names.map(rowHtml).join('');
-
-  const manageRows = all.map((c, idx) => `
-    <div class="tagmgr-row" data-tag-name="${escapeHtml(c.name)}">
-      <div class="tagmgr-click-area" data-collmgr-view="${escapeHtml(c.id)}">
-        <div class="tagmgr-name">${icon} ${escapeHtml(c.name)}${c.hidden ? ' <span style="color:var(--text-dim);font-size:11px;">(hidden)</span>' : ''}</div>
-        <div class="tagmgr-count">${collectionMembers(c).length} read${collectionMembers(c).length === 1 ? '' : 's'}</div>
-      </div>
-      <div class="tagmgr-actions">
-        ${systemDef(c.id) ? `<span style="color:var(--text-dim);font-size:11px;">Built-in</span>` : `
-        <button class="icon-btn-inline" data-collmgr-move="${escapeHtml(c.id)}:-1" title="Move up" ${idx === 0 ? 'disabled' : ''}>▲</button>
-        <button class="icon-btn-inline" data-collmgr-move="${escapeHtml(c.id)}:1" title="Move down" ${idx === all.length - 1 ? 'disabled' : ''}>▼</button>
-        <button class="icon-btn-inline" data-collmgr-rename="${escapeHtml(c.id)}" title="Rename">✏️</button>
-        <button class="icon-btn-inline" data-collmgr-delete="${escapeHtml(c.id)}" title="Delete">🗑️</button>`}
-      </div>
-    </div>`).join('');
 
   const tabsHtml = `
     <div class="tagmgr-tabs">
       <button class="tagmgr-tab ${TAG_MGR_TAB === 'active' ? 'active' : ''}" data-tagmgr-tab="active">Active (${activeList.length})</button>
       <button class="tagmgr-tab ${TAG_MGR_TAB === 'hidden' ? 'active' : ''}" data-tagmgr-tab="hidden">Hidden (${hiddenList.length})</button>
-      <button class="tagmgr-tab ${TAG_MGR_TAB === 'manage' ? 'active' : ''}" data-tagmgr-tab="manage">Manage</button>
     </div>`;
 
   return `
@@ -4480,10 +4549,8 @@ function renderCollectionManager(kind) {
       </div>
       ${tagsKindSwitchHtml()}
       ${tabsHtml}
-      ${TAG_MGR_TAB === 'manage'
-        ? `<div id="tagmgr-list">${manageRows || `<div class="empty-state">No ${labelPlural.toLowerCase()} yet.</div>`}</div>
-           <div style="margin-top:14px;"><button class="ref-btn" data-collmgr-create="${kind}">+ New ${label}</button></div>`
-        : `<div id="tagmgr-list">${rows || `<div class="empty-state">${TAG_MGR_TAB === 'hidden' ? `No hidden ${labelPlural.toLowerCase()}.` : `No ${labelPlural.toLowerCase()} yet.`}</div>`}</div>`}
+      <div id="tagmgr-list">${rows || `<div class="empty-state">${TAG_MGR_TAB === 'hidden' ? `No hidden ${labelPlural.toLowerCase()}.` : `No ${labelPlural.toLowerCase()} yet.`}</div>`}</div>
+      <div style="margin-top:14px;"><button class="ref-btn" data-collmgr-create="${kind}">+ New ${label}</button></div>
     </main>
     ${renderBottomNav('tags')}
   `;
@@ -4565,7 +4632,6 @@ function renderTagManager() {
     <div class="tagmgr-tabs">
       <button class="tagmgr-tab ${TAG_MGR_TAB === 'active' ? 'active' : ''}" data-tagmgr-tab="active">Active (${activeNames.length})</button>
       <button class="tagmgr-tab ${TAG_MGR_TAB === 'hidden' ? 'active' : ''}" data-tagmgr-tab="hidden">Hidden (${hiddenActiveNames.length + DELETED_TAG_KEYS.size})</button>
-      <button class="tagmgr-tab ${TAG_MGR_TAB === 'manage' ? 'active' : ''}" data-tagmgr-tab="manage">Manage Sections</button>
     </div>`;
 
   return `
@@ -10658,6 +10724,17 @@ function attachRootHandlers() {
       if (!c) return;
       await setCollectionHidden(c, !c.hidden);
       showToast(c.hidden ? 'Hidden from filters' : 'Shown in filters again');
+      render();
+    };
+  });
+  root.querySelectorAll('[data-collmgr-merge]').forEach((el) => {
+    el.onclick = async () => {
+      const c = COLLECTIONS[el.getAttribute('data-collmgr-merge')];
+      if (!c) return;
+      const target = await pickCollectionMergeTarget(c);
+      if (!target || target.id === c.id) return;
+      await mergeCollections(c, target);
+      showToast(`Merged "${c.name}" into "${target.name}"`);
       render();
     };
   });
