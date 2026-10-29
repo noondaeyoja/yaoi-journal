@@ -505,21 +505,68 @@ async function loadAllEntries() {
   ALL_ENTRIES = (await idbGetAll(STORE_ENTRIES)).map(normalizeEntry);
 }
 
-async function saveEntry(entry) {
-  normalizeEntry(entry);
-  // Track when a read was marked Completed (for most-recently-completed-first
-  // ordering). Reads already Completed with no stamp fall back to their last
-  // update time; leaving Completed clears the stamp.
-  if (entry.shelf === 'Completed') {
-    if (!entry.completedAt) entry.completedAt = entry.updatedAt || entry.createdAt || new Date().toISOString();
-  } else if (entry.completedAt) {
-    entry.completedAt = null;
+// Visible "Saving…" / "Saved" status + a close-time safety net. Added after
+// a real incident: notes, screencaps and an award added in one sitting were
+// lost even though the laptop was closed normally, not crashed. The notes
+// box (and a few other fields) only save on blur, and that save — like
+// every save in this app — is asynchronous (local IndexedDB write, then a
+// separate cloud write). There was nothing on screen telling her it was
+// safe to close, so a lid-close or tab-close right after a flurry of edits
+// could beat the write to disk. SAVE_IN_FLIGHT counts every save (local +
+// cloud) currently in progress; the indicator reflects it, and the
+// beforeunload guard below warns before a tab close/reload while it's
+// nonzero (it can't catch an abrupt lid-close/sleep, which fires no
+// beforeunload at all — nothing in-page can — but it does catch the much
+// more common "closed the tab right after typing" case).
+let SAVE_IN_FLIGHT = 0;
+let SAVE_STATUS = 'idle'; // 'idle' | 'saving' | 'saved'
+let SAVE_STATUS_TIMER = null;
+function updateSaveStatusUI() {
+  const el = document.getElementById('save-status-indicator');
+  if (!el) return;
+  el.textContent = SAVE_STATUS === 'saving' ? '💾 Saving…' : SAVE_STATUS === 'saved' ? '✅ Saved' : '';
+  el.className = 'save-status-indicator ' + SAVE_STATUS;
+}
+function bumpSaveStart() {
+  SAVE_IN_FLIGHT++;
+  if (SAVE_STATUS_TIMER) { clearTimeout(SAVE_STATUS_TIMER); SAVE_STATUS_TIMER = null; }
+  SAVE_STATUS = 'saving';
+  updateSaveStatusUI();
+}
+function bumpSaveEnd() {
+  SAVE_IN_FLIGHT = Math.max(0, SAVE_IN_FLIGHT - 1);
+  if (SAVE_IN_FLIGHT === 0) {
+    SAVE_STATUS = 'saved';
+    updateSaveStatusUI();
+    SAVE_STATUS_TIMER = setTimeout(() => { SAVE_STATUS = 'idle'; updateSaveStatusUI(); }, 1500);
+  } else {
+    updateSaveStatusUI();
   }
-  entry.updatedAt = new Date().toISOString();
-  await idbPut(STORE_ENTRIES, entry);
-  const idx = ALL_ENTRIES.findIndex((e) => e.id === entry.id);
-  if (idx > -1) ALL_ENTRIES[idx] = entry; else ALL_ENTRIES.push(entry);
-  pushEntryToFirestore(entry);
+}
+window.addEventListener('beforeunload', (ev) => {
+  if (SAVE_IN_FLIGHT > 0) { ev.preventDefault(); ev.returnValue = ''; return ''; }
+});
+
+async function saveEntry(entry) {
+  bumpSaveStart();
+  try {
+    normalizeEntry(entry);
+    // Track when a read was marked Completed (for most-recently-completed-first
+    // ordering). Reads already Completed with no stamp fall back to their last
+    // update time; leaving Completed clears the stamp.
+    if (entry.shelf === 'Completed') {
+      if (!entry.completedAt) entry.completedAt = entry.updatedAt || entry.createdAt || new Date().toISOString();
+    } else if (entry.completedAt) {
+      entry.completedAt = null;
+    }
+    entry.updatedAt = new Date().toISOString();
+    await idbPut(STORE_ENTRIES, entry);
+    const idx = ALL_ENTRIES.findIndex((e) => e.id === entry.id);
+    if (idx > -1) ALL_ENTRIES[idx] = entry; else ALL_ENTRIES.push(entry);
+    pushEntryToFirestore(entry);
+  } finally {
+    bumpSaveEnd();
+  }
 }
 
 // #370/#371: force whatever field is currently focused on the detail page
@@ -1169,10 +1216,16 @@ function pushEntryToFirestore(entry) {
   if (trimmedFields.length) {
     showToast(`"${entry.title || 'This entry'}": ${trimmedFields.join(', ')} too large to sync — kept on this device only, rest saved to the cloud.`);
   }
+  // Counted separately from (and not awaited by) saveEntry() above — the UI
+  // shouldn't wait on the network to feel responsive — but it still holds
+  // the "Saving…" indicator and the close-tab warning up until the cloud
+  // copy actually lands, since that's the backup that protects against
+  // losing this device entirely, not just a crash.
+  bumpSaveStart();
   col.doc(entry.id).set(safe).catch((err) => {
     console.error('Firestore save failed:', err);
     showToast(`Couldn't back up "${entry.title || 'this entry'}" to the cloud — saved locally, will retry later.`);
-  });
+  }).finally(() => bumpSaveEnd());
 }
 
 function deleteEntryFromFirestore(id) {
@@ -3132,6 +3185,13 @@ let USER_HIDDEN_TAG_KEYS = new Set();
 let TAG_SECTION_OVERRIDES = {};
 // Which Tag Manager tab is showing: 'active', 'hidden', or 'manage'.
 let TAG_MGR_TAB = 'active';
+// Which content type the Tags page's Active/Hidden/Manage row operates on:
+// 'tags' (default), 'award', or 'playlist'. Awards/Playlists reuse the exact
+// same Active/Hidden/Manage tabs as tags rather than getting their own
+// separate page -- "Manage" just means reorder/rename/delete for them
+// instead of the section-bucket drag-and-drop tags get, since they aren't
+// categorized the same way.
+let TAG_MGR_KIND = 'tags';
 // Search text to restore + re-apply after an auto tab-switch triggered by the Tag Manager search box.
 let TAG_MGR_SEARCH_PENDING = '';
 // Signatures of hide/merge suggestions the user has dismissed ("not now"),
@@ -3407,6 +3467,54 @@ function collectionsOfKind(kind) {
     .filter((c) => c && !c.deleted && c.kind === kind)
     .sort((a, b) => (a.order || 0) - (b.order || 0) || String(a.name).localeCompare(String(b.name)));
 }
+// Hidden works the same as it does for tags: keeps a playlist/award out of
+// the homepage rows and the entry-detail "add" picker, without touching its
+// membership data. System collections (Favorites/Artwork/Funny) can't be
+// hidden -- they're just live views of an existing tag, not a real list.
+function activeCollectionsOfKind(kind) { return collectionsOfKind(kind).filter((c) => !c.hidden); }
+function hiddenCollectionsOfKind(kind) { return collectionsOfKind(kind).filter((c) => c.hidden); }
+async function setCollectionHidden(c, hidden) {
+  if (systemDef(c.id)) return;
+  c.hidden = hidden;
+  await persistCollections([c.id]);
+}
+// Shared by both the standalone collection page (Rename/Delete buttons) and
+// the Awards/Playlists Manage tab, so there's one implementation instead of
+// two copies that can drift apart.
+function openRenameCollectionModal(c) {
+  openModal(`
+    <h3>Rename</h3>
+    <div class="field-row"><input type="text" id="coll-rename-input" value="${escapeHtml(c.name)}" autocomplete="off"></div>
+    <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Cancel</button><button class="btn-primary" id="coll-rename-save">Save</button></div>`, { centered: true });
+  const inp = document.getElementById('coll-rename-input');
+  const save = async () => {
+    const v = inp.value.trim();
+    if (!v) return;
+    c.name = v;
+    await persistCollections([c.id]);
+    closeModal();
+    render();
+  };
+  document.getElementById('coll-rename-save').onclick = save;
+  inp.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); save(); } };
+  setTimeout(() => inp.focus(), 50);
+}
+async function deleteCollectionFlow(c) {
+  if (!(await confirmModal('Delete "' + c.name + '"? The reads themselves stay in your journal.', 'DELETE'))) return false;
+  c.deleted = true;
+  await persistCollections([c.id]);
+  showToast('Deleted');
+  return true;
+}
+async function moveCollection(c, dir) {
+  const sibs = collectionsOfKind(c.kind);
+  const i = sibs.findIndex((x) => x.id === c.id);
+  const j = i + dir;
+  if (i === -1 || j < 0 || j >= sibs.length) return;
+  [sibs[i], sibs[j]] = [sibs[j], sibs[i]];
+  sibs.forEach((x, k) => { x.order = k; });
+  await persistCollections(sibs.map((x) => x.id));
+}
 function entryHasTagKey(e, key) {
   return [...(e.tags || []), ...(e.customTags || [])].some((t) => normalizeTagKey(t) === key);
 }
@@ -3505,7 +3613,7 @@ function collAddTileHtml(c) {
     </div>`;
 }
 function collectionsHomeHtml() {
-  return [...collectionsOfKind('playlist'), ...collectionsOfKind('award')].map(collectionRowHtml).join('');
+  return [...activeCollectionsOfKind('playlist'), ...activeCollectionsOfKind('award')].map(collectionRowHtml).join('');
 }
 
 /* Full page for one playlist/award. */
@@ -3555,7 +3663,12 @@ function statsCollectionRowHtml(e, kind) {
   const addChip = `<button type="button" class="tag-chip add-tag-chip coll-add-chip ${COLL_ADD_KIND === kind ? 'active' : ''}" data-coll-add-toggle="${kind}">+ NEW ${kind === 'award' ? 'AWARD' : 'PLAYLIST'}</button>`;
   let panel = '';
   if (COLL_ADD_KIND === kind) {
-    const pool = collectionsOfKind(kind).map((c) => {
+    // Offer every active (non-hidden) collection to add to, plus any hidden
+    // one this read is already in (so it can still be removed from here) --
+    // a hidden collection otherwise shouldn't show up as something new to
+    // add, same as a hidden tag doesn't show in the tag picker pool.
+    const poolColls = [...activeCollectionsOfKind(kind), ...mine.filter((c) => c.hidden)];
+    const pool = poolColls.map((c) => {
       const on = mine.some((m) => m.id === c.id);
       return `<span class="tag-pool-chip ${on ? 'active' : ''}" data-toggle-coll="${escapeHtml(c.id)}">${escapeHtml(c.name)}</span>`;
     }).join('');
@@ -3696,30 +3809,10 @@ function attachCollectionHandlers(root) {
       };
     });
     const renameBtn = root.querySelector('[data-coll-rename]');
-    if (renameBtn) renameBtn.onclick = () => {
-      openModal(`
-        <h3>Rename</h3>
-        <div class="field-row"><input type="text" id="coll-rename-input" value="${escapeHtml(c.name)}" autocomplete="off"></div>
-        <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Cancel</button><button class="btn-primary" id="coll-rename-save">Save</button></div>`, { centered: true });
-      const inp = document.getElementById('coll-rename-input');
-      const save = async () => {
-        const v = inp.value.trim();
-        if (!v) return;
-        c.name = v;
-        await persistCollections([c.id]);
-        closeModal();
-        render();
-      };
-      document.getElementById('coll-rename-save').onclick = save;
-      inp.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); save(); } };
-    };
+    if (renameBtn) renameBtn.onclick = () => openRenameCollectionModal(c);
     const delBtn = root.querySelector('[data-coll-delete]');
     if (delBtn) delBtn.onclick = async () => {
-      if (!(await confirmModal('Delete "' + c.name + '"? The reads themselves stay in your journal.', 'DELETE'))) return;
-      c.deleted = true;
-      await persistCollections([c.id]);
-      showToast('Deleted');
-      navigate('home');
+      if (await deleteCollectionFlow(c)) navigate('home'); else render();
     };
   }
 }
@@ -4311,7 +4404,93 @@ function renderTagManageBuckets() {
     </div>`;
 }
 
+// Shared by renderTagManager() and renderCollectionManager() -- lets the
+// Tags page switch what the Active/Hidden/Manage row below is operating on.
+// Awards and Playlists reuse that same row (not a separate page of their
+// own) per her spec: these are "2 more filters" on one manager, not three
+// standalone pages.
+function tagsKindSwitchHtml() {
+  return `
+    <div class="tagmgr-tabs" style="margin-bottom:8px;">
+      <button class="tagmgr-tab ${TAG_MGR_KIND === 'tags' ? 'active' : ''}" data-tagmgr-kind="tags">🏷️ Tags</button>
+      <button class="tagmgr-tab ${TAG_MGR_KIND === 'award' ? 'active' : ''}" data-tagmgr-kind="award">🏆 Awards</button>
+      <button class="tagmgr-tab ${TAG_MGR_KIND === 'playlist' ? 'active' : ''}" data-tagmgr-kind="playlist">🎵 Playlists</button>
+    </div>`;
+}
+
+// Awards/Playlists' "Manage" tab -- reorder, rename, delete. No section
+// buckets (unlike tags' Manage Sections): awards/playlists aren't
+// categorized the same way, per her call on the scope of this.
+function renderCollectionManager(kind) {
+  ensureSystemCollections();
+  const label = kind === 'award' ? 'Award' : 'Playlist';
+  const labelPlural = kind === 'award' ? 'Awards' : 'Playlists';
+  const icon = kind === 'award' ? '🏆' : '🎵';
+  const all = collectionsOfKind(kind);
+  const activeList = activeCollectionsOfKind(kind);
+  const hiddenList = hiddenCollectionsOfKind(kind);
+  const names = TAG_MGR_TAB === 'hidden' ? hiddenList : activeList;
+
+  // data-tag-name is deliberately reused (not a new attribute) so the one
+  // existing #tagmgr-search filter below works unmodified for these rows too.
+  const rowHtml = (c) => `
+    <div class="tagmgr-row" data-tag-name="${escapeHtml(c.name)}">
+      <div class="tagmgr-click-area" data-collmgr-view="${escapeHtml(c.id)}" title="Open &quot;${escapeHtml(c.name)}&quot;">
+        <div class="tagmgr-name">${icon} ${escapeHtml(c.name)}</div>
+        <div class="tagmgr-count">${collectionMembers(c).length} read${collectionMembers(c).length === 1 ? '' : 's'}</div>
+      </div>
+      <div class="tagmgr-actions">
+        ${systemDef(c.id)
+          ? `<span style="color:var(--text-dim);font-size:11px;">Built-in</span>`
+          : `<button class="toggle-switch ${!c.hidden ? 'on' : ''}" data-collmgr-hide="${escapeHtml(c.id)}" title="${c.hidden ? 'Show in filters again' : 'Hide from filters (keeps the data)'}" role="switch" aria-checked="${!c.hidden}"><span class="toggle-knob"></span></button>`}
+      </div>
+    </div>`;
+  const rows = names.map(rowHtml).join('');
+
+  const manageRows = all.map((c, idx) => `
+    <div class="tagmgr-row" data-tag-name="${escapeHtml(c.name)}">
+      <div class="tagmgr-click-area" data-collmgr-view="${escapeHtml(c.id)}">
+        <div class="tagmgr-name">${icon} ${escapeHtml(c.name)}${c.hidden ? ' <span style="color:var(--text-dim);font-size:11px;">(hidden)</span>' : ''}</div>
+        <div class="tagmgr-count">${collectionMembers(c).length} read${collectionMembers(c).length === 1 ? '' : 's'}</div>
+      </div>
+      <div class="tagmgr-actions">
+        ${systemDef(c.id) ? `<span style="color:var(--text-dim);font-size:11px;">Built-in</span>` : `
+        <button class="icon-btn-inline" data-collmgr-move="${escapeHtml(c.id)}:-1" title="Move up" ${idx === 0 ? 'disabled' : ''}>▲</button>
+        <button class="icon-btn-inline" data-collmgr-move="${escapeHtml(c.id)}:1" title="Move down" ${idx === all.length - 1 ? 'disabled' : ''}>▼</button>
+        <button class="icon-btn-inline" data-collmgr-rename="${escapeHtml(c.id)}" title="Rename">✏️</button>
+        <button class="icon-btn-inline" data-collmgr-delete="${escapeHtml(c.id)}" title="Delete">🗑️</button>`}
+      </div>
+    </div>`).join('');
+
+  const tabsHtml = `
+    <div class="tagmgr-tabs">
+      <button class="tagmgr-tab ${TAG_MGR_TAB === 'active' ? 'active' : ''}" data-tagmgr-tab="active">Active (${activeList.length})</button>
+      <button class="tagmgr-tab ${TAG_MGR_TAB === 'hidden' ? 'active' : ''}" data-tagmgr-tab="hidden">Hidden (${hiddenList.length})</button>
+      <button class="tagmgr-tab ${TAG_MGR_TAB === 'manage' ? 'active' : ''}" data-tagmgr-tab="manage">Manage</button>
+    </div>`;
+
+  return `
+    <div class="app-header">
+      <div class="brand-row"><h1>${icon} Manage ${labelPlural}</h1></div>
+      <div class="search-bar"><span>🔍</span><input type="search" id="tagmgr-search" placeholder="Filter ${labelPlural.toLowerCase()}..." value="${escapeHtml(TAG_MGR_SEARCH_PENDING)}"></div>
+    </div>
+    <main>
+      <div style="color:var(--text-dim);font-size:12px;margin-bottom:10px;">
+        ${all.length} ${labelPlural.toLowerCase()} across ${ALL_ENTRIES.length} entries. Tap one to open it. Deleting removes it everywhere (can't be undone); hiding just keeps it out of the homepage and the add-picker.
+      </div>
+      ${tagsKindSwitchHtml()}
+      ${tabsHtml}
+      ${TAG_MGR_TAB === 'manage'
+        ? `<div id="tagmgr-list">${manageRows || `<div class="empty-state">No ${labelPlural.toLowerCase()} yet.</div>`}</div>
+           <div style="margin-top:14px;"><button class="ref-btn" data-collmgr-create="${kind}">+ New ${label}</button></div>`
+        : `<div id="tagmgr-list">${rows || `<div class="empty-state">${TAG_MGR_TAB === 'hidden' ? `No hidden ${labelPlural.toLowerCase()}.` : `No ${labelPlural.toLowerCase()} yet.`}</div>`}</div>`}
+    </main>
+    ${renderBottomNav('tags')}
+  `;
+}
+
 function renderTagManager() {
+  if (TAG_MGR_KIND !== 'tags') return renderCollectionManager(TAG_MGR_KIND);
   const counts = allTagCounts();
   const allNames = Object.keys(counts).sort((a, b) => a.localeCompare(b));
   const activeNames = allNames.filter((t) => !isHiddenTag(t));
@@ -4399,6 +4578,7 @@ function renderTagManager() {
       <div style="color:var(--text-dim);font-size:12px;margin-bottom:10px;">
         ${allNames.length} unique tag${allNames.length === 1 ? '' : 's'} across ${ALL_ENTRIES.length} entries. Tap a tag to see its entries. Renaming applies everywhere the tag is used — rename to an existing tag name to merge two tags together. Deleting removes it from every entry (can't be undone); hiding just keeps it out of filters.
       </div>
+      ${tagsKindSwitchHtml()}
       ${suggestionsHtml}
       ${tabsHtml}
       ${TAG_MGR_TAB === 'manage' ? renderTagManageBuckets() : `
@@ -7951,8 +8131,9 @@ function renderDetail(e) {
     ${detailNeighbors.next ? `<button class="detail-nav-arrow detail-nav-next" data-open-entry="${escapeHtml(detailNeighbors.next)}" title="Next result">›</button>` : ''}
     <div class="detail-header">
       <div class="detail-header-row">
-        
+
         <h2>${escapeHtml(e.title)}</h2>
+        <span id="save-status-indicator" class="save-status-indicator ${SAVE_STATUS}">${SAVE_STATUS === 'saving' ? '💾 Saving…' : SAVE_STATUS === 'saved' ? '✅ Saved' : ''}</span>
       </div>
       <div class="detail-actions-row">
         </div>
@@ -10287,7 +10468,21 @@ function attachRootHandlers() {
     document.getElementById('crossref-url').value = e.referenceUrl;
   };
 
-  // Tag management view
+  // Tag management view (also covers the Awards/Playlists manager, which
+  // reuses the same #tagmgr-search box and .tagmgr-row rows).
+  // Names for whichever content type (tags, awards, or playlists) the
+  // manager is currently showing, split by active/hidden -- used below to
+  // decide whether a no-match search should hop to the other tab.
+  function currentMgrNames(tab) {
+    if (TAG_MGR_KIND === 'tags') {
+      const allNames = Object.keys(allTagCounts());
+      return tab === 'hidden'
+        ? allNames.filter((t) => USER_HIDDEN_TAG_KEYS.has(normalizeTagKey(t)) || DELETED_TAG_KEYS.has(normalizeTagKey(t)))
+        : allNames.filter((t) => !isHiddenTag(t));
+    }
+    const list = tab === 'hidden' ? hiddenCollectionsOfKind(TAG_MGR_KIND) : activeCollectionsOfKind(TAG_MGR_KIND);
+    return list.map((c) => c.name);
+  }
   const tagmgrSearch = root.querySelector('#tagmgr-search');
   if (tagmgrSearch) tagmgrSearch.oninput = () => {
     const q = tagmgrSearch.value.toLowerCase();
@@ -10297,14 +10492,9 @@ function attachRootHandlers() {
       row.style.display = match ? '' : 'none';
       if (match) anyMatchCurrent = true;
     });
-    if (q && !anyMatchCurrent) {
-      const counts = allTagCounts();
-      const allNames = Object.keys(counts);
+    if (q && !anyMatchCurrent && TAG_MGR_TAB !== 'manage') {
       const otherTab = TAG_MGR_TAB === 'hidden' ? 'active' : 'hidden';
-      const otherNames = otherTab === 'hidden'
-        ? allNames.filter((t) => USER_HIDDEN_TAG_KEYS.has(normalizeTagKey(t)) || DELETED_TAG_KEYS.has(normalizeTagKey(t)))
-        : allNames.filter((t) => !isHiddenTag(t));
-      const hasMatchInOther = otherNames.some((t) => t.toLowerCase().includes(q));
+      const hasMatchInOther = currentMgrNames(otherTab).some((t) => t.toLowerCase().includes(q));
       if (hasMatchInOther) {
         TAG_MGR_TAB = otherTab;
         TAG_MGR_SEARCH_PENDING = tagmgrSearch.value;
@@ -10412,8 +10602,41 @@ function attachRootHandlers() {
       render();
     };
   });
+  // Bug fix: this used to just flip TAG_MGR_TAB and re-render, full stop --
+  // it never looked at the search box at all. Since render() rebuilds the
+  // whole page, the fresh search input's *value* came from
+  // TAG_MGR_SEARCH_PENDING (always empty on a plain tab click) while this
+  // app's rendering happens to keep reusing the actual input DOM node
+  // across re-renders, so the OLD typed text visually stayed sitting in the
+  // box -- but the newly-rendered rows were never re-filtered against it,
+  // since that only ever happens on an 'input' event. The box looked like
+  // it still had her search in it while the list underneath quietly showed
+  // everything, unfiltered, which read as "the tab didn't switch" -- hence
+  // needing to click off and back on to shake it loose. Capturing the
+  // current box text into TAG_MGR_SEARCH_PENDING here routes it through the
+  // exact same restore-and-refilter path the search box's own auto-switch
+  // already uses, so a manual tab click now keeps (and correctly
+  // re-applies) whatever's typed, no matter which pink button is clicked.
   root.querySelectorAll('[data-tagmgr-tab]').forEach((el) => {
-    el.onclick = () => { TAG_MGR_TAB = el.getAttribute('data-tagmgr-tab'); render(); };
+    el.onclick = () => {
+      TAG_MGR_TAB = el.getAttribute('data-tagmgr-tab');
+      if (tagmgrSearch && tagmgrSearch.value) TAG_MGR_SEARCH_PENDING = tagmgrSearch.value;
+      render();
+    };
+  });
+  // Tags / Awards / Playlists content-type switch -- same search-preserving
+  // treatment as the Active/Hidden/Manage tabs above, and resets to Active
+  // on switch so she isn't dropped onto, say, Playlists' Manage tab just
+  // because that's where Tags happened to be left.
+  root.querySelectorAll('[data-tagmgr-kind]').forEach((el) => {
+    el.onclick = () => {
+      const kind = el.getAttribute('data-tagmgr-kind');
+      if (kind === TAG_MGR_KIND) return;
+      TAG_MGR_KIND = kind;
+      TAG_MGR_TAB = 'active';
+      if (tagmgrSearch && tagmgrSearch.value) TAG_MGR_SEARCH_PENDING = tagmgrSearch.value;
+      render();
+    };
   });
   root.querySelectorAll('[data-tagmgr-hide]').forEach((el) => {
     el.onclick = async () => {
@@ -10424,6 +10647,63 @@ function attachRootHandlers() {
       render();
     };
   });
+  // Awards/Playlists manager (renderCollectionManager) -- same list/manage
+  // idea as tags above, just operating on COLLECTIONS instead.
+  root.querySelectorAll('[data-collmgr-view]').forEach((el) => {
+    el.onclick = () => navigate('collection', el.getAttribute('data-collmgr-view'));
+  });
+  root.querySelectorAll('[data-collmgr-hide]').forEach((el) => {
+    el.onclick = async () => {
+      const c = COLLECTIONS[el.getAttribute('data-collmgr-hide')];
+      if (!c) return;
+      await setCollectionHidden(c, !c.hidden);
+      showToast(c.hidden ? 'Hidden from filters' : 'Shown in filters again');
+      render();
+    };
+  });
+  root.querySelectorAll('[data-collmgr-rename]').forEach((el) => {
+    el.onclick = () => {
+      const c = COLLECTIONS[el.getAttribute('data-collmgr-rename')];
+      if (c) openRenameCollectionModal(c);
+    };
+  });
+  root.querySelectorAll('[data-collmgr-delete]').forEach((el) => {
+    el.onclick = async () => {
+      const c = COLLECTIONS[el.getAttribute('data-collmgr-delete')];
+      if (!c) return;
+      if (await deleteCollectionFlow(c)) render();
+    };
+  });
+  root.querySelectorAll('[data-collmgr-move]').forEach((el) => {
+    el.onclick = async () => {
+      const [id, dir] = el.getAttribute('data-collmgr-move').split(':');
+      const c = COLLECTIONS[id];
+      if (!c) return;
+      await moveCollection(c, Number(dir));
+      render();
+    };
+  });
+  const collmgrCreateBtn = root.querySelector('[data-collmgr-create]');
+  if (collmgrCreateBtn) collmgrCreateBtn.onclick = () => {
+    const kind = collmgrCreateBtn.getAttribute('data-collmgr-create');
+    const label = kind === 'award' ? 'award' : 'playlist';
+    openModal(`
+      <h3>New ${label}</h3>
+      <div class="field-row"><input type="text" id="new-collmgr-input" autocomplete="off"></div>
+      <div class="modal-actions"><button class="btn-ghost" data-close-modal="1">Cancel</button><button class="btn-primary" id="new-collmgr-create">Create</button></div>`, { centered: true });
+    const inp = document.getElementById('new-collmgr-input');
+    const go = async () => {
+      const name = inp.value.trim();
+      if (!name) { showToast('Give it a name'); return; }
+      await createCollection(kind, name);
+      closeModal();
+      showToast('Created');
+      render();
+    };
+    document.getElementById('new-collmgr-create').onclick = go;
+    inp.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); go(); } };
+    setTimeout(() => inp.focus(), 50);
+  };
   // #367: Manage Sections tab drag-and-drop wiring.
   root.querySelectorAll('[data-manage-tag]').forEach((el) => {
     el.addEventListener('dragstart', (ev) => {

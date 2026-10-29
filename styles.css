@@ -886,6 +886,17 @@ border: 1px solid var(--border); border-radius: 0; margin-bottom: 8px;
 .tagmgr-actions { display: flex; gap: 8px; align-items: center; }
 .tagmgr-actions .icon-btn-inline { font-size: 16px; padding: 2px; }
 
+/* "Saving…" / "Saved" status on the entry detail header -- see the
+   SAVE_IN_FLIGHT comment in app.js for why this exists. Empty/idle state
+   takes up no visible space; .saving pulses gently so it reads as
+   "something's happening" without being distracting mid-edit, .saved fades
+   in and then (via the inline timer in app.js) back out on its own. */
+.save-status-indicator { font-size: 11.5px; font-weight: 700; text-align: center; width: 100%; min-height: 1px; color: var(--text-dim); transition: opacity .3s ease; }
+.save-status-indicator:empty { display: none; }
+.save-status-indicator.saving { color: var(--yellow, #caa23a); animation: save-status-pulse 1.1s ease-in-out infinite; }
+.save-status-indicator.saved { color: var(--green, #3aa35a); }
+@keyframes save-status-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+
 .tagmgr-tabs { display: flex; gap: 8px; margin: 4px 0 12px; flex-wrap: wrap; row-gap: 8px; }
 .tagmgr-tab {
 flex: 1; text-align: center; padding: 8px 10px; border-radius: 0; font-size: 12.5px; font-weight: 700;
