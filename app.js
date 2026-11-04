@@ -908,6 +908,15 @@ async function applyMetaSnapshot(data) {
       await idbPut(STORE_META, { key: 'customTagSections', value: CUSTOM_TAG_SECTIONS });
     }
   }
+  // Manage Sections reorder (up/down arrows): last-write-wins rather than
+  // merged, like tagSuggestionsCollapsed -- two different orderings can't be
+  // meaningfully interleaved, and this only ever changes from a deliberate
+  // click, so whichever device wrote it last is taken as-is.
+  if (Array.isArray(data.tagSectionCustomOrder) && JSON.stringify(data.tagSectionCustomOrder) !== JSON.stringify(TAG_SECTION_CUSTOM_ORDER)) {
+    TAG_SECTION_CUSTOM_ORDER = data.tagSectionCustomOrder;
+    changed = true;
+    await idbPut(STORE_META, { key: 'tagSectionCustomOrder', value: TAG_SECTION_CUSTOM_ORDER });
+  }
   if (Array.isArray(data.ignoredTagSuggestions) && data.ignoredTagSuggestions.length) {
     const before = IGNORED_TAG_SUGGESTIONS.size;
     IGNORED_TAG_SUGGESTIONS = new Set([...IGNORED_TAG_SUGGESTIONS, ...data.ignoredTagSuggestions]);
@@ -3198,6 +3207,15 @@ let TAG_SECTION_OVERRIDES = {};
 // TAG_SECTION_ORDER directly) anywhere the full, current list of sections is
 // needed, so custom sections show up everywhere the built-ins do.
 let CUSTOM_TAG_SECTIONS = [];
+// Her own drag-free reordering of the Manage Sections buckets (built-in +
+// custom), via the up/down arrows on each section header. null/empty means
+// "use the default order" (built-ins in their original order, then any
+// custom sections in creation order). Persisted (idb + Firestore meta) the
+// same way as TAG_SECTION_OVERRIDES/CUSTOM_TAG_SECTIONS. Always read the
+// current order through tagSectionOrder(), never this directly -- it may be
+// stale/incomplete (missing a section created on another device, etc.) and
+// tagSectionOrder() reconciles that.
+let TAG_SECTION_CUSTOM_ORDER = [];
 // Which Tag Manager tab is showing: 'active', 'hidden', or 'manage'.
 let TAG_MGR_TAB = 'active';
 // Which content type the Tags page's Active/Hidden/Manage row operates on:
@@ -3277,9 +3295,34 @@ async function createTagSection(name) {
   return true;
 }
 // Full, current list of Manage Sections buckets: the 6 built-ins plus
-// whatever she's created herself. Always use this (not TAG_SECTION_ORDER
-// directly) when rendering/resolving sections.
-function tagSectionOrder() { return [...TAG_SECTION_ORDER, ...CUSTOM_TAG_SECTIONS]; }
+// whatever she's created herself, in HER order if she's rearranged them via
+// the up/down arrows (TAG_SECTION_CUSTOM_ORDER), otherwise built-ins first
+// then custom sections in creation order. A section in TAG_SECTION_CUSTOM_ORDER
+// that no longer exists is dropped; one that exists but isn't in it yet
+// (e.g. created on another device after the order was last saved) is
+// appended at the end -- so this never loses or hides a section. Always use
+// this (not TAG_SECTION_ORDER directly) when rendering/resolving sections.
+function tagSectionOrder() {
+  const base = [...TAG_SECTION_ORDER, ...CUSTOM_TAG_SECTIONS];
+  if (!Array.isArray(TAG_SECTION_CUSTOM_ORDER) || !TAG_SECTION_CUSTOM_ORDER.length) return base;
+  const baseSet = new Set(base);
+  const ordered = TAG_SECTION_CUSTOM_ORDER.filter((s) => baseSet.has(s));
+  base.forEach((s) => { if (!ordered.includes(s)) ordered.push(s); });
+  return ordered;
+}
+// Moves a section one slot earlier (-1) or later (+1) in the Manage
+// Sections order and persists it. No-op if it's already at that end.
+async function moveTagSection(name, dir) {
+  const order = tagSectionOrder();
+  const idx = order.indexOf(name);
+  if (idx < 0) return;
+  const newIdx = idx + dir;
+  if (newIdx < 0 || newIdx >= order.length) return;
+  [order[idx], order[newIdx]] = [order[newIdx], order[idx]];
+  TAG_SECTION_CUSTOM_ORDER = order;
+  await idbPut(STORE_META, { key: 'tagSectionCustomOrder', value: TAG_SECTION_CUSTOM_ORDER });
+  pushMetaField('tagSectionCustomOrder', TAG_SECTION_CUSTOM_ORDER);
+}
 async function dismissTagSuggestion(sig) {
   IGNORED_TAG_SUGGESTIONS.add(sig);
   const arr = Array.from(IGNORED_TAG_SUGGESTIONS);
@@ -4630,7 +4673,7 @@ function renderTagManageBuckets() {
   const sectionOrder = tagSectionOrder();
   return `
     <div style="color:var(--text-dim);font-size:12px;margin-bottom:10px;">
-      Drag a tag into a different bucket to move it to that section. Changes save automatically and sync across devices.
+      Drag a tag into a different bucket to move it to that section. Use the arrows to reorder the sections themselves. Changes save automatically and sync across devices.
     </div>
     <div class="tag-manage-buckets">
       ${unassigned.length ? `
@@ -4640,9 +4683,13 @@ function renderTagManageBuckets() {
             ${unassigned.map((t) => `<div style="display:inline-flex;align-items:center;gap:6px;margin:0 8px 8px 0;"><div class="tag-chip readonly manage-drag-chip" draggable="true" data-manage-tag="${escapeHtml(t)}" title="Drag to a section, or click for hide/merge/rename/delete">${escapeHtml(capTag(t))}</div></div>`).join('')}
           </div>
         </div>` : ''}
-      ${sectionOrder.map((sec) => `
+      ${sectionOrder.map((sec, idx) => `
         <div class="tag-section-row">
-          <div class="tag-section-header">${sec}</div>
+          <div class="tag-section-header tag-section-header-manage">
+            <button class="tag-section-move-btn" data-move-section="${escapeHtml(sec)}" data-move-dir="-1" title="Move up" ${idx === 0 ? 'disabled' : ''}>▲</button>
+            <span class="tag-section-name">${escapeHtml(sec)}</span>
+            <button class="tag-section-move-btn" data-move-section="${escapeHtml(sec)}" data-move-dir="1" title="Move down" ${idx === sectionOrder.length - 1 ? 'disabled' : ''}>▼</button>
+          </div>
           <div class="tag-section-tags tag-manage-drop-zone" data-manage-dropzone="${sec}">
             ${buckets[sec].map((t) => `<div class="tag-chip readonly manage-drag-chip" draggable="true" data-manage-tag="${escapeHtml(t)}" title="Drag to move to a different section, or click for hide/merge/rename/delete">${escapeHtml(capTag(t))}</div>`).join('')}
           </div>
@@ -10979,6 +11026,13 @@ function attachRootHandlers() {
       render();
     });
   });
+  root.querySelectorAll('[data-move-section]').forEach((btn) => {
+    btn.onclick = async () => {
+      await moveTagSection(btn.getAttribute('data-move-section'), parseInt(btn.getAttribute('data-move-dir'), 10));
+      keepTagSearch();
+      render();
+    };
+  });
   const createSectionBtn = root.querySelector('[data-create-section]');
   if (createSectionBtn) createSectionBtn.onclick = async () => {
     const name = prompt('Name the new section:');
@@ -11930,6 +11984,8 @@ async function boot() {
     if (savedTagSectionOverrides && savedTagSectionOverrides.value && typeof savedTagSectionOverrides.value === 'object') TAG_SECTION_OVERRIDES = savedTagSectionOverrides.value;
     const savedCustomTagSections = await idbGet(STORE_META, 'customTagSections');
     if (savedCustomTagSections && Array.isArray(savedCustomTagSections.value)) CUSTOM_TAG_SECTIONS = savedCustomTagSections.value;
+    const savedTagSectionCustomOrder = await idbGet(STORE_META, 'tagSectionCustomOrder');
+    if (savedTagSectionCustomOrder && Array.isArray(savedTagSectionCustomOrder.value)) TAG_SECTION_CUSTOM_ORDER = savedTagSectionCustomOrder.value;
     const savedIgnoredSugg = await idbGet(STORE_META, 'ignoredTagSuggestions');
     if (savedIgnoredSugg && Array.isArray(savedIgnoredSugg.value)) IGNORED_TAG_SUGGESTIONS = new Set(savedIgnoredSugg.value);
     const savedCustomMoods = await idbGet(STORE_META, 'customMoods');
