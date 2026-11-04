@@ -903,6 +903,10 @@ flex: 1; text-align: center; padding: 8px 10px; border-radius: 0; font-size: 12.
 background: var(--pink-soft); color: var(--text); border: 2px solid var(--border); cursor: pointer;
 }
 .tagmgr-tab.active { background: var(--pink); color: var(--text); border-color: var(--border); box-shadow: 3px 3px 0 var(--border); }
+.tagmgr-sort-select {
+flex: 0 0 auto; padding: 8px 10px; border-radius: 0; font-size: 12.5px; font-weight: 700;
+background: var(--pink-soft); color: var(--text); border: 2px solid var(--border); cursor: pointer;
+}
 
 .tag-suggestion-row {
 display: flex; align-items: center; justify-content: space-between; gap: 10px;

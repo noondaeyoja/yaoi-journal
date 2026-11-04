@@ -3194,6 +3194,11 @@ let TAG_MGR_TAB = 'active';
 let TAG_MGR_KIND = 'tags';
 // Search text to restore + re-apply after an auto tab-switch triggered by the Tag Manager search box.
 let TAG_MGR_SEARCH_PENDING = '';
+// Tags page sort order: 'alpha' (default, A-Z), 'count' (most-used first),
+// or 'recent' (tag used on the newest entry sorts first -- see
+// tagLatestAddedMap(), since tags don't carry their own timestamp). Not
+// persisted -- resets to A-Z each session, same as TAG_MGR_TAB/KIND.
+let TAG_MGR_SORT = 'alpha';
 // Signatures of hide/merge suggestions the user has dismissed ("not now"),
 // so the same suggestion doesn't keep reappearing every time Tag Manager opens.
 let IGNORED_TAG_SUGGESTIONS = new Set();
@@ -3481,7 +3486,11 @@ async function setCollectionHidden(c, hidden) {
 // Shared by both the standalone collection page (Rename/Delete buttons) and
 // the Awards/Playlists Manage tab, so there's one implementation instead of
 // two copies that can drift apart.
-function openRenameCollectionModal(c) {
+// `onBeforeRender` is an optional callback (e.g. the tag manager's
+// keepTagSearch) run right before the render() that follows a save -- lets
+// callers preserve their own state across this modal's re-render without
+// this shared helper needing to know what that state is.
+function openRenameCollectionModal(c, onBeforeRender) {
   openModal(`
     <h3>Rename</h3>
     <div class="field-row"><input type="text" id="coll-rename-input" value="${escapeHtml(c.name)}" autocomplete="off"></div>
@@ -3493,6 +3502,7 @@ function openRenameCollectionModal(c) {
     c.name = v;
     await persistCollections([c.id]);
     closeModal();
+    if (onBeforeRender) onBeforeRender();
     render();
   };
   document.getElementById('coll-rename-save').onclick = save;
@@ -4014,6 +4024,23 @@ function allTagCounts() {
   }));
   return counts;
 }
+// Tags have no timestamp of their own (they're just strings living on
+// entries), so "recently added" for the Tag Manager's sort dropdown is
+// approximated as: the newest createdAt among every entry that carries this
+// tag. ISO 8601 strings compare correctly with plain string ops, so no
+// Date parsing is needed. One pass over ALL_ENTRIES regardless of tag count.
+function tagLatestAddedMap() {
+  const map = {};
+  ALL_ENTRIES.forEach((e) => {
+    const ts = e.createdAt || e.updatedAt || '';
+    (e.tags || []).concat(e.customTags || []).forEach((t) => {
+      const v = String(t || '').trim();
+      if (!v) return;
+      if (!map[v] || ts > map[v]) map[v] = ts;
+    });
+  });
+  return map;
+}
 
 // Collapse a tag name down to just its letters/digits so "Crazy Bottom",
 // "crazy-bottom" and "CrazyBottom" all compare equal — used to catch subtle
@@ -4063,7 +4090,7 @@ const TAG_SECTIONS = {
   'church': 'Themes', 'comingofage': 'Themes', 'cute': 'Themes', 'depression': 'Themes',
   'goodcommunication': 'Themes', 'grief': 'Themes', 'highschool': 'Themes', 'mermaid': 'Themes',
   'misunderstanding': 'Themes', 'suicide': 'Themes', 'unrequitedending': 'Themes',
-  'bdsm': 'Smut', 'bestiality': 'Smut', 'bloodysex': 'Smut', 'blowjob': 'Smut',
+  '69': 'Smut', 'bdsm': 'Smut', 'bestiality': 'Smut', 'bloodysex': 'Smut', 'blowjob': 'Smut',
   'bully': 'Smut', 'camboy': 'Smut', 'choking': 'Smut', 'condom': 'Smut',
   'crossdressing': 'Smut', 'doublepenetration': 'Smut', 'ecchi': 'Smut', 'extreme': 'Smut',
   'fetish': 'Smut', 'fisting': 'Smut', 'futa': 'Smut', 'gangrape': 'Smut',
@@ -4222,6 +4249,115 @@ async function mergeCollections(c, target) {
   c.deleted = true;
   await persistCollections([c.id]);
 }
+// Shared tag-action flows -- the actual logic behind hide/merge/rename/
+// delete, factored out so both the Active/Hidden tab's inline icon buttons
+// AND the Manage Sections quick-actions popup (openTagQuickActions below)
+// call the exact same code instead of two copies that can drift apart.
+// Each resolves to true if something actually changed (so callers know
+// whether a re-render is warranted), false if cancelled/no-op.
+async function tagRenameFlow(oldName) {
+  const newName = prompt('Rename tag "' + oldName + '" to:', oldName);
+  if (!newName || !newName.trim() || newName.trim() === oldName) return false;
+  let nn = newName.trim();
+  if (isHiddenTag(nn)) { showToast('That name is blocked/hidden — pick another'); return false; }
+  // #384: if what was typed case/punctuation-insensitively matches a
+  // DIFFERENT tag that already exists, snap to that tag's exact stored
+  // spelling instead of the literal typed text -- otherwise a casing slip
+  // ("Based on a Web Novel" vs "Based On A Web Novel") silently creates a
+  // third near-duplicate string instead of actually merging, which is the
+  // whole point of renaming to an existing tag name.
+  const existingTagNames = Object.keys(allTagCounts());
+  const nnKey = normalizeTagKey(nn);
+  const canonicalMatch = existingTagNames.find((t) => t !== oldName && normalizeTagKey(t) === nnKey);
+  if (canonicalMatch) nn = canonicalMatch;
+  for (const e of ALL_ENTRIES) {
+    let changed = false;
+    if ((e.tags || []).includes(oldName)) {
+      e.tags = Array.from(new Set(e.tags.map((t) => (t === oldName ? nn : t))));
+      changed = true;
+    }
+    if ((e.customTags || []).includes(oldName)) {
+      e.customTags = Array.from(new Set(e.customTags.map((t) => (t === oldName ? nn : t))));
+      changed = true;
+    }
+    if (changed) await saveEntry(e);
+  }
+  showToast('Renamed');
+  return true;
+}
+async function tagMergeFlow(name) {
+  const target = await pickMergeTarget(name);
+  if (!target || target === name) return false;
+  for (const e of ALL_ENTRIES) {
+    let changed = false;
+    if ((e.tags || []).includes(name)) {
+      e.tags = e.tags.filter((t) => t !== name);
+      if (!e.tags.includes(target) && !(e.customTags || []).includes(target)) e.tags.push(target);
+      changed = true;
+    }
+    if ((e.customTags || []).includes(name)) {
+      e.customTags = e.customTags.filter((t) => t !== name);
+      if (!(e.tags || []).includes(target) && !e.customTags.includes(target)) e.customTags.push(target);
+      changed = true;
+    }
+    if (changed) await saveEntry(e);
+  }
+  showToast(`Merged "${name}" into "${target}"`);
+  return true;
+}
+async function tagDeleteFlow(name) {
+  if (!await confirmModal('Delete tag "' + name + '" from every entry? This can\'t be undone.')) return false;
+  for (const e of ALL_ENTRIES) {
+    let changed = false;
+    if ((e.tags || []).includes(name)) { e.tags = e.tags.filter((t) => t !== name); changed = true; }
+    if ((e.customTags || []).includes(name)) { e.customTags = e.customTags.filter((t) => t !== name); changed = true; }
+    if (changed) await saveEntry(e);
+  }
+  await recordDeletedTag(name);
+  showToast('Deleted — won\'t come back from future imports either');
+  return true;
+}
+async function tagHideToggleFlow(name) {
+  const nowHidden = !USER_HIDDEN_TAG_KEYS.has(normalizeTagKey(name));
+  await setTagSoftHidden(name, nowHidden);
+  showToast(nowHidden ? 'Hidden from filters' : 'Shown in filters again');
+  return true;
+}
+// Manage Sections: clicking a tag chip (as opposed to dragging it) pops up
+// the same hide/merge/rename/delete actions the Active tab's inline icons
+// give you, since drag-and-drop there is for sorting into buckets, not
+// day-to-day tag upkeep -- no reason she should have to leave Manage
+// Sections and go find the tag in Active just to merge or rename it.
+function openTagQuickActions(tagName) {
+  const counts = allTagCounts();
+  const count = counts[tagName] || 0;
+  const hidden = USER_HIDDEN_TAG_KEYS.has(normalizeTagKey(tagName));
+  const secLabel = !isUnassignedTag(tagName) ? sectionForTag(tagName) : 'Unassigned';
+  openModal(`
+    <h3>${escapeHtml(capTag(tagName))}</h3>
+    <div style="color:var(--text-dim);font-size:12px;margin-bottom:14px;">${count} entr${count === 1 ? 'y' : 'ies'} · ${escapeHtml(secLabel)}</div>
+    <div class="modal-actions" style="flex-wrap:wrap;justify-content:flex-start;gap:8px;">
+      <button class="ref-btn" data-qa-hide="1">${hidden ? '👁️ Show in filters' : '🙈 Hide from filters'}</button>
+      <button class="ref-btn" data-qa-merge="1">🔀 Merge</button>
+      <button class="ref-btn" data-qa-rename="1">✏️ Rename</button>
+      <button class="ref-btn" data-qa-delete="1">🗑️ Delete</button>
+    </div>
+    <div class="modal-actions" style="margin-top:16px;"><button class="btn-ghost" data-close-modal="1">Close</button></div>
+  `, { centered: true });
+  const wire = (sel, flow) => {
+    const btn = document.querySelector(sel);
+    if (!btn) return;
+    btn.onclick = async () => {
+      const changed = await flow(tagName);
+      closeModal();
+      if (changed) render();
+    };
+  };
+  wire('[data-qa-hide]', tagHideToggleFlow);
+  wire('[data-qa-merge]', tagMergeFlow);
+  wire('[data-qa-rename]', tagRenameFlow);
+  wire('[data-qa-delete]', tagDeleteFlow);
+}
 function newTagBuckets() { const o = {}; TAG_SECTION_ORDER.forEach((s) => { o[s] = []; }); return o; }
 Object.assign(TAG_SECTIONS, {
   // Appearance
@@ -4305,8 +4441,16 @@ function isUnassignedTag(t) {
 // listed in TAG_SECTIONS (i.e. one of the 4 Tags-container buckets); tags
 // with no explicit section (flags, NSFW/On HD/style tags, brand-new custom
 // tags not yet categorized) get no marker.
+// Bug fix: this used to check TAG_SECTIONS (the hardcoded built-in map)
+// directly, so a tag that only had a SECTION OVERRIDE -- from dragging it
+// into a bucket in Manage Sections, or a flag tag's automatic Couple
+// placement -- never got its "(section)" label here even though it really
+// does have a section. Routes through the same sectionForTag()/
+// isUnassignedTag() resolver Manage Sections itself uses, so this label
+// always matches where a tag actually lives.
 function tagMgrSectionSuffix(t) {
-  const sec = TAG_SECTIONS[normalizeTagKey(t)];
+  if (isUnassignedTag(t)) return '';
+  const sec = sectionForTag(t);
   return sec ? ` <span class="tagmgr-section-tag">(${sec.toLowerCase()})</span>` : '';
 }
 
@@ -4459,14 +4603,14 @@ function renderTagManageBuckets() {
         <div class="tag-section-row">
           <div class="tag-section-header">Unassigned (${unassigned.length}) — sort these into a section</div>
           <div class="tag-section-tags">
-            ${unassigned.map((t) => `<div style="display:inline-flex;align-items:center;gap:6px;margin:0 8px 8px 0;"><div class="tag-chip readonly manage-drag-chip" draggable="true" data-manage-tag="${escapeHtml(t)}" title="Drag to a section">${escapeHtml(capTag(t))}</div></div>`).join('')}
+            ${unassigned.map((t) => `<div style="display:inline-flex;align-items:center;gap:6px;margin:0 8px 8px 0;"><div class="tag-chip readonly manage-drag-chip" draggable="true" data-manage-tag="${escapeHtml(t)}" title="Drag to a section, or click for hide/merge/rename/delete">${escapeHtml(capTag(t))}</div></div>`).join('')}
           </div>
         </div>` : ''}
       ${sectionOrder.map((sec) => `
         <div class="tag-section-row">
           <div class="tag-section-header">${sec}</div>
           <div class="tag-section-tags tag-manage-drop-zone" data-manage-dropzone="${sec}">
-            ${buckets[sec].map((t) => `<div class="tag-chip readonly manage-drag-chip" draggable="true" data-manage-tag="${escapeHtml(t)}" title="Drag to move to a different section">${escapeHtml(capTag(t))}</div>`).join('')}
+            ${buckets[sec].map((t) => `<div class="tag-chip readonly manage-drag-chip" draggable="true" data-manage-tag="${escapeHtml(t)}" title="Drag to move to a different section, or click for hide/merge/rename/delete">${escapeHtml(capTag(t))}</div>`).join('')}
           </div>
         </div>
       `).join('')}
@@ -4478,6 +4622,17 @@ function renderTagManageBuckets() {
 // Awards and Playlists reuse that same row (not a separate page of their
 // own) per her spec: these are "2 more filters" on one manager, not three
 // standalone pages.
+// Sort dropdown for the Tags page's Active/Hidden row (see TAG_MGR_SORT).
+// Plain <select> rather than another pink button row -- three more buttons
+// here would crowd the Active/Hidden line, and a dropdown reads clearly as
+// "pick one" the way a row of buttons doesn't.
+function tagSortSelectHtml() {
+  return `<select id="tagmgr-sort" class="tagmgr-sort-select" title="Sort tags by">
+    <option value="alpha" ${TAG_MGR_SORT === 'alpha' ? 'selected' : ''}>Sort: A–Z</option>
+    <option value="count" ${TAG_MGR_SORT === 'count' ? 'selected' : ''}>Sort: Most used</option>
+    <option value="recent" ${TAG_MGR_SORT === 'recent' ? 'selected' : ''}>Sort: Recently added</option>
+  </select>`;
+}
 function tagsKindSwitchHtml() {
   return `
     <div class="tagmgr-tabs" style="margin-bottom:8px;">
@@ -4562,7 +4717,18 @@ function renderTagManager() {
   const allNames = Object.keys(counts).sort((a, b) => a.localeCompare(b));
   const activeNames = allNames.filter((t) => !isHiddenTag(t));
   const hiddenActiveNames = allNames.filter((t) => USER_HIDDEN_TAG_KEYS.has(normalizeTagKey(t)) && !DELETED_TAG_KEYS.has(normalizeTagKey(t)));
-  const names = TAG_MGR_TAB === 'hidden' ? hiddenActiveNames : activeNames;
+  // Sort dropdown -- allNames/activeNames/hiddenActiveNames above stay
+  // alphabetical (that's the 'alpha' order already), this just reorders a
+  // copy for 'count' or 'recent' before it's what actually gets rendered.
+  const applyTagSort = (arr) => {
+    if (TAG_MGR_SORT === 'count') return [...arr].sort((a, b) => (counts[b] - counts[a]) || a.localeCompare(b));
+    if (TAG_MGR_SORT === 'recent') {
+      const latest = tagLatestAddedMap();
+      return [...arr].sort((a, b) => String(latest[b] || '').localeCompare(String(latest[a] || '')) || a.localeCompare(b));
+    }
+    return arr;
+  };
+  const names = applyTagSort(TAG_MGR_TAB === 'hidden' ? hiddenActiveNames : activeNames);
 
   const hideSuggestions = TAG_MGR_TAB === 'active' ? tagHideSuggestions(activeNames, counts) : [];
   const mergeSuggestions = TAG_MGR_TAB === 'active' ? tagMergeSuggestions(activeNames, counts) : [];
@@ -4632,6 +4798,7 @@ function renderTagManager() {
     <div class="tagmgr-tabs">
       <button class="tagmgr-tab ${TAG_MGR_TAB === 'active' ? 'active' : ''}" data-tagmgr-tab="active">Active (${activeNames.length})</button>
       <button class="tagmgr-tab ${TAG_MGR_TAB === 'hidden' ? 'active' : ''}" data-tagmgr-tab="hidden">Hidden (${hiddenActiveNames.length + DELETED_TAG_KEYS.size})</button>
+      ${tagSortSelectHtml()}
     </div>`;
 
   return `
@@ -10550,11 +10717,32 @@ function attachRootHandlers() {
     return list.map((c) => c.name);
   }
   const tagmgrSearch = root.querySelector('#tagmgr-search');
+  const tagmgrSort = root.querySelector('#tagmgr-sort');
+  if (tagmgrSort) tagmgrSort.onchange = () => {
+    TAG_MGR_SORT = tagmgrSort.value;
+    if (tagmgrSearch && tagmgrSearch.value) TAG_MGR_SEARCH_PENDING = tagmgrSearch.value;
+    render();
+  };
+  // Every action below that mutates something and re-renders the tag/
+  // award/playlist manager (hide, merge, rename, delete, restore, reorder,
+  // suggestion accept/dismiss) used to just call render() straight away --
+  // only the Active/Hidden/Manage tab clicks and the Tags/Awards/Playlists
+  // switch captured the typed search text first. So hiding (or merging,
+  // deleting, etc.) a tag while "protagonist" was typed in the box wiped it
+  // on the next render, same root cause as the tab-click bug fixed earlier
+  // (see the long comment below data-tagmgr-tab). Call this immediately
+  // before every such render() so the box's current text survives any
+  // action, not just a tab switch.
+  const keepTagSearch = () => { if (tagmgrSearch && tagmgrSearch.value) TAG_MGR_SEARCH_PENDING = tagmgrSearch.value; };
   if (tagmgrSearch) tagmgrSearch.oninput = () => {
     const q = tagmgrSearch.value.toLowerCase();
     let anyMatchCurrent = false;
     root.querySelectorAll('.tagmgr-row').forEach((row) => {
-      const match = row.getAttribute('data-tag-name').toLowerCase().includes(q);
+      // "Permanently deleted" rows (Hidden tab) are plain .tagmgr-row divs
+      // with no data-tag-name -- treat as never-matching rather than
+      // crashing on .toLowerCase() of null.
+      const rawName = row.getAttribute('data-tag-name');
+      const match = !!rawName && rawName.toLowerCase().includes(q);
       row.style.display = match ? '' : 'none';
       if (match) anyMatchCurrent = true;
     });
@@ -10573,7 +10761,8 @@ function attachRootHandlers() {
     TAG_MGR_SEARCH_PENDING = '';
     const q = tagmgrSearch.value.toLowerCase();
     root.querySelectorAll('.tagmgr-row').forEach((row) => {
-      row.style.display = row.getAttribute('data-tag-name').toLowerCase().includes(q) ? '' : 'none';
+      const rawName = row.getAttribute('data-tag-name');
+      row.style.display = (!!rawName && rawName.toLowerCase().includes(q)) ? '' : 'none';
     });
     tagmgrSearch.focus();
     const vlen = tagmgrSearch.value.length;
@@ -10587,84 +10776,30 @@ function attachRootHandlers() {
   });
   root.querySelectorAll('[data-tagmgr-rename]').forEach((el) => {
     el.onclick = async () => {
-      const oldName = el.getAttribute('data-tagmgr-rename');
-      const newName = prompt('Rename tag "' + oldName + '" to:', oldName);
-      if (!newName || !newName.trim() || newName.trim() === oldName) return;
-      let nn = newName.trim();
-      if (isHiddenTag(nn)) { showToast('That name is blocked/hidden — pick another'); return; }
-      // #384: if what was typed case/punctuation-insensitively matches a
-      // DIFFERENT tag that already exists, snap to that tag's exact stored
-      // spelling instead of the literal typed text -- otherwise a casing
-      // slip ("Based on a Web Novel" vs "Based On A Web Novel") silently
-      // creates a third near-duplicate string instead of actually merging,
-      // which is the whole point of renaming to an existing tag name.
-      const existingTagNames = Object.keys(allTagCounts());
-      const nnKey = normalizeTagKey(nn);
-      const canonicalMatch = existingTagNames.find((t) => t !== oldName && normalizeTagKey(t) === nnKey);
-      if (canonicalMatch) nn = canonicalMatch;
-      for (const e of ALL_ENTRIES) {
-        let changed = false;
-        if ((e.tags || []).includes(oldName)) {
-          e.tags = Array.from(new Set(e.tags.map((t) => (t === oldName ? nn : t))));
-          changed = true;
-        }
-        if ((e.customTags || []).includes(oldName)) {
-          e.customTags = Array.from(new Set(e.customTags.map((t) => (t === oldName ? nn : t))));
-          changed = true;
-        }
-        if (changed) await saveEntry(e);
-      }
-      showToast('Renamed');
-      render();
+      if (await tagRenameFlow(el.getAttribute('data-tagmgr-rename'))) { keepTagSearch(); render(); }
     };
   });
   const toggleSuggBtn = root.querySelector('[data-toggle-suggestions]');
   if (toggleSuggBtn) toggleSuggBtn.onclick = async () => {
     await setSuggestionsCollapsed(!TAG_SUGGESTIONS_COLLAPSED);
+    keepTagSearch();
     render();
   };
   root.querySelectorAll('[data-tagmgr-merge]').forEach((el) => {
     el.onclick = async () => {
-      const name = el.getAttribute('data-tagmgr-merge');
-      const target = await pickMergeTarget(name);
-      if (!target || target === name) return;
-      for (const e of ALL_ENTRIES) {
-        let changed = false;
-        if ((e.tags || []).includes(name)) {
-          e.tags = e.tags.filter((t) => t !== name);
-          if (!e.tags.includes(target) && !(e.customTags || []).includes(target)) e.tags.push(target);
-          changed = true;
-        }
-        if ((e.customTags || []).includes(name)) {
-          e.customTags = e.customTags.filter((t) => t !== name);
-          if (!(e.tags || []).includes(target) && !e.customTags.includes(target)) e.customTags.push(target);
-          changed = true;
-        }
-        if (changed) await saveEntry(e);
-      }
-      showToast(`Merged "${name}" into "${target}"`);
-      render();
+      if (await tagMergeFlow(el.getAttribute('data-tagmgr-merge'))) { keepTagSearch(); render(); }
     };
   });
   root.querySelectorAll('[data-tagmgr-delete]').forEach((el) => {
     el.onclick = async () => {
-      const name = el.getAttribute('data-tagmgr-delete');
-      if (!await confirmModal('Delete tag "' + name + '" from every entry? This can\'t be undone.')) return;
-      for (const e of ALL_ENTRIES) {
-        let changed = false;
-        if ((e.tags || []).includes(name)) { e.tags = e.tags.filter((t) => t !== name); changed = true; }
-        if ((e.customTags || []).includes(name)) { e.customTags = e.customTags.filter((t) => t !== name); changed = true; }
-        if (changed) await saveEntry(e);
-      }
-      await recordDeletedTag(name);
-      showToast('Deleted — won\'t come back from future imports either');
-      render();
+      if (await tagDeleteFlow(el.getAttribute('data-tagmgr-delete'))) { keepTagSearch(); render(); }
     };
   });
   root.querySelectorAll('[data-restore-tag]').forEach((el) => {
     el.onclick = async () => {
       await restoreDeletedTag(el.getAttribute('data-restore-tag'));
       showToast('Restored — this tag can be used again');
+      keepTagSearch();
       render();
     };
   });
@@ -10706,11 +10841,7 @@ function attachRootHandlers() {
   });
   root.querySelectorAll('[data-tagmgr-hide]').forEach((el) => {
     el.onclick = async () => {
-      const name = el.getAttribute('data-tagmgr-hide');
-      const nowHidden = !USER_HIDDEN_TAG_KEYS.has(normalizeTagKey(name));
-      await setTagSoftHidden(name, nowHidden);
-      showToast(nowHidden ? 'Hidden from filters' : 'Shown in filters again');
-      render();
+      if (await tagHideToggleFlow(el.getAttribute('data-tagmgr-hide'))) { keepTagSearch(); render(); }
     };
   });
   // Awards/Playlists manager (renderCollectionManager) -- same list/manage
@@ -10724,6 +10855,7 @@ function attachRootHandlers() {
       if (!c) return;
       await setCollectionHidden(c, !c.hidden);
       showToast(c.hidden ? 'Hidden from filters' : 'Shown in filters again');
+      keepTagSearch();
       render();
     };
   });
@@ -10735,20 +10867,21 @@ function attachRootHandlers() {
       if (!target || target.id === c.id) return;
       await mergeCollections(c, target);
       showToast(`Merged "${c.name}" into "${target.name}"`);
+      keepTagSearch();
       render();
     };
   });
   root.querySelectorAll('[data-collmgr-rename]').forEach((el) => {
     el.onclick = () => {
       const c = COLLECTIONS[el.getAttribute('data-collmgr-rename')];
-      if (c) openRenameCollectionModal(c);
+      if (c) openRenameCollectionModal(c, keepTagSearch);
     };
   });
   root.querySelectorAll('[data-collmgr-delete]').forEach((el) => {
     el.onclick = async () => {
       const c = COLLECTIONS[el.getAttribute('data-collmgr-delete')];
       if (!c) return;
-      if (await deleteCollectionFlow(c)) render();
+      if (await deleteCollectionFlow(c)) { keepTagSearch(); render(); }
     };
   });
   root.querySelectorAll('[data-collmgr-move]').forEach((el) => {
@@ -10757,6 +10890,7 @@ function attachRootHandlers() {
       const c = COLLECTIONS[id];
       if (!c) return;
       await moveCollection(c, Number(dir));
+      keepTagSearch();
       render();
     };
   });
@@ -10775,13 +10909,17 @@ function attachRootHandlers() {
       await createCollection(kind, name);
       closeModal();
       showToast('Created');
+      keepTagSearch();
       render();
     };
     document.getElementById('new-collmgr-create').onclick = go;
     inp.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); go(); } };
     setTimeout(() => inp.focus(), 50);
   };
-  // #367: Manage Sections tab drag-and-drop wiring.
+  // #367: Manage Sections tab drag-and-drop wiring, plus a plain click (as
+  // opposed to a drag) on the same chip opening the quick-actions popup --
+  // native drag-and-drop only kicks in once the pointer actually moves past
+  // a threshold, so a tap/click still fires normally alongside it.
   root.querySelectorAll('[data-manage-tag]').forEach((el) => {
     el.addEventListener('dragstart', (ev) => {
       ev.dataTransfer.setData('text/plain', el.getAttribute('data-manage-tag'));
@@ -10789,6 +10927,7 @@ function attachRootHandlers() {
       el.classList.add('dragging');
     });
     el.addEventListener('dragend', () => { el.classList.remove('dragging'); });
+    el.onclick = () => openTagQuickActions(el.getAttribute('data-manage-tag'));
   });
   root.querySelectorAll('[data-manage-dropzone]').forEach((zone) => {
     zone.addEventListener('dragover', (ev) => { ev.preventDefault(); zone.classList.add('drag-over'); });
@@ -10801,6 +10940,7 @@ function attachRootHandlers() {
       if (!tagName || !section || (sectionForTag(tagName) === section && !isUnassignedTag(tagName))) return;
       await setTagSectionOverride(tagName, section);
       showToast(`Moved "${capTag(tagName)}" to ${section}`);
+      keepTagSearch();
       render();
     });
   });
@@ -10808,12 +10948,14 @@ function attachRootHandlers() {
     el.onclick = async () => {
       await setTagSoftHidden(el.getAttribute('data-suggest-hide'), true);
       showToast('Hidden');
+      keepTagSearch();
       render();
     };
   });
   root.querySelectorAll('[data-suggest-dismiss]').forEach((el) => {
     el.onclick = async () => {
       await dismissTagSuggestion(el.getAttribute('data-suggest-dismiss'));
+      keepTagSearch();
       render();
     };
   });
@@ -10837,6 +10979,7 @@ function attachRootHandlers() {
       }
       await dismissTagSuggestion(el.getAttribute('data-suggest-sig'));
       showToast(`Merged "${dropName}" into "${keepName}"`);
+      keepTagSearch();
       render();
     };
   });
