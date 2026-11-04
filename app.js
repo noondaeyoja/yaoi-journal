@@ -899,6 +899,15 @@ async function applyMetaSnapshot(data) {
     TAG_SECTION_OVERRIDES = merged;
     await idbPut(STORE_META, { key: 'tagSectionOverrides', value: TAG_SECTION_OVERRIDES });
   }
+  if (Array.isArray(data.customTagSections) && data.customTagSections.length) {
+    const have = new Set(CUSTOM_TAG_SECTIONS.map((s) => s.toLowerCase()));
+    const incoming = data.customTagSections.filter((s) => typeof s === 'string' && s.trim() && !have.has(s.trim().toLowerCase()));
+    if (incoming.length) {
+      CUSTOM_TAG_SECTIONS = [...CUSTOM_TAG_SECTIONS, ...incoming.map((s) => s.trim())];
+      changed = true;
+      await idbPut(STORE_META, { key: 'customTagSections', value: CUSTOM_TAG_SECTIONS });
+    }
+  }
   if (Array.isArray(data.ignoredTagSuggestions) && data.ignoredTagSuggestions.length) {
     const before = IGNORED_TAG_SUGGESTIONS.size;
     IGNORED_TAG_SUGGESTIONS = new Set([...IGNORED_TAG_SUGGESTIONS, ...data.ignoredTagSuggestions]);
@@ -3183,6 +3192,12 @@ let USER_HIDDEN_TAG_KEYS = new Set();
 // Manager's Manage tab). Keyed by normalizeTagKey(tag) -> section name.
 // Persisted (idb + Firestore meta) the same way as USER_HIDDEN_TAG_KEYS.
 let TAG_SECTION_OVERRIDES = {};
+// User-created Manage Sections buckets (e.g. "Non Human", "Romance") on top
+// of the 6 built-in ones in TAG_SECTION_ORDER. Persisted (idb + Firestore
+// meta) the same way as TAG_SECTION_OVERRIDES. Use tagSectionOrder() (not
+// TAG_SECTION_ORDER directly) anywhere the full, current list of sections is
+// needed, so custom sections show up everywhere the built-ins do.
+let CUSTOM_TAG_SECTIONS = [];
 // Which Tag Manager tab is showing: 'active', 'hidden', or 'manage'.
 let TAG_MGR_TAB = 'active';
 // Which content type the Tags page's Active/Hidden/Manage row operates on:
@@ -3246,6 +3261,25 @@ async function setTagSectionOverride(name, section) {
   await idbPut(STORE_META, { key: 'tagSectionOverrides', value: TAG_SECTION_OVERRIDES });
   pushMetaField('tagSectionOverrides', TAG_SECTION_OVERRIDES);
 }
+// Lets her add her own Manage Sections buckets (e.g. "Non Human", "Romance")
+// beyond the 6 built-in ones. Case-insensitive dedupe against both the
+// built-ins and any custom sections already created. Returns true on
+// success, false if the name is blank or already exists (caller shows the
+// message).
+async function createTagSection(name) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return false;
+  const existing = [...TAG_SECTION_ORDER, ...CUSTOM_TAG_SECTIONS].map((s) => s.toLowerCase());
+  if (existing.includes(trimmed.toLowerCase())) return false;
+  CUSTOM_TAG_SECTIONS.push(trimmed);
+  await idbPut(STORE_META, { key: 'customTagSections', value: CUSTOM_TAG_SECTIONS });
+  pushMetaField('customTagSections', CUSTOM_TAG_SECTIONS);
+  return true;
+}
+// Full, current list of Manage Sections buckets: the 6 built-ins plus
+// whatever she's created herself. Always use this (not TAG_SECTION_ORDER
+// directly) when rendering/resolving sections.
+function tagSectionOrder() { return [...TAG_SECTION_ORDER, ...CUSTOM_TAG_SECTIONS]; }
 async function dismissTagSuggestion(sig) {
   IGNORED_TAG_SUGGESTIONS.add(sig);
   const arr = Array.from(IGNORED_TAG_SUGGESTIONS);
@@ -4358,7 +4392,7 @@ function openTagQuickActions(tagName) {
   wire('[data-qa-rename]', tagRenameFlow);
   wire('[data-qa-delete]', tagDeleteFlow);
 }
-function newTagBuckets() { const o = {}; TAG_SECTION_ORDER.forEach((s) => { o[s] = []; }); return o; }
+function newTagBuckets() { const o = {}; tagSectionOrder().forEach((s) => { o[s] = []; }); return o; }
 Object.assign(TAG_SECTIONS, {
   // Appearance
   'cutebaby': 'Appearance', 'glasses': 'Appearance', 'handicapped': 'Appearance', 'musclebottom': 'Appearance', 'muscletop': 'Appearance', 'piercings': 'Appearance', 'prettybottom': 'Appearance', 'prettytop': 'Appearance', 'stockings': 'Appearance', 'tattooedlead': 'Appearance',
@@ -4427,7 +4461,7 @@ function sectionForTag(t) {
   if (/^(green|red|black) ?flag/.test(key) && !TAG_SECTION_OVERRIDES[key]) return 'Couple';
   const raw = TAG_SECTION_OVERRIDES[key] || TAG_SECTIONS[key] || 'General';
   const s = TAG_SECTION_ALIASES[raw] || raw;
-  return TAG_SECTION_ORDER.includes(s) ? s : 'General';
+  return tagSectionOrder().includes(s) ? s : 'General';
 }
 // A tag is "unassigned" until it has an explicit section (built-in map or the
 // user's own drag/assign). Shown in a temporary bucket in Manage Sections.
@@ -4593,7 +4627,7 @@ function renderTagManageBuckets() {
   const buckets = newTagBuckets();
   const unassigned = [];
   names.forEach((t) => { if (isUnassignedTag(t)) unassigned.push(t); else buckets[sectionForTag(t)].push(t); });
-  const sectionOrder = TAG_SECTION_ORDER;
+  const sectionOrder = tagSectionOrder();
   return `
     <div style="color:var(--text-dim);font-size:12px;margin-bottom:10px;">
       Drag a tag into a different bucket to move it to that section. Changes save automatically and sync across devices.
@@ -4614,7 +4648,8 @@ function renderTagManageBuckets() {
           </div>
         </div>
       `).join('')}
-    </div>`;
+    </div>
+    <button class="ref-btn" data-create-section="1" style="margin-top:12px;">➕ New Section</button>`;
 }
 
 // Shared by renderTagManager() and renderCollectionManager() -- lets the
@@ -8186,7 +8221,7 @@ function renderTagChipsInline(e) {
     .concat((e.customTags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: true })));
   const bySection = newTagBuckets();
   all.forEach((item) => { bySection[sectionForTag(item.t)].push(item); });
-  const sectionOrder = TAG_SECTION_ORDER;
+  const sectionOrder = tagSectionOrder();
   return sectionOrder.map((sec) => {
     const chips = bySection[sec].map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}" data-remove-tag="${escapeHtml(t)}" title="Click to remove">${escapeHtml(capTag(t))}</div>`).join('');
     const addChip = `<div class="tag-chip add-tag-chip ${TAG_ADD_SECTION === sec ? 'active' : ''}" data-tag-add-toggle="${sec}">+ NEW TAG</div>`;
@@ -10944,6 +10979,16 @@ function attachRootHandlers() {
       render();
     });
   });
+  const createSectionBtn = root.querySelector('[data-create-section]');
+  if (createSectionBtn) createSectionBtn.onclick = async () => {
+    const name = prompt('Name the new section:');
+    if (!name || !name.trim()) return;
+    const ok = await createTagSection(name);
+    if (!ok) { showToast(`"${name.trim()}" already exists`); return; }
+    showToast(`Created section "${name.trim()}"`);
+    keepTagSearch();
+    render();
+  };
     root.querySelectorAll('[data-suggest-hide]').forEach((el) => {
     el.onclick = async () => {
       await setTagSoftHidden(el.getAttribute('data-suggest-hide'), true);
@@ -11883,6 +11928,8 @@ async function boot() {
     if (savedTagHideTs && savedTagHideTs.value && typeof savedTagHideTs.value === 'object') TAG_HIDE_TS = savedTagHideTs.value;
     const savedTagSectionOverrides = await idbGet(STORE_META, 'tagSectionOverrides');
     if (savedTagSectionOverrides && savedTagSectionOverrides.value && typeof savedTagSectionOverrides.value === 'object') TAG_SECTION_OVERRIDES = savedTagSectionOverrides.value;
+    const savedCustomTagSections = await idbGet(STORE_META, 'customTagSections');
+    if (savedCustomTagSections && Array.isArray(savedCustomTagSections.value)) CUSTOM_TAG_SECTIONS = savedCustomTagSections.value;
     const savedIgnoredSugg = await idbGet(STORE_META, 'ignoredTagSuggestions');
     if (savedIgnoredSugg && Array.isArray(savedIgnoredSugg.value)) IGNORED_TAG_SUGGESTIONS = new Set(savedIgnoredSugg.value);
     const savedCustomMoods = await idbGet(STORE_META, 'customMoods');
