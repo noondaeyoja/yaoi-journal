@@ -9800,7 +9800,11 @@ function attachRootHandlers() {
       closeModal();
       if (STATE.view === 'home') {
         FILTERS_COLLAPSED = true;
-        renderHomeInPlace();
+        // Debounce: re-rendering the whole homepage on every keystroke blocks
+        // the main thread on phones, so typed characters lag/drop. STATE.search
+        // is already updated; render once typing pauses.
+        clearTimeout(window.__searchRenderTimer);
+        window.__searchRenderTimer = setTimeout(() => { if (STATE.view === 'home') renderHomeInPlace(); }, 300);
       } else {
         // Search lives in the global header now, reachable from any screen —
         // typing while elsewhere jumps to Journal to show results, then
