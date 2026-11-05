@@ -547,7 +547,7 @@ window.addEventListener('beforeunload', (ev) => {
   if (SAVE_IN_FLIGHT > 0) { ev.preventDefault(); ev.returnValue = ''; return ''; }
 });
 
-async function saveEntry(entry) {
+async function saveEntry(entry, opts) {
   bumpSaveStart();
   try {
     normalizeEntry(entry);
@@ -559,7 +559,10 @@ async function saveEntry(entry) {
     } else if (entry.completedAt) {
       entry.completedAt = null;
     }
-    entry.updatedAt = new Date().toISOString();
+    // opts.silent: background/system saves (image backfill, migrations, match
+    // sweeps) must NOT bump updatedAt, or they flood the homepage Recents row
+    // with reads the user never touched.
+    if (!(opts && opts.silent) || !entry.updatedAt) entry.updatedAt = new Date().toISOString();
     await idbPut(STORE_ENTRIES, entry);
     const idx = ALL_ENTRIES.findIndex((e) => e.id === entry.id);
     if (idx > -1) ALL_ENTRIES[idx] = entry; else ALL_ENTRIES.push(entry);
@@ -3366,7 +3369,7 @@ async function runFavoriteTagMigrationOnce() {
       const newCustom = stripBlocked(e.customTags);
       if (newTags.length !== (e.tags || []).length) { e.tags = newTags; changed = true; }
       if (newCustom.length !== (e.customTags || []).length) { e.customTags = newCustom; changed = true; }
-      if (changed) { await saveEntry(e); touched++; }
+      if (changed) { await saveEntry(e, { silent: true }); touched++; }
     }
     await idbPut(STORE_META, { key: 'favoriteTagMigrationDone', value: true });
     if (touched) console.log(`Favorite/blocked-tag migration: updated ${touched} entries.`);
@@ -3397,7 +3400,7 @@ async function runFlagTagBackfillOnce() {
           changed = true;
         }
       });
-      if (changed) { await saveEntry(e); touched++; }
+      if (changed) { await saveEntry(e, { silent: true }); touched++; }
     }
     await idbPut(STORE_META, { key: 'flagTagBackfillDone', value: true });
     if (touched) console.log('Flag tag backfill: updated ' + touched + ' entries.');
@@ -8325,7 +8328,7 @@ function migrateCharNotesToCombined(e) {
   e.notes = merged.map((l) => '› ' + l).join('\n');
   if (e.semi) e.semi.notes = '';
   if (e.uke) e.uke.notes = '';
-  saveEntry(e);
+  saveEntry(e, { silent: true });
 }
 
 // One-time, per-entry migration: folds the old single-line "Notes (legacy)"
@@ -8341,7 +8344,7 @@ function migrateLegacyNoteToCombined(e) {
   const legacyHtml = '<div>› ' + escapeHtml(legacy) + '</div>';
   e.notes = legacyHtml + notesToEditorHtml(e.notes);
   e.legacyNote = '';
-  saveEntry(e);
+  saveEntry(e, { silent: true });
 }
 
 function renderDetail(e) {
@@ -11611,7 +11614,7 @@ async function autoMatchSweepIfDue() {
       const data = await findSuggestedMatchData(proxy, e);
       if (data) {
         e.suggestedMatch = dataToSuggestedMatch(data);
-        await saveEntry(e);
+        await saveEntry(e, { silent: true });
         foundCount++;
       }
       await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -11660,7 +11663,7 @@ async function runBulkMatchSweep() {
       if (data) {
         e.suggestedMatch = dataToSuggestedMatch(data);
         e.suggestedMatchDismissed = false;
-        await saveEntry(e);
+        await saveEntry(e, { silent: true });
         BULK_SWEEP.found++;
       }
     } catch (err) {
@@ -11745,13 +11748,13 @@ async function runImageBackfill() {
     try {
       if (t.kind === 'cover') {
         const id = await tryUploadImageToDrive(t.entry.coverUrl, `${t.entry.id}-cover.jpg`);
-        if (id) { t.entry.coverDriveId = id; await saveEntry(t.entry); IMAGE_BACKFILL.uploaded++; }
+        if (id) { t.entry.coverDriveId = id; await saveEntry(t.entry, { silent: true }); IMAGE_BACKFILL.uploaded++; }
       } else if (t.kind === 'semi') {
         const id = await tryUploadImageToDrive(t.entry.semi.photo, `${t.entry.id}-semi-photo.jpg`);
-        if (id) { t.entry.semi.photoDriveId = id; await saveEntry(t.entry); IMAGE_BACKFILL.uploaded++; }
+        if (id) { t.entry.semi.photoDriveId = id; await saveEntry(t.entry, { silent: true }); IMAGE_BACKFILL.uploaded++; }
       } else if (t.kind === 'uke') {
         const id = await tryUploadImageToDrive(t.entry.uke.photo, `${t.entry.id}-uke-photo.jpg`);
-        if (id) { t.entry.uke.photoDriveId = id; await saveEntry(t.entry); IMAGE_BACKFILL.uploaded++; }
+        if (id) { t.entry.uke.photoDriveId = id; await saveEntry(t.entry, { silent: true }); IMAGE_BACKFILL.uploaded++; }
       } else if (t.kind === 'screencaps') {
         const e = t.entry;
         e.screencapDriveIds = e.screencapDriveIds || [];
@@ -11761,7 +11764,7 @@ async function runImageBackfill() {
           if (id) { e.screencapDriveIds.push(id); IMAGE_BACKFILL.uploaded++; }
           await new Promise((resolve) => setTimeout(resolve, 350));
         }
-        await saveEntry(e);
+        await saveEntry(e, { silent: true });
       } else if (t.kind === 'reaction') {
         const id = await tryUploadImageToDrive(t.reaction.dataUrl, `reaction-${t.reaction.id}.jpg`, 'reaction');
         if (id) { t.reaction.driveId = id; await saveReaction(t.reaction); IMAGE_BACKFILL.uploaded++; }
@@ -11833,17 +11836,17 @@ async function retryFailedUpload(key) {
       const e = ALL_ENTRIES.find((x) => x.id === id);
       if (!e) return;
       ok = await compressAndUploadField(() => e.coverUrl, (v) => { e.coverUrl = v; }, (v) => { e.coverDriveId = v; }, `${e.id}-cover.jpg`, 'entry');
-      if (ok) await saveEntry(e);
+      if (ok) await saveEntry(e, { silent: true });
     } else if (kind === 'semi') {
       const e = ALL_ENTRIES.find((x) => x.id === id);
       if (!e || !e.semi) return;
       ok = await compressAndUploadField(() => e.semi.photo, (v) => { e.semi.photo = v; }, (v) => { e.semi.photoDriveId = v; }, `${e.id}-semi-photo.jpg`, 'entry');
-      if (ok) await saveEntry(e);
+      if (ok) await saveEntry(e, { silent: true });
     } else if (kind === 'uke') {
       const e = ALL_ENTRIES.find((x) => x.id === id);
       if (!e || !e.uke) return;
       ok = await compressAndUploadField(() => e.uke.photo, (v) => { e.uke.photo = v; }, (v) => { e.uke.photoDriveId = v; }, `${e.id}-uke-photo.jpg`, 'entry');
-      if (ok) await saveEntry(e);
+      if (ok) await saveEntry(e, { silent: true });
     } else if (kind === 'screencaps') {
       const e = ALL_ENTRIES.find((x) => x.id === id);
       if (!e) return;
@@ -11866,7 +11869,7 @@ async function retryFailedUpload(key) {
         anyOk = true;
       }
       ok = anyOk;
-      await saveEntry(e);
+      await saveEntry(e, { silent: true });
     } else if (kind === 'reaction') {
       const r = ALL_REACTIONS.find((x) => x.id === id);
       if (!r) return;
