@@ -2099,6 +2099,14 @@ function closeModal() {
   THEME_PICKER_BLOCKING = false;
   document.getElementById('overlay').classList.remove('open');
   document.getElementById('modal-sheet').innerHTML = '';
+  if (window.__imgGalleryDirty) {
+    window.__imgGalleryDirty = false;
+    setTimeout(() => {
+      const ov = document.getElementById('overlay');
+      if (ov && ov.classList.contains('open')) return;
+      if (STATE.view === 'reactions' || STATE.view === 'meme') render();
+    }, 40);
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -3252,6 +3260,15 @@ async function setSuggestionsCollapsed(collapsed) {
 // a section she's collapsed stays collapsed across visits/devices instead of
 // resetting open every time the homepage re-renders.
 let HOME_COLLAPSED_SECTIONS = new Set();
+let HOME_EXPANDED_SECTIONS = new Set();
+const HOME_SECTION_CAP = 10;
+document.addEventListener('click', (ev) => {
+  const b = ev.target && ev.target.closest && ev.target.closest('[data-home-show-all]');
+  if (!b) return;
+  ev.preventDefault();
+  HOME_EXPANDED_SECTIONS.add(b.getAttribute('data-home-show-all'));
+  if (STATE.view === 'home') renderHomeInPlace();
+});
 async function toggleHomeSectionCollapsed(rowId) {
   if (HOME_COLLAPSED_SECTIONS.has(rowId)) HOME_COLLAPSED_SECTIONS.delete(rowId); else HOME_COLLAPSED_SECTIONS.add(rowId);
   const arr = Array.from(HOME_COLLAPSED_SECTIONS);
@@ -3480,13 +3497,25 @@ function renderCoverCard(e, reviewMode) {
 // a full grid, same layout the search/filtered results view already uses.
 function homeSectionHtml(rowId, title, count, innerHtml) {
   const collapsed = HOME_COLLAPSED_SECTIONS.has(rowId);
+  // Arrays are capped to the first HOME_SECTION_CAP covers with a Show all
+  // button (keeps the homepage light); strings render as-is.
+  let inner = innerHtml;
+  let moreBtn = '';
+  if (Array.isArray(innerHtml)) {
+    if (!HOME_EXPANDED_SECTIONS.has(rowId) && innerHtml.length > HOME_SECTION_CAP) {
+      inner = innerHtml.slice(0, HOME_SECTION_CAP).join('');
+      moreBtn = `<button type="button" class="home-show-all-btn" data-home-show-all="${rowId}" style="display:block;margin:12px auto 4px;padding:8px 18px;font-weight:700;cursor:pointer;">Show all (${innerHtml.length})</button>`;
+    } else {
+      inner = innerHtml.join('');
+    }
+  }
   return `
     <div class='panel home-section-panel'>
       <div class='panel-title-row home-section-title' data-toggle-home-section='${rowId}' style='cursor:pointer;'>
         <div class='panel-title'><span class='home-section-chevron'>${collapsed ? '▸' : '▾'}</span> ${escapeHtml(title)} <span style='opacity:.7;font-weight:600;'>(${count})</span></div>
       </div>
       <div class='home-section-body ${collapsed ? 'collapsed' : ''}' id='${rowId}'>
-        <div class='cover-grid'>${innerHtml}</div>
+        <div class='cover-grid'>${inner}</div>${moreBtn}
       </div>
     </div>`;
 }
@@ -3504,7 +3533,7 @@ function recentsSectionHtml(entries) {
     .sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0))
     .slice(0, RECENTS_COUNT);
   if (!recents.length) return '';
-  return homeSectionHtml('row-recents', '🕒 Recents', recents.length, recents.map((e) => renderCoverCard(e)).join(''));
+  return homeSectionHtml('row-recents', '🕒 Recents', recents.length, recents.map((e) => renderCoverCard(e)));
 }
 
 /* ---------------------------------------------------------------------- */
@@ -3962,7 +3991,7 @@ function renderHome() {
     // and jump into without leaving the homepage.
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
-      body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)).join(''));
+      body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)));
     }
     body += recentsSectionHtml(entries);
     // grouped by shelf, each group scrolls horizontally so hundreds of entries
@@ -3986,7 +4015,7 @@ function renderHome() {
       // Completed shelf: most recently marked complete first.
       if (shelf === 'Completed') group.sort((a, b) => new Date(b.completedAt || b.updatedAt || 0) - new Date(a.completedAt || a.updatedAt || 0));
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
-      body += homeSectionHtml(rowId, shelfLabel(shelf), group.length, group.map((e) => renderCoverCard(e)).join(''));
+      body += homeSectionHtml(rowId, shelfLabel(shelf), group.length, group.map((e) => renderCoverCard(e)));
     });
     // User-made playlists/awards (blue rows) sit below the pink shelf rows.
     body += collectionsHomeHtml();
@@ -6201,6 +6230,7 @@ async function openImageAttachmentsModal(dataUrl, reactionId) {
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
         ${[SEMI_TAG, UKE_TAG].map((name) => `<button class="mood-chip ${currentTags.includes(name) ? 'active' : ''}" data-toggle-image-tag="${escapeHtml(name)}" data-image-url="${escapeHtml(dataUrl)}">${escapeHtml(name)} only</button>`).join('')}
         ${moodOptions.map((m) => `<button class="mood-chip ${currentTags.includes(m.key) ? 'active' : ''}" data-toggle-image-tag="${escapeHtml(m.key)}" data-image-url="${escapeHtml(dataUrl)}" title="${escapeHtml(m.label)}">${m.emoji ? m.emoji + ' ' : ''}${escapeHtml(m.label)}</button>`).join('')}
+        <button type="button" class="mood-chip" data-new-image-group="${escapeHtml(dataUrl)}">＋ New group</button>
       </div>
     </div>
     <div class="field-row">
@@ -11220,7 +11250,7 @@ function renderHomeInPlace() {
   if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter) {
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
-      body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)).join(''));
+      body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)));
     }
     body += recentsSectionHtml(entries);
     const shelvesToShow = SHELVES_READING;
@@ -11230,7 +11260,7 @@ function renderHomeInPlace() {
       // Completed shelf: most recently marked complete first.
       if (shelf === 'Completed') group.sort((a, b) => new Date(b.completedAt || b.updatedAt || 0) - new Date(a.completedAt || a.updatedAt || 0));
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
-      body += homeSectionHtml(rowId, shelfLabel(shelf), group.length, group.map((e) => renderCoverCard(e)).join(''));
+      body += homeSectionHtml(rowId, shelfLabel(shelf), group.length, group.map((e) => renderCoverCard(e)));
     });
     // User-made playlists/awards (blue rows) sit below the pink shelf rows.
     body += collectionsHomeHtml();
@@ -11389,11 +11419,21 @@ document.addEventListener('click', async (ev) => {
       renderSharedGroupManagerModal(GROUP_MGR_MODAL_TITLE);
     });
   }
+  if (t.matches('[data-new-image-group]')) {
+    const url = t.getAttribute('data-new-image-group');
+    const key = addCustomMood(prompt('Name this new mood group (e.g. "creepy", "cute"):'));
+    if (key) {
+      if (!getImageTags(url).includes(key)) toggleImageTag(url, key);
+      window.__imgGalleryDirty = true;
+      openImageAttachmentsModal(url);
+    }
+  }
   if (t.matches('[data-toggle-image-tag]')) {
     const tag = t.getAttribute('data-toggle-image-tag');
     const url = t.getAttribute('data-image-url');
     toggleImageTag(url, tag);
-    render();
+    // Full gallery re-render takes seconds; defer it until the modal closes.
+    window.__imgGalleryDirty = true;
     openImageAttachmentsModal(url);
   }
   if (t.matches('[data-hgroupmgr-tab]')) {
