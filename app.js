@@ -40,6 +40,12 @@ const FLAG_HEX = { green: '#4ade80', red: '#f87171', black: '#6b6b7a' };
 // a body type all at once, each picker tracked separately.
 const LEAD_POSITIONS = ['top', 'bottom', 'verse'];
 const LEAD_BODY_TYPES = ['twink', 'buff', 'pretty'];
+// #398: three more multi-select rows, same pattern as position/bodyType --
+// each lead can have any combination of dynamic/temperament/archetype picks,
+// tracked independently of each other and of flag/position/bodyType.
+const LEAD_DYNAMICS = ['alpha', 'beta', 'omega'];
+const LEAD_TEMPERAMENTS = ['crybaby', 'psycho', 'kooky'];
+const LEAD_ARCHETYPES = ['masculine', 'pretty', 'idiot'];
 // #345: shared name-builder for the auto-tag each flag button keeps in
 // sync with the tag box (one-way: flag -> tag only). "who" is 'semi'
 // (Main Lead) or 'uke' (Main Character), matching the notes-lead-head
@@ -4085,24 +4091,12 @@ function renderHome() {
   const playlistChips = `<div class="filter-dropdown-col"><select id="home-playlist-select" class="filter-select">${['ALL', ...playlistOptions.map((c) => c.id)].map((v) => `<option value="${escapeHtml(v)}" ${(STATE.playlistFilter || 'ALL') === v ? 'selected' : ''}>${v === 'ALL' ? 'Playlist' : escapeHtml(playlistOptions.find((c) => c.id === v).name)}</option>`).join('')}</select></div>`;
   const collectionFilterRow = `<div class="filter-dropdown-row">${awardChips}${playlistChips}</div>`;
 
-  // Rating filters render as real <select> dropdowns (not clickable chip rows) —
-  // per the Vice City mockup's "emojis only in drop down" note: each option
-  // shows the emoji repeated N times so "3+" reads as an at-a-glance count.
-  function ratingFilterSelect(field, current, icon, label) {
-    const opts = [1, 2, 3, 4, 5].map((n) => `<option value="${n}" ${current === n ? 'selected' : ''}>${icon.repeat(n)}</option>`).join('');
-    return `<div class="filter-dropdown-col"><select class="rating-filter-select" data-rating-filter-field="${field}" title="${label} filter">
-      <option value="" ${!current ? 'selected' : ''}>${label}</option>
-      ${opts}
-    </select></div>`;
-  }
-  const smutChips = ratingFilterSelect('smutFilter', STATE.smutFilter, themeIcon(), isSFW() ? 'Cute' : 'Smut');
-  const qualityChips = ratingFilterSelect('qualityFilter', STATE.qualityFilter, '❤️', 'Overall');
-  // #395: Laughing dropped from the homepage filter row per her request --
-  // the per-entry 😂 rating itself (Notes panel) is untouched, this only
-  // removes it as something you can filter the homepage shelf by.
-  const cryChips = ratingFilterSelect('cryFilter', STATE.cryFilter, '😭', 'Crying');
-  const wtfChips = ratingFilterSelect('wtfFilter', STATE.wtfFilter, '🤯', 'WTF');
-  const darknessChips = ratingFilterSelect('darknessFilter', STATE.darknessFilter, '🌑', 'Darkness');
+  // #399: Overall/Smut/Crying/WTF/Darkness dropdowns dropped from the
+  // homepage filter row per her request -- same as #395's Laughing removal,
+  // the per-entry ratings themselves (Stats panel) are untouched, this only
+  // removes them as something you can filter the homepage shelf by. STATE's
+  // qualityFilter/smutFilter/cryFilter/wtfFilter/darknessFilter fields and
+  // their filteredEntries() checks are deliberately left in place.
   // Semi/Uke green/red/black flags are hidden entirely for SFW accounts —
   // her explicit call: this is a general relationship-dynamic marker, not
   // just a hentai-adjacent thing, but it's still part of the SFW cut.
@@ -4131,7 +4125,6 @@ function renderHome() {
         ${tagMultiselect}
         ${collectionFilterRow}
         <div class="rating-pick-row">${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}</div>
-        <div class="filter-dropdown-row rating-emoji-row">${qualityChips}${smutChips}${cryChips}${wtfChips}${darknessChips}</div>
         <div class="create-playlist-row"><button type="button" class="create-playlist-btn" data-create-playlist="1">+ Create playlist</button></div>
       </div>
     </div>
@@ -8174,14 +8167,19 @@ function toPickArray(current) {
   if (Array.isArray(current)) return current;
   return current ? [current] : [];
 }
-function renderPositionPicker(current, who) {
+// Shared by every multi-select lead-attribute row (position, bodyType,
+// dynamic, temperament, archetype) -- same .lead-flag-btn markup/class as
+// the color flags, just a generic data attribute so one click-handler loop
+// in attachRootHandlers can cover all of them instead of one block each.
+function renderMultiPicker(options, current, who, dataAttr) {
   const arr = toPickArray(current);
-  return LEAD_POSITIONS.map((p) => `<button type="button" class="lead-flag-btn ${arr.includes(p) ? 'active' : ''}" data-position-pick="${who}:${p}" title="${p[0].toUpperCase()}${p.slice(1)}">${p[0].toUpperCase()}${p.slice(1)}</button>`).join('');
+  return options.map((v) => `<button type="button" class="lead-flag-btn ${arr.includes(v) ? 'active' : ''}" data-${dataAttr}="${who}:${v}" title="${v[0].toUpperCase()}${v.slice(1)}">${v[0].toUpperCase()}${v.slice(1)}</button>`).join('');
 }
-function renderBodyTypePicker(current, who) {
-  const arr = toPickArray(current);
-  return LEAD_BODY_TYPES.map((b) => `<button type="button" class="lead-flag-btn ${arr.includes(b) ? 'active' : ''}" data-bodytype-pick="${who}:${b}" title="${b[0].toUpperCase()}${b.slice(1)}">${b[0].toUpperCase()}${b.slice(1)}</button>`).join('');
-}
+function renderPositionPicker(current, who) { return renderMultiPicker(LEAD_POSITIONS, current, who, 'position-pick'); }
+function renderBodyTypePicker(current, who) { return renderMultiPicker(LEAD_BODY_TYPES, current, who, 'bodytype-pick'); }
+function renderDynamicPicker(current, who) { return renderMultiPicker(LEAD_DYNAMICS, current, who, 'dynamic-pick'); }
+function renderTemperamentPicker(current, who) { return renderMultiPicker(LEAD_TEMPERAMENTS, current, who, 'temperament-pick'); }
+function renderArchetypePicker(current, who) { return renderMultiPicker(LEAD_ARCHETYPES, current, who, 'archetype-pick'); }
 
 function renderCharPhoto(photo) {
   return photo ? `<img src="${photo}" alt="">` : '📷';
@@ -8683,10 +8681,16 @@ function renderDetail(e) {
               ${renderCharPhoto(e.semi.photo)}
               <input type="file" accept="image/*" style="display:none" data-char-photo="semi">
             </label>
-            <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="semi" value="${escapeHtml(e.semi.name || '')}">
+            <div class="lead-name-row">
+              <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="semi" value="${escapeHtml(e.semi.name || '')}">
+              <input type="text" class="lead-age-input" placeholder="age" data-lead-age="semi" value="${escapeHtml(e.semi.age || '')}">
+            </div>
             ${!isSFW() ? `<div class="flag-picker">${renderFlagPicker(e.semi.flag, 'semi')}</div>` : ''}
             <div class="flag-picker">${renderPositionPicker(e.semi.position, 'semi')}</div>
             <div class="flag-picker">${renderBodyTypePicker(e.semi.bodyType, 'semi')}</div>
+            <div class="flag-picker">${renderDynamicPicker(e.semi.dynamic, 'semi')}</div>
+            <div class="flag-picker">${renderTemperamentPicker(e.semi.temperament, 'semi')}</div>
+            <div class="flag-picker">${renderArchetypePicker(e.semi.archetype, 'semi')}</div>
           </div>
           <div class="notes-lead-col" data-flag="${e.uke.flag || ''}">
             <div class="notes-lead-head">MAIN CHARACTER</div>
@@ -8694,10 +8698,16 @@ function renderDetail(e) {
               ${renderCharPhoto(e.uke.photo)}
               <input type="file" accept="image/*" style="display:none" data-char-photo="uke">
             </label>
-            <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="uke" value="${escapeHtml(e.uke.name || '')}">
+            <div class="lead-name-row">
+              <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="uke" value="${escapeHtml(e.uke.name || '')}">
+              <input type="text" class="lead-age-input" placeholder="age" data-lead-age="uke" value="${escapeHtml(e.uke.age || '')}">
+            </div>
             ${!isSFW() ? `<div class="flag-picker">${renderFlagPicker(e.uke.flag, 'uke')}</div>` : ''}
             <div class="flag-picker">${renderPositionPicker(e.uke.position, 'uke')}</div>
             <div class="flag-picker">${renderBodyTypePicker(e.uke.bodyType, 'uke')}</div>
+            <div class="flag-picker">${renderDynamicPicker(e.uke.dynamic, 'uke')}</div>
+            <div class="flag-picker">${renderTemperamentPicker(e.uke.temperament, 'uke')}</div>
+            <div class="flag-picker">${renderArchetypePicker(e.uke.archetype, 'uke')}</div>
           </div>
         </div>
         
@@ -9049,7 +9059,11 @@ function mergeEntryData(target, source) {
     // entries' picks instead of only filling in when target's is empty.
     if (s.position) target[k].position = [...new Set([...toPickArray(target[k].position), ...toPickArray(s.position)])];
     if (s.bodyType) target[k].bodyType = [...new Set([...toPickArray(target[k].bodyType), ...toPickArray(s.bodyType)])];
+    if (s.dynamic) target[k].dynamic = [...new Set([...toPickArray(target[k].dynamic), ...toPickArray(s.dynamic)])];
+    if (s.temperament) target[k].temperament = [...new Set([...toPickArray(target[k].temperament), ...toPickArray(s.temperament)])];
+    if (s.archetype) target[k].archetype = [...new Set([...toPickArray(target[k].archetype), ...toPickArray(s.archetype)])];
     if (!target[k].name && s.name) target[k].name = s.name;
+    if (!target[k].age && s.age) target[k].age = s.age;
     if (!target[k].photo && s.photo) {
       target[k].photo = s.photo;
       if (s.photoDriveId) target[k].photoDriveId = s.photoDriveId;
@@ -10275,23 +10289,25 @@ function attachRootHandlers() {
       await saveEntry(e); render();
     };
   });
-  root.querySelectorAll('[data-position-pick]').forEach((el) => {
-    el.onclick = async () => {
-      const [who, pos] = el.getAttribute('data-position-pick').split(':');
-      const e = getEntry(STATE.entryId);
-      const arr = toPickArray(e[who].position);
-      e[who].position = arr.includes(pos) ? arr.filter((x) => x !== pos) : [...arr, pos];
-      await saveEntry(e); render();
-    };
-  });
-  root.querySelectorAll('[data-bodytype-pick]').forEach((el) => {
-    el.onclick = async () => {
-      const [who, bt] = el.getAttribute('data-bodytype-pick').split(':');
-      const e = getEntry(STATE.entryId);
-      const arr = toPickArray(e[who].bodyType);
-      e[who].bodyType = arr.includes(bt) ? arr.filter((x) => x !== bt) : [...arr, bt];
-      await saveEntry(e); render();
-    };
+  // #398: one shared wiring loop for every multi-select lead-attribute row
+  // (position, bodyType, dynamic, temperament, archetype) -- each toggles
+  // membership in its own array field on e.semi/e.uke, same as before.
+  [
+    ['data-position-pick', 'position'],
+    ['data-bodytype-pick', 'bodyType'],
+    ['data-dynamic-pick', 'dynamic'],
+    ['data-temperament-pick', 'temperament'],
+    ['data-archetype-pick', 'archetype'],
+  ].forEach(([attr, field]) => {
+    root.querySelectorAll(`[${attr}]`).forEach((el) => {
+      el.onclick = async () => {
+        const [who, val] = el.getAttribute(attr).split(':');
+        const e = getEntry(STATE.entryId);
+        const arr = toPickArray(e[who][field]);
+        e[who][field] = arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val];
+        await saveEntry(e); render();
+      };
+    });
   });
   root.querySelectorAll('[data-char-notes]').forEach((el) => {
     attachBulletTextarea(el);
@@ -10310,6 +10326,14 @@ function attachRootHandlers() {
       const who = el.getAttribute('data-lead-name');
       const e = getEntry(STATE.entryId);
       e[who].name = el.value.trim();
+      await saveEntry(e);
+    };
+  });
+  root.querySelectorAll('[data-lead-age]').forEach((el) => {
+    el.onblur = async () => {
+      const who = el.getAttribute('data-lead-age');
+      const e = getEntry(STATE.entryId);
+      e[who].age = el.value.trim();
       await saveEntry(e);
     };
   });
