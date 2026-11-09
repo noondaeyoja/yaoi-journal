@@ -34,6 +34,12 @@ function shelfLabelForEntry(value, isReadingFmt) {
 }
 const FLAG_COLORS = ['green', 'red', 'black'];
 const FLAG_HEX = { green: '#4ade80', red: '#f87171', black: '#6b6b7a' };
+// #394: two more single-select picker rows under each lead's Notes column,
+// same look as the color flags (renderFlagPicker/.lead-flag-btn) but their
+// own independent state -- a lead can have a flag color AND a position AND
+// a body type all at once, each picker tracked separately.
+const LEAD_POSITIONS = ['top', 'bottom', 'verse'];
+const LEAD_BODY_TYPES = ['twink', 'buff'];
 // #345: shared name-builder for the auto-tag each flag button keeps in
 // sync with the tag box (one-way: flag -> tag only). "who" is 'semi'
 // (Main Lead) or 'uke' (Main Character), matching the notes-lead-head
@@ -277,6 +283,8 @@ let STATE = {
   wtfFilter: null,          // null or 1-5, meaning "at least N WTFs"
   darknessFilter: null,     // null or 1-5, meaning "at least N Darkness"
   search: '',
+  awardFilter: null,        // null or a collection id — only show entries belonging to this award
+  playlistFilter: null,     // null or a collection id — only show entries belonging to this playlist
 };
 
 // Shared by both paths back to a completely clean homepage — the footer
@@ -302,6 +310,8 @@ function resetHomeFiltersClean() {
   STATE.noLinkFilter = false;
   STATE.storyStatusFilter = null;
   STATE.mediaFormatFilter = null;
+  STATE.awardFilter = null;
+  STATE.playlistFilter = null;
   FILTERS_COLLAPSED = false;
 }
 
@@ -3143,6 +3153,14 @@ function normalizeSearchText(s) {
 }
 function filteredEntries() {
   const q = normalizeSearchText(STATE.search);
+  // Award/Playlist filters: precompute the matching collection's member ids
+  // ONCE here (collectionMembers() does its own full ALL_ENTRIES pass), not
+  // inside the per-entry filter below, so a single dropdown pick doesn't
+  // re-scan every entry per entry.
+  const awardColl = STATE.awardFilter ? COLLECTIONS[STATE.awardFilter] : null;
+  const playlistColl = STATE.playlistFilter ? COLLECTIONS[STATE.playlistFilter] : null;
+  const awardIds = awardColl ? new Set(collectionMembers(awardColl).map((e) => e.id)) : null;
+  const playlistIds = playlistColl ? new Set(collectionMembers(playlistColl).map((e) => e.id)) : null;
   return ALL_ENTRIES.filter((e) => {
     // Favorites and On Yaoi Drive tabs both pull from Reading + Watching,
     // ignoring the format toggle — same as each other.
@@ -3179,6 +3197,8 @@ function filteredEntries() {
     }
     if (STATE.linkFilter && !e.readingLink) return false;
     if (STATE.noLinkFilter && e.readingLink) return false;
+    if (awardIds && !awardIds.has(e.id)) return false;
+    if (playlistIds && !playlistIds.has(e.id)) return false;
     if (q) {
       const hay = normalizeSearchText([e.title, e.altTitle, e.author, e.artist, e.notes, ...(e.tags || []), ...(e.customTags || [])]
         .filter(Boolean).join(' '));
@@ -3985,7 +4005,7 @@ function renderHome() {
   const tags = topTags(ALL_ENTRIES.filter((e) => !STATE.format || e.format === STATE.format));
 
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter && !STATE.awardFilter && !STATE.playlistFilter) {
     // Suggested-matches row sits above the shelf rows, same section-title +
     // horizontal-scroll treatment, so unconfirmed matches are easy to spot
     // and jump into without leaving the homepage.
@@ -4056,6 +4076,14 @@ function renderHome() {
         ${STATE.tagFilters.length ? `<button class="ref-btn" style="width:100%;margin-top:6px;" data-tag-ms-clear="1">Clear selected</button>` : ''}
       </div>
     </div>`;
+  // Award/Playlist filters — her own collections, same shelf dropdown style
+  // as Shelf/Story Status/Format above, sitting on their own row directly
+  // below the Tags multiselect per her request.
+  const awardOptions = activeCollectionsOfKind('award');
+  const playlistOptions = activeCollectionsOfKind('playlist');
+  const awardChips = `<div class="filter-dropdown-col"><select id="home-award-select" class="filter-select">${['ALL', ...awardOptions.map((c) => c.id)].map((v) => `<option value="${escapeHtml(v)}" ${(STATE.awardFilter || 'ALL') === v ? 'selected' : ''}>${v === 'ALL' ? 'Award' : escapeHtml(awardOptions.find((c) => c.id === v).name)}</option>`).join('')}</select></div>`;
+  const playlistChips = `<div class="filter-dropdown-col"><select id="home-playlist-select" class="filter-select">${['ALL', ...playlistOptions.map((c) => c.id)].map((v) => `<option value="${escapeHtml(v)}" ${(STATE.playlistFilter || 'ALL') === v ? 'selected' : ''}>${v === 'ALL' ? 'Playlist' : escapeHtml(playlistOptions.find((c) => c.id === v).name)}</option>`).join('')}</select></div>`;
+  const collectionFilterRow = `<div class="filter-dropdown-row">${awardChips}${playlistChips}</div>`;
 
   // Rating filters render as real <select> dropdowns (not clickable chip rows) —
   // per the Vice City mockup's "emojis only in drop down" note: each option
@@ -4069,7 +4097,9 @@ function renderHome() {
   }
   const smutChips = ratingFilterSelect('smutFilter', STATE.smutFilter, themeIcon(), isSFW() ? 'Cute' : 'Smut');
   const qualityChips = ratingFilterSelect('qualityFilter', STATE.qualityFilter, '❤️', 'Overall');
-  const lolChips = ratingFilterSelect('lolFilter', STATE.lolFilter, '😂', 'Laughing');
+  // #395: Laughing dropped from the homepage filter row per her request --
+  // the per-entry 😂 rating itself (Notes panel) is untouched, this only
+  // removes it as something you can filter the homepage shelf by.
   const cryChips = ratingFilterSelect('cryFilter', STATE.cryFilter, '😭', 'Crying');
   const wtfChips = ratingFilterSelect('wtfFilter', STATE.wtfFilter, '🤯', 'WTF');
   const darknessChips = ratingFilterSelect('darknessFilter', STATE.darknessFilter, '🌑', 'Darkness');
@@ -4099,8 +4129,9 @@ function renderHome() {
       <div class="filters-collapsible ${FILTERS_COLLAPSED ? 'collapsed' : ''}" id="filters-collapsible">
         <div class="filter-dropdown-row">${shelfChips}${storyStatusChips}${mediaFormatChips}</div>
         ${tagMultiselect}
+        ${collectionFilterRow}
         <div class="rating-pick-row">${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}</div>
-        <div class="filter-dropdown-row rating-emoji-row">${qualityChips}${smutChips}${lolChips}${cryChips}${wtfChips}${darknessChips}</div>
+        <div class="filter-dropdown-row rating-emoji-row">${qualityChips}${smutChips}${cryChips}${wtfChips}${darknessChips}</div>
         <div class="create-playlist-row"><button type="button" class="create-playlist-btn" data-create-playlist="1">+ Create playlist</button></div>
       </div>
     </div>
@@ -8131,6 +8162,15 @@ function renderFlagPicker(current, who) {
   // easier to see at a glance, single-select toggle same as before.
   return FLAG_COLORS.map((c) => `<button type="button" class="lead-flag-btn ${current === c ? 'active' : ''}" data-flag-pick="${who}:${c}" title="${c[0].toUpperCase()}${c.slice(1)} flag">${c[0].toUpperCase()}${c.slice(1)}</button>`).join('');
 }
+// #394: Top/Bottom/Verse and Twink/Buff pickers -- same markup/button class
+// as renderFlagPicker (just a different data attribute for the click
+// handler to key off of), so they're visually identical to the flag row.
+function renderPositionPicker(current, who) {
+  return LEAD_POSITIONS.map((p) => `<button type="button" class="lead-flag-btn ${current === p ? 'active' : ''}" data-position-pick="${who}:${p}" title="${p[0].toUpperCase()}${p.slice(1)}">${p[0].toUpperCase()}${p.slice(1)}</button>`).join('');
+}
+function renderBodyTypePicker(current, who) {
+  return LEAD_BODY_TYPES.map((b) => `<button type="button" class="lead-flag-btn ${current === b ? 'active' : ''}" data-bodytype-pick="${who}:${b}" title="${b[0].toUpperCase()}${b.slice(1)}">${b[0].toUpperCase()}${b.slice(1)}</button>`).join('');
+}
 
 function renderCharPhoto(photo) {
   return photo ? `<img src="${photo}" alt="">` : '📷';
@@ -8634,6 +8674,8 @@ function renderDetail(e) {
             </label>
             <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="semi" value="${escapeHtml(e.semi.name || '')}">
             ${!isSFW() ? `<div class="flag-picker">${renderFlagPicker(e.semi.flag, 'semi')}</div>` : ''}
+            <div class="flag-picker">${renderPositionPicker(e.semi.position, 'semi')}</div>
+            <div class="flag-picker">${renderBodyTypePicker(e.semi.bodyType, 'semi')}</div>
           </div>
           <div class="notes-lead-col" data-flag="${e.uke.flag || ''}">
             <div class="notes-lead-head">MAIN CHARACTER</div>
@@ -8643,6 +8685,8 @@ function renderDetail(e) {
             </label>
             <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="uke" value="${escapeHtml(e.uke.name || '')}">
             ${!isSFW() ? `<div class="flag-picker">${renderFlagPicker(e.uke.flag, 'uke')}</div>` : ''}
+            <div class="flag-picker">${renderPositionPicker(e.uke.position, 'uke')}</div>
+            <div class="flag-picker">${renderBodyTypePicker(e.uke.bodyType, 'uke')}</div>
           </div>
         </div>
         
@@ -8990,6 +9034,8 @@ function mergeEntryData(target, source) {
     target[k] = target[k] || { flag: null, notes: '', photo: null };
     const s = source[k] || {};
     if (!target[k].flag && s.flag) target[k].flag = s.flag;
+    if (!target[k].position && s.position) target[k].position = s.position;
+    if (!target[k].bodyType && s.bodyType) target[k].bodyType = s.bodyType;
     if (!target[k].name && s.name) target[k].name = s.name;
     if (!target[k].photo && s.photo) {
       target[k].photo = s.photo;
@@ -9884,6 +9930,18 @@ function attachRootHandlers() {
     STATE.mediaFormatFilter = val === 'ALL' ? null : val;
     render();
   };
+  const homeAwardSelect = root.querySelector('#home-award-select');
+  if (homeAwardSelect) homeAwardSelect.onchange = () => {
+    const val = homeAwardSelect.value;
+    STATE.awardFilter = val === 'ALL' ? null : val;
+    render();
+  };
+  const homePlaylistSelect = root.querySelector('#home-playlist-select');
+  if (homePlaylistSelect) homePlaylistSelect.onchange = () => {
+    const val = homePlaylistSelect.value;
+    STATE.playlistFilter = val === 'ALL' ? null : val;
+    render();
+  };
   const tagMsToggle = root.querySelector('[data-tag-ms-toggle]');
   if (tagMsToggle) tagMsToggle.onclick = () => { TAG_FILTER_OPEN = !TAG_FILTER_OPEN; render(); };
   root.querySelectorAll('[data-toggle-home-tag]').forEach((el) => {
@@ -10201,6 +10259,22 @@ function attachRootHandlers() {
         const tn = flagTagName(newColor, who);
         if (!e.customTags.some((t) => t.toLowerCase() === tn.toLowerCase())) e.customTags.push(tn);
       }
+      await saveEntry(e); render();
+    };
+  });
+  root.querySelectorAll('[data-position-pick]').forEach((el) => {
+    el.onclick = async () => {
+      const [who, pos] = el.getAttribute('data-position-pick').split(':');
+      const e = getEntry(STATE.entryId);
+      e[who].position = e[who].position === pos ? null : pos;
+      await saveEntry(e); render();
+    };
+  });
+  root.querySelectorAll('[data-bodytype-pick]').forEach((el) => {
+    el.onclick = async () => {
+      const [who, bt] = el.getAttribute('data-bodytype-pick').split(':');
+      const e = getEntry(STATE.entryId);
+      e[who].bodyType = e[who].bodyType === bt ? null : bt;
       await saveEntry(e); render();
     };
   });
@@ -11247,7 +11321,7 @@ function renderHomeInPlace() {
   const main = root.querySelector('main');
   const entries = filteredEntries();
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter && !STATE.awardFilter && !STATE.playlistFilter) {
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
       body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)));
