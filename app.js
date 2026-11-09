@@ -39,7 +39,7 @@ const FLAG_HEX = { green: '#4ade80', red: '#f87171', black: '#6b6b7a' };
 // own independent state -- a lead can have a flag color AND a position AND
 // a body type all at once, each picker tracked separately.
 const LEAD_POSITIONS = ['top', 'bottom', 'verse'];
-const LEAD_BODY_TYPES = ['twink', 'buff'];
+const LEAD_BODY_TYPES = ['twink', 'buff', 'pretty'];
 // #345: shared name-builder for the auto-tag each flag button keeps in
 // sync with the tag box (one-way: flag -> tag only). "who" is 'semi'
 // (Main Lead) or 'uke' (Main Character), matching the notes-lead-head
