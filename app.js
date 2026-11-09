@@ -8165,11 +8165,22 @@ function renderFlagPicker(current, who) {
 // #394: Top/Bottom/Verse and Twink/Buff pickers -- same markup/button class
 // as renderFlagPicker (just a different data attribute for the click
 // handler to key off of), so they're visually identical to the flag row.
+// #397: both rows are multi-select (e.g. Top + Verse, or Twink + Pretty can
+// all be on at once) -- unlike the single-select color flags. Stored as an
+// array on e.semi.position/e.semi.bodyType (and e.uke.*). toPickArray()
+// also accepts a legacy single-string value from before this change (or
+// null), so old saved entries still render/toggle correctly.
+function toPickArray(current) {
+  if (Array.isArray(current)) return current;
+  return current ? [current] : [];
+}
 function renderPositionPicker(current, who) {
-  return LEAD_POSITIONS.map((p) => `<button type="button" class="lead-flag-btn ${current === p ? 'active' : ''}" data-position-pick="${who}:${p}" title="${p[0].toUpperCase()}${p.slice(1)}">${p[0].toUpperCase()}${p.slice(1)}</button>`).join('');
+  const arr = toPickArray(current);
+  return LEAD_POSITIONS.map((p) => `<button type="button" class="lead-flag-btn ${arr.includes(p) ? 'active' : ''}" data-position-pick="${who}:${p}" title="${p[0].toUpperCase()}${p.slice(1)}">${p[0].toUpperCase()}${p.slice(1)}</button>`).join('');
 }
 function renderBodyTypePicker(current, who) {
-  return LEAD_BODY_TYPES.map((b) => `<button type="button" class="lead-flag-btn ${current === b ? 'active' : ''}" data-bodytype-pick="${who}:${b}" title="${b[0].toUpperCase()}${b.slice(1)}">${b[0].toUpperCase()}${b.slice(1)}</button>`).join('');
+  const arr = toPickArray(current);
+  return LEAD_BODY_TYPES.map((b) => `<button type="button" class="lead-flag-btn ${arr.includes(b) ? 'active' : ''}" data-bodytype-pick="${who}:${b}" title="${b[0].toUpperCase()}${b.slice(1)}">${b[0].toUpperCase()}${b.slice(1)}</button>`).join('');
 }
 
 function renderCharPhoto(photo) {
@@ -9034,8 +9045,10 @@ function mergeEntryData(target, source) {
     target[k] = target[k] || { flag: null, notes: '', photo: null };
     const s = source[k] || {};
     if (!target[k].flag && s.flag) target[k].flag = s.flag;
-    if (!target[k].position && s.position) target[k].position = s.position;
-    if (!target[k].bodyType && s.bodyType) target[k].bodyType = s.bodyType;
+    // #397: position/bodyType are multi-select arrays now -- union the two
+    // entries' picks instead of only filling in when target's is empty.
+    if (s.position) target[k].position = [...new Set([...toPickArray(target[k].position), ...toPickArray(s.position)])];
+    if (s.bodyType) target[k].bodyType = [...new Set([...toPickArray(target[k].bodyType), ...toPickArray(s.bodyType)])];
     if (!target[k].name && s.name) target[k].name = s.name;
     if (!target[k].photo && s.photo) {
       target[k].photo = s.photo;
@@ -10266,7 +10279,8 @@ function attachRootHandlers() {
     el.onclick = async () => {
       const [who, pos] = el.getAttribute('data-position-pick').split(':');
       const e = getEntry(STATE.entryId);
-      e[who].position = e[who].position === pos ? null : pos;
+      const arr = toPickArray(e[who].position);
+      e[who].position = arr.includes(pos) ? arr.filter((x) => x !== pos) : [...arr, pos];
       await saveEntry(e); render();
     };
   });
@@ -10274,7 +10288,8 @@ function attachRootHandlers() {
     el.onclick = async () => {
       const [who, bt] = el.getAttribute('data-bodytype-pick').split(':');
       const e = getEntry(STATE.entryId);
-      e[who].bodyType = e[who].bodyType === bt ? null : bt;
+      const arr = toPickArray(e[who].bodyType);
+      e[who].bodyType = arr.includes(bt) ? arr.filter((x) => x !== bt) : [...arr, bt];
       await saveEntry(e); render();
     };
   });
