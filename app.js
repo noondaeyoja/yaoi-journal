@@ -38,14 +38,26 @@ const FLAG_HEX = { green: '#4ade80', red: '#f87171', black: '#6b6b7a' };
 // same look as the color flags (renderFlagPicker/.lead-flag-btn) but their
 // own independent state -- a lead can have a flag color AND a position AND
 // a body type all at once, each picker tracked separately.
-const LEAD_POSITIONS = ['top', 'bottom', 'verse'];
-const LEAD_BODY_TYPES = ['twink', 'buff', 'pretty'];
+// #400: Verse/Pretty(body-type)/Beta dropped per her rearrange request --
+// Position and Dynamic are now straight 2-option pickers, and Body Type
+// reordered to Buff/Twink. Any already-saved 'verse'/'pretty'/'beta' picks
+// on old entries just stop rendering as an active button; nothing scrubs
+// that data, same as every other UI-only filter/option removal here.
+const LEAD_POSITIONS = ['top', 'bottom'];
+const LEAD_BODY_TYPES = ['buff', 'twink'];
 // #398: three more multi-select rows, same pattern as position/bodyType --
-// each lead can have any combination of dynamic/temperament/archetype picks,
-// tracked independently of each other and of flag/position/bodyType.
-const LEAD_DYNAMICS = ['alpha', 'beta', 'omega'];
+// each lead can have any combination of dynamic/temperament/archetype/energy
+// picks, tracked independently of each other and of flag/position/bodyType.
+const LEAD_DYNAMICS = ['alpha', 'omega'];
 const LEAD_TEMPERAMENTS = ['crybaby', 'psycho', 'kooky'];
-const LEAD_ARCHETYPES = ['masculine', 'pretty', 'idiot'];
+// #400: reordered to Masculine/Idiot/Pretty per her rearrange request.
+const LEAD_ARCHETYPES = ['masculine', 'idiot', 'pretty'];
+// #400: new row, multi-word labels -- options are {value, label} objects
+// instead of plain strings (renderMultiPicker handles both forms).
+const LEAD_ENERGY = [
+  { value: 'blackcat', label: 'Black Cat Energy' },
+  { value: 'goldenretriever', label: 'Golden Retriever Energy' },
+];
 // #345: shared name-builder for the auto-tag each flag button keeps in
 // sync with the tag box (one-way: flag -> tag only). "who" is 'semi'
 // (Main Lead) or 'uke' (Main Character), matching the notes-lead-head
@@ -8171,15 +8183,24 @@ function toPickArray(current) {
 // dynamic, temperament, archetype) -- same .lead-flag-btn markup/class as
 // the color flags, just a generic data attribute so one click-handler loop
 // in attachRootHandlers can cover all of them instead of one block each.
+// #400: options can be plain strings (auto-capitalized label, the original
+// rows) or {value, label} objects (for multi-word labels like Energy's
+// "Black Cat Energy", where auto-capitalizing just the first letter of the
+// whole string wouldn't title-case correctly).
 function renderMultiPicker(options, current, who, dataAttr) {
   const arr = toPickArray(current);
-  return options.map((v) => `<button type="button" class="lead-flag-btn ${arr.includes(v) ? 'active' : ''}" data-${dataAttr}="${who}:${v}" title="${v[0].toUpperCase()}${v.slice(1)}">${v[0].toUpperCase()}${v.slice(1)}</button>`).join('');
+  return options.map((opt) => {
+    const value = typeof opt === 'string' ? opt : opt.value;
+    const label = typeof opt === 'string' ? `${opt[0].toUpperCase()}${opt.slice(1)}` : opt.label;
+    return `<button type="button" class="lead-flag-btn ${arr.includes(value) ? 'active' : ''}" data-${dataAttr}="${who}:${value}" title="${label}">${label}</button>`;
+  }).join('');
 }
 function renderPositionPicker(current, who) { return renderMultiPicker(LEAD_POSITIONS, current, who, 'position-pick'); }
 function renderBodyTypePicker(current, who) { return renderMultiPicker(LEAD_BODY_TYPES, current, who, 'bodytype-pick'); }
 function renderDynamicPicker(current, who) { return renderMultiPicker(LEAD_DYNAMICS, current, who, 'dynamic-pick'); }
 function renderTemperamentPicker(current, who) { return renderMultiPicker(LEAD_TEMPERAMENTS, current, who, 'temperament-pick'); }
 function renderArchetypePicker(current, who) { return renderMultiPicker(LEAD_ARCHETYPES, current, who, 'archetype-pick'); }
+function renderEnergyPicker(current, who) { return renderMultiPicker(LEAD_ENERGY, current, who, 'energy-pick'); }
 
 function renderCharPhoto(photo) {
   return photo ? `<img src="${photo}" alt="">` : '📷';
@@ -8691,6 +8712,7 @@ function renderDetail(e) {
             <div class="flag-picker">${renderDynamicPicker(e.semi.dynamic, 'semi')}</div>
             <div class="flag-picker">${renderTemperamentPicker(e.semi.temperament, 'semi')}</div>
             <div class="flag-picker">${renderArchetypePicker(e.semi.archetype, 'semi')}</div>
+            <div class="flag-picker">${renderEnergyPicker(e.semi.energy, 'semi')}</div>
           </div>
           <div class="notes-lead-col" data-flag="${e.uke.flag || ''}">
             <div class="notes-lead-head">MAIN CHARACTER</div>
@@ -8708,6 +8730,7 @@ function renderDetail(e) {
             <div class="flag-picker">${renderDynamicPicker(e.uke.dynamic, 'uke')}</div>
             <div class="flag-picker">${renderTemperamentPicker(e.uke.temperament, 'uke')}</div>
             <div class="flag-picker">${renderArchetypePicker(e.uke.archetype, 'uke')}</div>
+            <div class="flag-picker">${renderEnergyPicker(e.uke.energy, 'uke')}</div>
           </div>
         </div>
         
@@ -9062,6 +9085,7 @@ function mergeEntryData(target, source) {
     if (s.dynamic) target[k].dynamic = [...new Set([...toPickArray(target[k].dynamic), ...toPickArray(s.dynamic)])];
     if (s.temperament) target[k].temperament = [...new Set([...toPickArray(target[k].temperament), ...toPickArray(s.temperament)])];
     if (s.archetype) target[k].archetype = [...new Set([...toPickArray(target[k].archetype), ...toPickArray(s.archetype)])];
+    if (s.energy) target[k].energy = [...new Set([...toPickArray(target[k].energy), ...toPickArray(s.energy)])];
     if (!target[k].name && s.name) target[k].name = s.name;
     if (!target[k].age && s.age) target[k].age = s.age;
     if (!target[k].photo && s.photo) {
@@ -10289,15 +10313,16 @@ function attachRootHandlers() {
       await saveEntry(e); render();
     };
   });
-  // #398: one shared wiring loop for every multi-select lead-attribute row
-  // (position, bodyType, dynamic, temperament, archetype) -- each toggles
-  // membership in its own array field on e.semi/e.uke, same as before.
+  // #398/#400: one shared wiring loop for every multi-select lead-attribute
+  // row (position, bodyType, dynamic, temperament, archetype, energy) --
+  // each toggles membership in its own array field on e.semi/e.uke.
   [
     ['data-position-pick', 'position'],
     ['data-bodytype-pick', 'bodyType'],
     ['data-dynamic-pick', 'dynamic'],
     ['data-temperament-pick', 'temperament'],
     ['data-archetype-pick', 'archetype'],
+    ['data-energy-pick', 'energy'],
   ].forEach(([attr, field]) => {
     root.querySelectorAll(`[${attr}]`).forEach((el) => {
       el.onclick = async () => {
