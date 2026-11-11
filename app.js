@@ -2677,6 +2677,8 @@ function navigate(view, entryId, opts) {
   TAG_ADD_SECTION = null;
   TAG_ADD_AUTOFOCUS = false;
   COLL_ADD_KIND = null;
+  NOTES_PICK_OPEN = null;
+  STATS_FLAGS_OPEN = false;
   // The side-arrow list only survives while moving between the Missing
   // cover/summary page and reads opened from it.
   if (view !== 'detail' && view !== 'missingInfo') DETAIL_NAV_LIST = null;
@@ -3053,6 +3055,19 @@ document.body.dataset.bg = BG_MODE;
   if (__preRenderTagPoolScroll > 0) {
     const tagPoolEl = document.getElementById('detail-tag-pool');
     if (tagPoolEl) tagPoolEl.scrollTop = __preRenderTagPoolScroll;
+  }
+  // #403: fit the Notes container's button-row labels every render (cheap --
+  // only runs when .flag-picker-h rows actually exist, i.e. the detail page).
+  fitFlagButtonRows(root);
+  // Re-fit on resize/rotate too (available width per button changes), bound
+  // once ever rather than re-bound on every render.
+  if (!window.__flagFitResizeBound) {
+    window.__flagFitResizeBound = true;
+    let __flagFitResizeTimer;
+    window.addEventListener('resize', () => {
+      clearTimeout(__flagFitResizeTimer);
+      __flagFitResizeTimer = setTimeout(() => fitFlagButtonRows(document.getElementById('view-root')), 150);
+    });
   }
 }
 
@@ -3626,6 +3641,14 @@ const SYSTEM_COLLECTIONS = [
   { id: 'sys-funny', name: 'Funny', tagKey: 'funny', tagName: 'Funny' },
 ];
 let COLL_ADD_KIND = null; // which Stats row ("playlist" | "award") has its add panel open
+// #405: which Notes-container lead-attribute dropdown (keyed "who:field",
+// e.g. "semi:flag", "uke:personality") has its pool open, same
+// one-open-at-a-time pattern as COLL_ADD_KIND above.
+let NOTES_PICK_OPEN = null;
+// #408: whether the Stats container's Flags dropdown pool is open --
+// same one-open-at-a-time idea as COLL_ADD_KIND/NOTES_PICK_OPEN, just a
+// plain boolean since there's only ever one Flags row per entry.
+let STATS_FLAGS_OPEN = false;
 let COLL_EDIT_MODE = false; // playlist page: show the remove (x) buttons on covers
 
 function ensureSystemCollections() {
@@ -3827,20 +3850,31 @@ function renderCollectionPage() {
     ${renderBottomNav('home')}`;
 }
 
-/* Detail page -> Stats: "Playlist" and "Awards" rows (pink label on the
-   left like Shelf/Format/etc). Blue chips for each one the read is in
-   (tap = open that page); an empty light-pink bar when it's in none; and a
-   "+ NEW ..." chip that opens a tag-style picker of existing ones plus a
-   box to type a brand-new one. */
+/* Detail page -> Stats: "Playlist" and "Awards" rows.
+   #404: converted to a dropdown per her request, same pattern as the home
+   page's "🏷️ Tags" multiselect (.tag-ms-toggle button + .tag-ms-panel) --
+   the closed button shows a summary of what this read is currently in
+   (or an "+ Add ..." prompt when it's in none), and clicking it opens the
+   panel below with every playlist/award to toggle it on/off for this
+   read, same data-toggle-coll handler as before.
+   #408: her follow-up design pass -- the toggle is now cyan, not pink
+   (her standing rule: dropdowns are cyan, buttons are pink), matching
+   the Shelf/Story Status/Format/Style selects right above it; the pool
+   itself is a plain list of rows (.tag-pool/.tag-pool-chip are
+   restyled that way app-wide now, see styles.css) instead of a grid of
+   colorful pill buttons; and once more than one playlist/award is
+   active, they show as chips filling the row -- same .tag-chip.readonly
+   look as the Tags container -- instead of being crammed as comma-joined
+   text inside the toggle itself. */
 function statsCollectionRowHtml(e, kind) {
   const label = kind === 'award' ? 'Awards' : 'Playlist';
   const mine = entryCollections(e, kind);
-  const chips = mine.length
-    ? mine.map((c) => `<button type="button" class="coll-chip" data-coll-open="${escapeHtml(c.id)}">${escapeHtml(c.name)}</button>`).join('')
-    : `<div class="coll-empty-bar"></div>`;
-  const addChip = `<button type="button" class="tag-chip add-tag-chip coll-add-chip ${COLL_ADD_KIND === kind ? 'active' : ''}" data-coll-add-toggle="${kind}">+ NEW ${kind === 'award' ? 'AWARD' : 'PLAYLIST'}</button>`;
+  const isOpen = COLL_ADD_KIND === kind;
+  const toggleLabel = mine.length === 1 ? mine[0].name : (mine.length ? label : `+ Add ${kind === 'award' ? 'award' : 'playlist'}`);
+  const toggleBtn = `<button type="button" class="tag-ms-toggle cyan-ms-toggle ${isOpen ? 'active' : ''}" data-coll-add-toggle="${kind}">${escapeHtml(toggleLabel)} <span class="chevron">${isOpen ? '▴' : '▾'}</span></button>`;
+  const chipsRow = mine.length > 1 ? `<div class="lead-pick-chips">${mine.map((c) => `<div class="tag-chip readonly" data-toggle-coll="${escapeHtml(c.id)}" title="Click to remove">${escapeHtml(c.name)}</div>`).join('')}</div>` : '';
   let panel = '';
-  if (COLL_ADD_KIND === kind) {
+  if (isOpen) {
     // Offer every active (non-hidden) collection to add to, plus any hidden
     // one this read is already in (so it can still be removed from here) --
     // a hidden collection otherwise shouldn't show up as something new to
@@ -3859,7 +3893,39 @@ function statsCollectionRowHtml(e, kind) {
       </div>`;
   }
   return `<div class="stats-row"><div class="stats-row-label">${label}</div><div class="stats-row-content coll-row-content">
-      <div class="coll-chip-wrap">${chips}${addChip}</div>${panel}
+      ${toggleBtn}${chipsRow}${panel}
+    </div></div>`;
+}
+
+// #408: Stats container's Flags row -- converted from a squished row of
+// pink toggle buttons into the same cyan dropdown pattern as everything
+// else in this container, per her follow-up ("the flags is not a
+// dropdown like the rest"). Each flag keeps its own existing boolean
+// toggle handler (data-toggle-hentai/-hd/-fav/-artwork) completely
+// unchanged -- only the markup around them changed, from an always-visible
+// button grid to a closed toggle (title, or the single active flag's
+// label, or the title again once more than one is active) + a plain pool
+// list when open, with active flags shown as chips (same look as the
+// Tags container) once there's more than one.
+function statsFlagsRowHtml(e) {
+  const items = [
+    { key: 'hentai', icon: '💦', label: 'NSFW', on: isHentai(e), attr: 'data-toggle-hentai="1"', show: !isSFW() },
+    { key: 'hd', icon: '💾', label: 'On HD', on: isOnDrive(e), attr: 'data-toggle-hd="1"', show: true },
+    { key: 'fav', icon: e.favorite ? '💜' : '🤍', label: 'Favorite', on: !!e.favorite, attr: 'data-toggle-fav="1"', show: true },
+    { key: 'artwork', icon: '🎨', label: 'Artwork', on: isArtwork(e), attr: 'data-toggle-artwork="1"', show: true },
+  ].filter((i) => i.show);
+  const selected = items.filter((i) => i.on);
+  const isOpen = STATS_FLAGS_OPEN;
+  const toggleLabel = selected.length === 1 ? `${selected[0].icon} ${selected[0].label}` : 'Flags';
+  const toggleBtn = `<button type="button" class="tag-ms-toggle cyan-ms-toggle ${isOpen ? 'active' : ''}" data-flags-toggle="1">${toggleLabel} <span class="chevron">${isOpen ? '▴' : '▾'}</span></button>`;
+  const chipsRow = selected.length > 1 ? `<div class="lead-pick-chips">${selected.map((i) => `<div class="tag-chip readonly" ${i.attr} title="Click to remove">${i.icon} ${i.label}</div>`).join('')}</div>` : '';
+  let panel = '';
+  if (isOpen) {
+    const pool = items.map((i) => `<span class="tag-pool-chip ${i.on ? 'active' : ''}" ${i.attr}>${i.icon} ${i.label}</span>`).join('');
+    panel = `<div class="tag-ms-panel open" style="margin-top:6px;width:100%;"><div class="tag-pool">${pool}</div></div>`;
+  }
+  return `<div class="stats-row"><div class="stats-row-label">Flags</div><div class="stats-row-content coll-row-content">
+      ${toggleBtn}${chipsRow}${panel}
     </div></div>`;
 }
 
@@ -3927,6 +3993,10 @@ function attachCollectionHandlers(root) {
   });
   root.querySelectorAll('[data-coll-add-toggle]').forEach((el) => {
     el.onclick = () => { const k = el.getAttribute('data-coll-add-toggle'); COLL_ADD_KIND = COLL_ADD_KIND === k ? null : k; render(); };
+  });
+  // #408: Stats container's Flags dropdown open/close toggle.
+  root.querySelectorAll('[data-flags-toggle]').forEach((el) => {
+    el.onclick = () => { STATS_FLAGS_OPEN = !STATS_FLAGS_OPEN; render(); };
   });
   root.querySelectorAll('[data-toggle-coll]').forEach((el) => {
     el.onclick = async () => {
@@ -8219,13 +8289,36 @@ function renderMultiPicker(options, current, who, dataAttr) {
   return options.map((opt) => {
     const value = typeof opt === 'string' ? opt : opt.value;
     const label = typeof opt === 'string' ? `${opt[0].toUpperCase()}${opt.slice(1)}` : opt.label;
-    // #402: label wrapped in its own <span> so the horizontal Notes layout
-    // (energy-row-h) can ellipsis-truncate long multi-word labels (Black Cat
-    // Energy, etc.) to keep the button one line item tall -- text-overflow
-    // doesn't reliably clip a flex container's text directly, it needs an
-    // inner block element to apply to.
+    // #402/#403: label wrapped in its own <span> so fitFlagButtonRows() below
+    // can measure and shrink it -- per her explicit rule, these buttons never
+    // truncate with an ellipsis; the font just shrinks until the full label
+    // fits on one line.
     return `<button type="button" class="lead-flag-btn ${arr.includes(value) ? 'active' : ''}" data-${dataAttr}="${who}:${value}" title="${label}"><span>${label}</span></button>`;
   }).join('');
+}
+// #403: her standing rule -- a row of buttons filling a line item (any
+// .flag-picker-h row in the Notes container) must never show "..." on a
+// label; the full text always has to be visible. Since button count/labels
+// here vary (and will keep changing as she rearranges rows), font-size is
+// fit dynamically instead of relying on a hand-picked size per row. Shrinks
+// the whole row together (not per-button) so every button in a row reads at
+// the same size, resets to the CSS base size first so repeated renders don't
+// ratchet it down further each time, and floors at 6px as a sanity limit.
+function fitFlagButtonRows(root) {
+  if (!root) return;
+  root.querySelectorAll('.flag-picker-h').forEach((row) => {
+    const spans = Array.from(row.querySelectorAll('.lead-flag-btn span'));
+    if (!spans.length) return;
+    spans.forEach((s) => { s.style.fontSize = ''; });
+    let size = Math.min(...spans.map((s) => parseFloat(getComputedStyle(s).fontSize)));
+    const fits = () => spans.every((s) => s.scrollWidth <= s.parentElement.clientWidth - 4);
+    let guard = 0;
+    while (!fits() && size > 6 && guard < 40) {
+      size -= 0.5;
+      spans.forEach((s) => { s.style.fontSize = size + 'px'; });
+      guard++;
+    }
+  });
 }
 function renderPositionPicker(current, who) { return renderMultiPicker(LEAD_POSITIONS, current, who, 'position-pick'); }
 function renderBodyTypePicker(current, who) { return renderMultiPicker(LEAD_BODY_TYPES, current, who, 'bodytype-pick'); }
@@ -8233,6 +8326,51 @@ function renderDynamicPicker(current, who) { return renderMultiPicker(LEAD_DYNAM
 function renderTemperamentPicker(current, who) { return renderMultiPicker(LEAD_TEMPERAMENTS, current, who, 'temperament-pick'); }
 function renderArchetypePicker(current, who) { return renderMultiPicker(LEAD_ARCHETYPES, current, who, 'archetype-pick'); }
 function renderEnergyPicker(current, who) { return renderMultiPicker(LEAD_ENERGY, current, who, 'energy-pick'); }
+
+// #405: Notes container's lead-attribute button rows condensed into
+// dropdowns to save space (especially on mobile), per her request -- same
+// .tag-ms-toggle/.tag-ms-panel pattern as the Playlist/Award rows and the
+// home page's Tags filter. The closed toggle shows the category title
+// (e.g. "Flag") until something's picked, then shows that pick instead;
+// Personality merges Temperament+Archetype+Energy into one dropdown (all
+// three read as "personality" to her) and so can rack up several picks at
+// once -- once there's more than one, they display filling the row as
+// tag-style chips (same look as the Tags container) instead of cramming
+// them into the toggle's own label; tapping one of those chips untoggles
+// it directly without reopening the dropdown. `groups` is normally a
+// single {options,current,dataAttr} entry, but Personality passes all
+// three so they pool/summarize together under one toggle -- each option
+// still carries its original data attribute, so the existing
+// per-attribute click-handler loop (wired by attribute name, not by which
+// dropdown rendered it) and the dedicated flag-pick handler both keep
+// working completely unchanged.
+// #408: the toggle is cyan, not pink (her standing rule: dropdowns are
+// cyan, buttons are pink), matching the Shelf/Story Status/Format/Style
+// selects right above it in the Stats container.
+function renderLeadPickDropdown(who, title, groups, openKeySuffix) {
+  const openKey = `${who}:${openKeySuffix}`;
+  const isOpen = NOTES_PICK_OPEN === openKey;
+  const items = [];
+  groups.forEach((g) => {
+    const arr = toPickArray(g.current);
+    g.options.forEach((opt) => {
+      const value = typeof opt === 'string' ? opt : opt.value;
+      const label = typeof opt === 'string' ? `${opt[0].toUpperCase()}${opt.slice(1)}` : opt.label;
+      items.push({ value, label, dataAttr: g.dataAttr, on: arr.includes(value) });
+    });
+  });
+  const selected = items.filter((i) => i.on);
+  const chipHtml = (i) => `<div class="tag-chip readonly" data-${i.dataAttr}="${who}:${i.value}" title="Click to remove">${escapeHtml(i.label)}</div>`;
+  const toggleLabel = selected.length === 1 ? escapeHtml(selected[0].label) : escapeHtml(title);
+  const toggleBtn = `<button type="button" class="tag-ms-toggle cyan-ms-toggle lead-pick-toggle ${isOpen ? 'active' : ''}" data-lead-pick-toggle="${openKey}">${toggleLabel} <span class="chevron">${isOpen ? '▴' : '▾'}</span></button>`;
+  const chipsRow = selected.length > 1 ? `<div class="lead-pick-chips">${selected.map(chipHtml).join('')}</div>` : '';
+  let panel = '';
+  if (isOpen) {
+    const pool = items.map((i) => `<span class="tag-pool-chip ${i.on ? 'active' : ''}" data-${i.dataAttr}="${who}:${i.value}">${escapeHtml(i.label)}</span>`).join('');
+    panel = `<div class="tag-ms-panel open lead-pick-panel"><div class="tag-pool">${pool}</div></div>`;
+  }
+  return `<div class="lead-pick-dropdown">${toggleBtn}${chipsRow}${panel}</div>`;
+}
 
 function renderCharPhoto(photo) {
   return photo ? `<img src="${photo}" alt="">` : '📷';
@@ -8394,11 +8532,25 @@ function renderTagCloudReadOnly(e) {
 }
 
 function renderTagChipsInline(e) {
-  // #361: group the entry's tags into the 4 fixed sections (Couple/Themes/
-  // Smut/General) per the confirmed tag-categorization mapping, each with
-  // its own pink section-header button, a borderless bunch of that
-  // section's tags, and its own "+ NEW TAG" affordance (all wired to the
-  // same shared TAG_ADD_MODE add-panel below).
+  // #361: group the entry's tags into the fixed sections (Couple/Smut/
+  // General/etc.) per the confirmed tag-categorization mapping, each with
+  // its own pink section-header, a borderless bunch of that section's
+  // tags, and its own add-panel (all wired to the same shared
+  // TAG_ADD_MODE add-panel below).
+  // #407: the section header is now the dropdown toggle itself (her
+  // "make the tags drop down instead of the tag box" follow-up -- the
+  // original #361 "+ NEW TAG" chip already opened an alphabetical pool to
+  // pick from, but it sat as a small chip among the tags rather than
+  // reading as a dropdown; this reuses the exact same add panel/pool,
+  // just moves its open/close affordance onto the section header button
+  // itself). The section's own already-added tags stay visible underneath
+  // as chips at all times (that's the entry's actual data, not something
+  // to hide behind a toggle) -- only the "pick another tag" pool is what
+  // opens/closes.
+  // #408: no chevron on this one, per her follow-up -- it stays the plain
+  // pink section-header block she already had, just clickable now; the
+  // other dropdowns in this container keep their chevron since she only
+  // flagged this one as cluttered.
   const all = (e.tags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: false }))
     .concat((e.customTags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: true })));
   const bySection = newTagBuckets();
@@ -8406,12 +8558,12 @@ function renderTagChipsInline(e) {
   const sectionOrder = tagSectionOrder();
   return sectionOrder.map((sec) => {
     const chips = bySection[sec].map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}" data-remove-tag="${escapeHtml(t)}" title="Click to remove">${escapeHtml(capTag(t))}</div>`).join('');
-    const addChip = `<div class="tag-chip add-tag-chip ${TAG_ADD_SECTION === sec ? 'active' : ''}" data-tag-add-toggle="${sec}">+ NEW TAG</div>`;
+    const isOpen = TAG_ADD_SECTION === sec;
     return `<div class="tag-section-row">
-      <div class="tag-section-header">${sec}</div>
-      <div class="tag-section-tags">${chips}${addChip}</div>
+      <button type="button" class="tag-section-header tag-section-header-toggle ${isOpen ? 'active' : ''}" data-tag-add-toggle="${sec}">${sec}</button>
+      <div class="tag-section-tags">${chips}</div>
     </div>
-    ${TAG_ADD_SECTION === sec ? renderTagAddPanelForSection(e, sec) : ''}`;
+    ${isOpen ? renderTagAddPanelForSection(e, sec) : ''}`;
   }).join('');
 }
 
@@ -8650,18 +8802,14 @@ function renderDetail(e) {
           <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
         </div>
         <div class="stats-rows">
-        <!-- #402: Shelf/Story Status/Format/Style converted from button rows to
-             dropdowns per her request; Flags below stays buttons on purpose. -->
+        <!-- #402/#408: Shelf/Story Status/Format/Style/Flags all converted
+             from button rows to the same cyan dropdown pattern per her
+             request. -->
         <div class="stats-row"><div class="stats-row-label">Shelf</div><div class="stats-row-content">${shelfSelect}</div></div>
         <div class="stats-row"><div class="stats-row-label">Story Status</div><div class="stats-row-content">${statusSelect}</div></div>
         <div class="stats-row"><div class="stats-row-label">Format</div><div class="stats-row-content">${mediaFormatSelect}</div></div>
         <div class="stats-row"><div class="stats-row-label">Style</div><div class="stats-row-content">${styleSelect}</div></div>
-        <div class="stats-row"><div class="stats-row-label">Flags</div><div class="stats-row-content" style="display:flex;gap:8px;flex-wrap:wrap;">
-            ${!isSFW() ? `<button type="button" class="ref-btn ${isHentai(e) ? 'active' : ''}" style="flex:1;" data-toggle-hentai="1">💦 NSFW</button>` : ''}
-            <button type="button" class="ref-btn ${isOnDrive(e) ? 'active' : ''}" style="flex:1;" data-toggle-hd="1">💾 On HD</button>
-            <button type="button" class="ref-btn ${e.favorite ? 'active' : ''}" style="flex:1;" data-toggle-fav="1">${e.favorite ? '💜' : '🤍'} Favorite</button>
-            <button type="button" class="ref-btn ${isArtwork(e) ? 'active' : ''}" style="flex:1;" data-toggle-artwork="1">🎨 Artwork</button>
-        </div></div>
+        ${statsFlagsRowHtml(e)}
         ${statsCollectionRowHtml(e, 'playlist')}
         ${statsCollectionRowHtml(e, 'award')}
         </div>
@@ -8709,44 +8857,20 @@ function renderDetail(e) {
         <!-- #402: Main Lead/Main Character stack full-width instead of
              sitting side-by-side, each laid out horizontally per her
              mockup -- title+name/age fill the top line item, a tall photo
-             on the left spans the button rows, and the multi-select rows
-             pack two categories per line where the mockup shows them
-             paired (Flag+Position / Dynamic+BodyType / Temperament alone /
-             Archetype+Energy). notes-lead-col/-head classes kept alongside
-             the new ones purely for the data-flag border-color CSS below. -->
+             on the left spans the dropdown rows. notes-lead-col/-head
+             classes kept alongside the new ones purely for the data-flag
+             border-color CSS below.
+             #405: the Flag/Position/2nd Gender/Physique/Temperament/
+             Archetype/Energy button rows are now dropdowns
+             (renderLeadPickDropdown), condensed into 3 line items per her
+             follow-up request -- Flag+Position, 2nd Gender(dynamic)+
+             Physique(bodyType), and a single merged "Personality" dropdown
+             covering Temperament+Archetype+Energy together (all three read
+             as "personality" to her). Each dropdown still toggles the
+             exact same e.semi/e.uke field array as the old buttons did.
+             #406: Main Character now renders above Main Lead, per her
+             follow-up. -->
         <div class="notes-lead-cols-h">
-          <div class="notes-lead-block-h" data-flag="${e.semi.flag || ''}">
-            <div class="notes-lead-top-row">
-              <div class="notes-lead-title-h">MAIN LEAD</div>
-              <div class="notes-lead-nameage-row-h">
-                <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="semi" value="${escapeHtml(e.semi.name || '')}">
-                <input type="text" class="lead-age-input" placeholder="age" data-lead-age="semi" value="${escapeHtml(e.semi.age || '')}">
-              </div>
-            </div>
-            <div class="notes-lead-body-h">
-              <label class="char-photo-slot polaroid-frame notes-lead-photo-h" style="cursor:pointer;">
-                ${renderCharPhoto(e.semi.photo)}
-                <input type="file" accept="image/*" style="display:none" data-char-photo="semi">
-              </label>
-              <div class="notes-lead-buttons-h">
-                <div class="flag-picker-h">
-                  ${!isSFW() ? renderFlagPicker(e.semi.flag, 'semi') : ''}
-                  ${renderPositionPicker(e.semi.position, 'semi')}
-                </div>
-                <div class="flag-picker-h">
-                  ${renderDynamicPicker(e.semi.dynamic, 'semi')}
-                  ${renderBodyTypePicker(e.semi.bodyType, 'semi')}
-                </div>
-                <div class="flag-picker-h">
-                  ${renderTemperamentPicker(e.semi.temperament, 'semi')}
-                </div>
-                <div class="flag-picker-h energy-row-h">
-                  ${renderArchetypePicker(e.semi.archetype, 'semi')}
-                  ${renderEnergyPicker(e.semi.energy, 'semi')}
-                </div>
-              </div>
-            </div>
-          </div>
           <div class="notes-lead-block-h" data-flag="${e.uke.flag || ''}">
             <div class="notes-lead-top-row">
               <div class="notes-lead-title-h">MAIN CHARACTER</div>
@@ -8762,25 +8886,57 @@ function renderDetail(e) {
               </label>
               <div class="notes-lead-buttons-h">
                 <div class="flag-picker-h">
-                  ${!isSFW() ? renderFlagPicker(e.uke.flag, 'uke') : ''}
-                  ${renderPositionPicker(e.uke.position, 'uke')}
+                  ${!isSFW() ? renderLeadPickDropdown('uke', 'Flag', [{ options: FLAG_COLORS, current: e.uke.flag, dataAttr: 'flag-pick' }], 'flag') : ''}
+                  ${renderLeadPickDropdown('uke', 'Position', [{ options: LEAD_POSITIONS, current: e.uke.position, dataAttr: 'position-pick' }], 'position')}
                 </div>
                 <div class="flag-picker-h">
-                  ${renderDynamicPicker(e.uke.dynamic, 'uke')}
-                  ${renderBodyTypePicker(e.uke.bodyType, 'uke')}
+                  ${renderLeadPickDropdown('uke', '2nd Gender', [{ options: LEAD_DYNAMICS, current: e.uke.dynamic, dataAttr: 'dynamic-pick' }], 'dynamic')}
+                  ${renderLeadPickDropdown('uke', 'Physique', [{ options: LEAD_BODY_TYPES, current: e.uke.bodyType, dataAttr: 'bodytype-pick' }], 'bodytype')}
                 </div>
                 <div class="flag-picker-h">
-                  ${renderTemperamentPicker(e.uke.temperament, 'uke')}
+                  ${renderLeadPickDropdown('uke', 'Personality', [
+                    { options: LEAD_TEMPERAMENTS, current: e.uke.temperament, dataAttr: 'temperament-pick' },
+                    { options: LEAD_ARCHETYPES, current: e.uke.archetype, dataAttr: 'archetype-pick' },
+                    { options: LEAD_ENERGY, current: e.uke.energy, dataAttr: 'energy-pick' },
+                  ], 'personality')}
                 </div>
-                <div class="flag-picker-h energy-row-h">
-                  ${renderArchetypePicker(e.uke.archetype, 'uke')}
-                  ${renderEnergyPicker(e.uke.energy, 'uke')}
+              </div>
+            </div>
+          </div>
+          <div class="notes-lead-block-h" data-flag="${e.semi.flag || ''}">
+            <div class="notes-lead-top-row">
+              <div class="notes-lead-title-h">MAIN LEAD</div>
+              <div class="notes-lead-nameage-row-h">
+                <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="semi" value="${escapeHtml(e.semi.name || '')}">
+                <input type="text" class="lead-age-input" placeholder="age" data-lead-age="semi" value="${escapeHtml(e.semi.age || '')}">
+              </div>
+            </div>
+            <div class="notes-lead-body-h">
+              <label class="char-photo-slot polaroid-frame notes-lead-photo-h" style="cursor:pointer;">
+                ${renderCharPhoto(e.semi.photo)}
+                <input type="file" accept="image/*" style="display:none" data-char-photo="semi">
+              </label>
+              <div class="notes-lead-buttons-h">
+                <div class="flag-picker-h">
+                  ${!isSFW() ? renderLeadPickDropdown('semi', 'Flag', [{ options: FLAG_COLORS, current: e.semi.flag, dataAttr: 'flag-pick' }], 'flag') : ''}
+                  ${renderLeadPickDropdown('semi', 'Position', [{ options: LEAD_POSITIONS, current: e.semi.position, dataAttr: 'position-pick' }], 'position')}
+                </div>
+                <div class="flag-picker-h">
+                  ${renderLeadPickDropdown('semi', '2nd Gender', [{ options: LEAD_DYNAMICS, current: e.semi.dynamic, dataAttr: 'dynamic-pick' }], 'dynamic')}
+                  ${renderLeadPickDropdown('semi', 'Physique', [{ options: LEAD_BODY_TYPES, current: e.semi.bodyType, dataAttr: 'bodytype-pick' }], 'bodytype')}
+                </div>
+                <div class="flag-picker-h">
+                  ${renderLeadPickDropdown('semi', 'Personality', [
+                    { options: LEAD_TEMPERAMENTS, current: e.semi.temperament, dataAttr: 'temperament-pick' },
+                    { options: LEAD_ARCHETYPES, current: e.semi.archetype, dataAttr: 'archetype-pick' },
+                    { options: LEAD_ENERGY, current: e.semi.energy, dataAttr: 'energy-pick' },
+                  ], 'personality')}
                 </div>
               </div>
             </div>
           </div>
         </div>
-        
+
         <div class="notes-toolbar">
           <button type="button" class="notes-fmt-btn" data-notes-cmd="bold" title="Bold"><b>B</b></button>
           <button type="button" class="notes-fmt-btn" data-notes-cmd="italic" title="Italic"><i>I</i></button>
@@ -10401,6 +10557,16 @@ function attachRootHandlers() {
         await saveEntry(e); render();
       };
     });
+  });
+  // #405: opens/closes a Notes-container lead-attribute dropdown (Flag,
+  // Position, 2nd Gender, Physique, Personality) -- same one-open-at-a-time
+  // pattern as COLL_ADD_KIND for the Stats container's Playlist/Award rows.
+  root.querySelectorAll('[data-lead-pick-toggle]').forEach((el) => {
+    el.onclick = () => {
+      const key = el.getAttribute('data-lead-pick-toggle');
+      NOTES_PICK_OPEN = NOTES_PICK_OPEN === key ? null : key;
+      render();
+    };
   });
   root.querySelectorAll('[data-char-notes]').forEach((el) => {
     attachBulletTextarea(el);
