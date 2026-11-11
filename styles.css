@@ -518,8 +518,12 @@ font-size: 13px; color: var(--text); text-transform: uppercase; letter-spacing: 
 background: var(--pink); border: 2px solid var(--border); border-radius: 0;
 padding: 9px 10px; box-shadow: 4px 4px 0 var(--border); margin-bottom: 0;
 }
-.rating-icons { display: flex; flex-direction: column-reverse; justify-content: flex-end; align-items: stretch; gap: 4px; cursor: pointer; padding: 0 2px; }
-.rating-icons span { flex: 0 0 auto; height: 26px; font-size: 0; background: var(--pink-soft); border: 2px solid var(--border); border-radius: 0; opacity: 1; transition: background .12s ease; }
+/* #402: reoriented horizontal (row of boxes filling the line item) to match
+   the Stats container's layout, instead of the old vertical bar-graph
+   stack -- see .rating-grid/.rating-block above, now unused but left in
+   place in case anything else still references them. */
+.rating-icons { display: flex; flex-direction: row; align-items: stretch; gap: 4px; cursor: pointer; padding: 0 2px; width: 100%; }
+.rating-icons span { flex: 1 1 auto; height: 26px; font-size: 0; background: var(--pink-soft); border: 2px solid var(--border); border-radius: 0; opacity: 1; transition: background .12s ease; }
 .rating-icons span.filled { background: var(--purple); }
 
 .char-cols { display: flex; gap: 12px; }
@@ -1040,6 +1044,42 @@ body[data-bg="grid"] .app-header, body[data-bg="grid-blue"] .app-header, body[da
 .notes-lead-col[data-flag="green"] .lead-name-input, .notes-lead-col[data-flag="green"] .lead-age-input { border-color: #1e6b3a; background: #d6ecdd; color: #000; }
 .notes-lead-col[data-flag="red"] .lead-name-input, .notes-lead-col[data-flag="red"] .lead-age-input { border-color: #b71c1c; background: #f6d6d6; color: #000; }
 .notes-lead-col[data-flag="black"] .lead-name-input, .notes-lead-col[data-flag="black"] .lead-age-input { border-color: #000; background: #dcdcdc; color: #000; }
+
+/* #402: Notes container horizontal redesign -- Main Lead/Main Character
+   each stack full-width (title+name/age on top, a tall photo on the left
+   with the button rows filling the rest of the space to its right),
+   replacing the old side-by-side two-column layout. */
+.notes-lead-cols-h { display: flex; flex-direction: column; gap: 20px; margin-bottom: 4px; }
+.notes-lead-top-row { display: flex; gap: 8px; align-items: stretch; margin-bottom: 8px; }
+.notes-lead-title-h {
+  flex: 0 0 160px; display: flex; align-items: center; justify-content: center; text-align: center;
+  background: var(--pink); color: var(--text); border: 3px solid var(--border); border-radius: 0;
+  box-shadow: 3px 3px 0 var(--border); font-weight: 800; text-transform: uppercase; font-size: 12px;
+  padding: 8px 4px; letter-spacing: .02em;
+}
+.notes-lead-nameage-row-h { flex: 1; display: flex; gap: 8px; min-width: 0; }
+.notes-lead-nameage-row-h .lead-name-input { flex: 1; width: auto; margin: 0; }
+.notes-lead-nameage-row-h .lead-age-input { flex: 0 0 60px; width: 60px; margin: 0; }
+.notes-lead-body-h { display: flex; gap: 8px; align-items: stretch; }
+.notes-lead-photo-h { flex: 0 0 160px; width: 160px; aspect-ratio: auto; height: auto; margin: 0; }
+.notes-lead-buttons-h { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; justify-content: space-between; }
+.flag-picker-h { display: flex; gap: 8px; width: 100%; margin: 0; }
+.flag-picker-h .lead-flag-btn { flex: 1; min-width: 0; }
+/* Multi-word labels (Black Cat Energy / Golden Retriever Energy) get a
+   smaller, non-wrapping label so the button stays one line item tall
+   instead of wrapping to two, per her explicit note on the mockup. */
+.flag-picker-h.energy-row-h .lead-flag-btn { font-size: 8px; letter-spacing: 0; padding: 8px 2px; }
+.flag-picker-h.energy-row-h .lead-flag-btn span { display: block; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notes-lead-block-h[data-flag="green"] .polaroid-frame { border: 7px solid #1e6b3a; }
+.notes-lead-block-h[data-flag="red"] .polaroid-frame { border: 7px solid #b71c1c; }
+.notes-lead-block-h[data-flag="black"] .polaroid-frame { border: 7px solid #000; }
+.notes-lead-block-h[data-flag="green"] .lead-name-input, .notes-lead-block-h[data-flag="green"] .lead-age-input { border-color: #1e6b3a; background: #d6ecdd; color: #000; }
+.notes-lead-block-h[data-flag="red"] .lead-name-input, .notes-lead-block-h[data-flag="red"] .lead-age-input { border-color: #b71c1c; background: #f6d6d6; color: #000; }
+.notes-lead-block-h[data-flag="black"] .lead-name-input, .notes-lead-block-h[data-flag="black"] .lead-age-input { border-color: #000; background: #dcdcdc; color: #000; }
+@media (max-width: 640px) {
+  .notes-lead-title-h, .notes-lead-photo-h { flex: 0 0 110px; width: 110px; font-size: 10.5px; }
+  .flag-picker-h.energy-row-h .lead-flag-btn { font-size: 7.5px; }
+}
 
 /* Rating container: 10 categories, 5 per row */
 .rating-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; row-gap: 18px; }

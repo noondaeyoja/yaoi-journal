@@ -3012,6 +3012,12 @@ function render() {
   // already been reset to 0 by the time this runs, and a same-page
   // background render just keeps wherever the user currently is.
   const __preRenderScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+  // #402: same idea as __preRenderScrollY above, but for the Tags container's
+  // own scrollable tag-pool box -- root.innerHTML below recreates that div
+  // from scratch, which would otherwise always reset ITS scroll to the top
+  // even though the outer page scroll is restored just fine.
+  const __prevTagPoolEl = document.getElementById('detail-tag-pool');
+  const __preRenderTagPoolScroll = __prevTagPoolEl ? __prevTagPoolEl.scrollTop : 0;
 document.body.dataset.bg = BG_MODE;
   const root = document.getElementById('view-root');
   if (!CURRENT_USER) {
@@ -3044,6 +3050,10 @@ document.body.dataset.bg = BG_MODE;
   attachDetailNavHandlers(root);
   resetHeaderScrollHide();
   if (__preRenderScrollY > 0) window.scrollTo(0, __preRenderScrollY);
+  if (__preRenderTagPoolScroll > 0) {
+    const tagPoolEl = document.getElementById('detail-tag-pool');
+    if (tagPoolEl) tagPoolEl.scrollTop = __preRenderTagPoolScroll;
+  }
 }
 
 /* #296: hide the page's sub-header (.app-header on most screens, or
@@ -3362,10 +3372,21 @@ async function createTagSection(name) {
 // this (not TAG_SECTION_ORDER directly) when rendering/resolving sections.
 function tagSectionOrder() {
   const base = [...TAG_SECTION_ORDER, ...CUSTOM_TAG_SECTIONS];
-  if (!Array.isArray(TAG_SECTION_CUSTOM_ORDER) || !TAG_SECTION_CUSTOM_ORDER.length) return base;
-  const baseSet = new Set(base);
-  const ordered = TAG_SECTION_CUSTOM_ORDER.filter((s) => baseSet.has(s));
-  base.forEach((s) => { if (!ordered.includes(s)) ordered.push(s); });
+  let ordered;
+  if (!Array.isArray(TAG_SECTION_CUSTOM_ORDER) || !TAG_SECTION_CUSTOM_ORDER.length) {
+    ordered = base;
+  } else {
+    const baseSet = new Set(base);
+    ordered = TAG_SECTION_CUSTOM_ORDER.filter((s) => baseSet.has(s));
+    base.forEach((s) => { if (!ordered.includes(s)) ordered.push(s); });
+  }
+  // #402: "Non Human" always sits directly under "Smut" per her request --
+  // enforced here (not persisted) so it holds regardless of creation order
+  // or how the built-in/custom sections otherwise get rearranged.
+  if (ordered.includes('Non Human') && ordered.includes('Smut') && ordered[ordered.indexOf('Smut') + 1] !== 'Non Human') {
+    ordered = ordered.filter((s) => s !== 'Non Human');
+    ordered.splice(ordered.indexOf('Smut') + 1, 0, 'Non Human');
+  }
   return ordered;
 }
 // Moves a section one slot earlier (-1) or later (+1) in the Manage
@@ -4265,10 +4286,16 @@ const TAG_SECTIONS = {
 // #389: user-approved expanded section list (Tags container + Tag Manager's
 // Manage tab). The first four are the original sections; the rest were added
 // after reviewing the tag-categorization proposal spreadsheet.
-const TAG_SECTION_ORDER = ['Couple', 'Smut', 'Setting', 'Format', 'Themes', 'General'];
+// #402: Themes folded into General per her request (same merge mechanism as
+// Appearance->Couple/Time Period->Setting below) -- dropped from the order
+// list itself so its header row no longer renders, and TAG_SECTION_ALIASES
+// routes anything still resolving to 'Themes' (built-in map or an old
+// section override) into 'General' instead.
+const TAG_SECTION_ORDER = ['Couple', 'Smut', 'Setting', 'Format', 'General'];
 // Sections merged later at the user's request: Appearance folded into Couple,
-// Time Period folded into Setting. Aliases keep older mappings/overrides valid.
-const TAG_SECTION_ALIASES = { 'Appearance': 'Couple', 'Time Period': 'Setting', 'Fandom': 'Format', 'Tropes': 'Couple', 'Occupation': 'Couple' };
+// Time Period folded into Setting, Themes folded into General. Aliases keep
+// older mappings/overrides valid.
+const TAG_SECTION_ALIASES = { 'Appearance': 'Couple', 'Time Period': 'Setting', 'Fandom': 'Format', 'Tropes': 'Couple', 'Occupation': 'Couple', 'Themes': 'General' };
 // #390: searchable merge-target picker for the Tag Manager's merge button.
 // Replaces the old free-text prompt(): shows a type-to-filter list of every
 // existing tag (except the one being merged) and resolves with the exact
@@ -8192,7 +8219,12 @@ function renderMultiPicker(options, current, who, dataAttr) {
   return options.map((opt) => {
     const value = typeof opt === 'string' ? opt : opt.value;
     const label = typeof opt === 'string' ? `${opt[0].toUpperCase()}${opt.slice(1)}` : opt.label;
-    return `<button type="button" class="lead-flag-btn ${arr.includes(value) ? 'active' : ''}" data-${dataAttr}="${who}:${value}" title="${label}">${label}</button>`;
+    // #402: label wrapped in its own <span> so the horizontal Notes layout
+    // (energy-row-h) can ellipsis-truncate long multi-word labels (Black Cat
+    // Energy, etc.) to keep the button one line item tall -- text-overflow
+    // doesn't reliably clip a flex container's text directly, it needs an
+    // inner block element to apply to.
+    return `<button type="button" class="lead-flag-btn ${arr.includes(value) ? 'active' : ''}" data-${dataAttr}="${who}:${value}" title="${label}"><span>${label}</span></button>`;
   }).join('');
 }
 function renderPositionPicker(current, who) { return renderMultiPicker(LEAD_POSITIONS, current, who, 'position-pick'); }
@@ -8511,7 +8543,7 @@ function renderDetail(e) {
   // (see topFieldsHtml below); the underlying shelf options are the same.
   const shelfSelect = `
     <select class="shelf-select status-pill-select" data-shelf-select="1">
-      ${SHELVES_READING.map((s) => `<option value="${escapeHtml(s)}" ${e.shelf === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+      ${SHELVES_READING.map((s) => `<option value="${escapeHtml(s)}" ${e.shelf === s ? 'selected' : ''}>${escapeHtml(shelfLabelForEntry(s, isReading))}</option>`).join('')}
     </select>`;
 
   // Media type dropdown (Manhwa/Manhua/Manga/Novel/Doujinshi/TV Show/Movie) —
@@ -8521,6 +8553,20 @@ function renderDetail(e) {
     <select class="shelf-select status-pill-select" data-mediaformat-select="1">
       <option value="" ${!e.mediaFormat ? 'selected' : ''}>—</option>
       ${MEDIA_FORMATS.map((f) => `<option value="${f.value}" ${e.mediaFormat === f.value ? 'selected' : ''}>${f.label}</option>`).join('')}
+    </select>`;
+
+  // #402: Story Status and Style (B&W/Color) dropdowns for the Stats
+  // container, same markup pattern as shelfSelect/mediaFormatSelect above.
+  const statusSelect = `
+    <select class="shelf-select status-pill-select" data-status-select="1">
+      <option value="" ${!e.status ? 'selected' : ''}>—</option>
+      ${['WIP', 'Finished', 'Discontinued'].map((s) => `<option value="${s}" ${e.status === s ? 'selected' : ''}>${s}</option>`).join('')}
+    </select>`;
+  const styleSelect = `
+    <select class="shelf-select status-pill-select" data-style-select="1">
+      <option value="" ${(!isBWStyle(e) && !isColorStyle(e)) ? 'selected' : ''}>—</option>
+      <option value="bw" ${isBWStyle(e) ? 'selected' : ''}>B&amp;W</option>
+      <option value="color" ${isColorStyle(e) ? 'selected' : ''}>Color</option>
     </select>`;
 
   // Display vs. edit mode for the top fields (Title, Alt Title, Novel, Author,
@@ -8604,21 +8650,12 @@ function renderDetail(e) {
           <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
         </div>
         <div class="stats-rows">
-        <div class="stats-row"><div class="stats-row-label">Shelf</div><div class="stats-row-content">
-          <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            ${SHELVES_READING.map((s) => `<button type="button" class="ref-btn ${e.shelf === s ? 'active' : ''}" style="flex:1 1 auto;" data-shelf-btn="${escapeHtml(s)}">${escapeHtml(shelfLabelForEntry(s, isReading))}</button>`).join('')}
-          </div>
-        </div></div>
-        <div class="stats-row"><div class="stats-row-label">Story Status</div><div class="stats-row-content">
-          <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;width:100%;">
-            ${['WIP','Finished','Discontinued'].map((s) => `<button type="button" class="ref-btn ${e.status === s ? 'active' : ''}" style="flex:1 1 auto;" data-status-btn="${s}">${s}</button>`).join('')}
-          </div>
-        </div></div>
-        <div class="stats-row"><div class="stats-row-label">Format</div><div class="stats-row-content"><div class="stats-format-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;width:100%;">${MEDIA_FORMATS.map((f) => `<button type="button" class="ref-btn ${e.mediaFormat === f.value ? 'active' : ''}" data-mediaformat-btn="${f.value}">${f.label}</button>`).join('')}</div></div></div>
-        <div class="stats-row"><div class="stats-row-label">Style</div><div class="stats-row-content" style="display:flex;gap:8px;">
-            <button type="button" class="ref-btn ${isBWStyle(e) ? 'active' : ''}" style="flex:1;" data-toggle-bw="1">B&amp;W</button>
-            <button type="button" class="ref-btn ${isColorStyle(e) ? 'active' : ''}" style="flex:1;" data-toggle-color="1">Color</button>
-        </div></div>
+        <!-- #402: Shelf/Story Status/Format/Style converted from button rows to
+             dropdowns per her request; Flags below stays buttons on purpose. -->
+        <div class="stats-row"><div class="stats-row-label">Shelf</div><div class="stats-row-content">${shelfSelect}</div></div>
+        <div class="stats-row"><div class="stats-row-label">Story Status</div><div class="stats-row-content">${statusSelect}</div></div>
+        <div class="stats-row"><div class="stats-row-label">Format</div><div class="stats-row-content">${mediaFormatSelect}</div></div>
+        <div class="stats-row"><div class="stats-row-label">Style</div><div class="stats-row-content">${styleSelect}</div></div>
         <div class="stats-row"><div class="stats-row-label">Flags</div><div class="stats-row-content" style="display:flex;gap:8px;flex-wrap:wrap;">
             ${!isSFW() ? `<button type="button" class="ref-btn ${isHentai(e) ? 'active' : ''}" style="flex:1;" data-toggle-hentai="1">💦 NSFW</button>` : ''}
             <button type="button" class="ref-btn ${isOnDrive(e) ? 'active' : ''}" style="flex:1;" data-toggle-hd="1">💾 On HD</button>
@@ -8645,47 +8682,21 @@ function renderDetail(e) {
           <div class="panel-title" style="margin:0;">Rating</div>
           <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
         </div>
-        <div class="rating-grid">
-          <div class="rating-block">
-            <div class="label">Overall</div>
-            <div class="rating-icons" data-rating="qualityRating">${renderRatingIcons(e.qualityRating, '❤️')}</div>
-          </div>
-          <div class="rating-block">
-            <div class="label">Visuals</div>
-            <div class="rating-icons" data-rating="visualsRating">${renderRatingIcons(e.visualsRating, '🎨')}</div>
-          </div>
-          <div class="rating-block">
-            <div class="label">Plot</div>
-            <div class="rating-icons" data-rating="plotRating">${renderRatingIcons(e.plotRating, '📖')}</div>
-          </div>
-          <div class="rating-block">
-            <div class="label">Ending</div>
-            <div class="rating-icons" data-rating="endingRating">${renderRatingIcons(e.endingRating, '🎬')}</div>
-          </div>
-          <div class="rating-block">
-            <div class="label">Romance</div>
-            <div class="rating-icons" data-rating="romanceRating">${renderRatingIcons(e.romanceRating, '💕')}</div>
-          </div>
-          <div class="rating-block">
-            <div class="label">${isSFW() ? 'Cute' : 'Smut'}</div>
-            <div class="rating-icons" data-rating="smutRating">${renderRatingIcons(e.smutRating, themeIcon())}</div>
-          </div>
-          <div class="rating-block">
-            <div class="label">Crying</div>
-            <div class="rating-icons" data-rating="cryRating">${renderRatingIcons(e.cryRating, '😭')}</div>
-          </div>
-          <div class="rating-block">
-            <div class="label">Laughing</div>
-            <div class="rating-icons" data-rating="lolRating">${renderRatingIcons(e.lolRating, '😂')}</div>
-          </div>
-          <div class="rating-block">
-            <div class="label">WTF</div>
-            <div class="rating-icons" data-rating="wtfRating">${renderRatingIcons(e.wtfRating, '🤯')}</div>
-          </div>
-          <div class="rating-block">
-            <div class="label">Darkness</div>
-            <div class="rating-icons" data-rating="darknessRating">${renderRatingIcons(e.darknessRating, '🌑')}</div>
-          </div>
+        <!-- #402: reoriented horizontal, matching the Stats container's
+             row style, per her request -- same .stats-row/.stats-row-label
+             classes, 5 boxes filling the content area to the end of the
+             line item instead of stacking as vertical bar-graph columns. -->
+        <div class="stats-rows">
+          <div class="stats-row"><div class="stats-row-label">Overall</div><div class="stats-row-content"><div class="rating-icons" data-rating="qualityRating">${renderRatingIcons(e.qualityRating, '❤️')}</div></div></div>
+          <div class="stats-row"><div class="stats-row-label">Visuals</div><div class="stats-row-content"><div class="rating-icons" data-rating="visualsRating">${renderRatingIcons(e.visualsRating, '🎨')}</div></div></div>
+          <div class="stats-row"><div class="stats-row-label">Plot</div><div class="stats-row-content"><div class="rating-icons" data-rating="plotRating">${renderRatingIcons(e.plotRating, '📖')}</div></div></div>
+          <div class="stats-row"><div class="stats-row-label">Ending</div><div class="stats-row-content"><div class="rating-icons" data-rating="endingRating">${renderRatingIcons(e.endingRating, '🎬')}</div></div></div>
+          <div class="stats-row"><div class="stats-row-label">Romance</div><div class="stats-row-content"><div class="rating-icons" data-rating="romanceRating">${renderRatingIcons(e.romanceRating, '💕')}</div></div></div>
+          <div class="stats-row"><div class="stats-row-label">${isSFW() ? 'Cute' : 'Smut'}</div><div class="stats-row-content"><div class="rating-icons" data-rating="smutRating">${renderRatingIcons(e.smutRating, themeIcon())}</div></div></div>
+          <div class="stats-row"><div class="stats-row-label">Crying</div><div class="stats-row-content"><div class="rating-icons" data-rating="cryRating">${renderRatingIcons(e.cryRating, '😭')}</div></div></div>
+          <div class="stats-row"><div class="stats-row-label">Laughing</div><div class="stats-row-content"><div class="rating-icons" data-rating="lolRating">${renderRatingIcons(e.lolRating, '😂')}</div></div></div>
+          <div class="stats-row"><div class="stats-row-label">WTF</div><div class="stats-row-content"><div class="rating-icons" data-rating="wtfRating">${renderRatingIcons(e.wtfRating, '🤯')}</div></div></div>
+          <div class="stats-row"><div class="stats-row-label">Darkness</div><div class="stats-row-content"><div class="rating-icons" data-rating="darknessRating">${renderRatingIcons(e.darknessRating, '🌑')}</div></div></div>
         </div>
       </div>
 
@@ -8695,42 +8706,78 @@ function renderDetail(e) {
           <div class="panel-title" style="margin:0;">Notes</div>
           <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
         </div>
-        <div class="notes-lead-cols">
-          <div class="notes-lead-col" data-flag="${e.semi.flag || ''}">
-            <div class="notes-lead-head">MAIN LEAD</div>
-            <label class="char-photo-slot polaroid-frame" style="cursor:pointer;">
-              ${renderCharPhoto(e.semi.photo)}
-              <input type="file" accept="image/*" style="display:none" data-char-photo="semi">
-            </label>
-            <div class="lead-name-row">
-              <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="semi" value="${escapeHtml(e.semi.name || '')}">
-              <input type="text" class="lead-age-input" placeholder="age" data-lead-age="semi" value="${escapeHtml(e.semi.age || '')}">
+        <!-- #402: Main Lead/Main Character stack full-width instead of
+             sitting side-by-side, each laid out horizontally per her
+             mockup -- title+name/age fill the top line item, a tall photo
+             on the left spans the button rows, and the multi-select rows
+             pack two categories per line where the mockup shows them
+             paired (Flag+Position / Dynamic+BodyType / Temperament alone /
+             Archetype+Energy). notes-lead-col/-head classes kept alongside
+             the new ones purely for the data-flag border-color CSS below. -->
+        <div class="notes-lead-cols-h">
+          <div class="notes-lead-block-h" data-flag="${e.semi.flag || ''}">
+            <div class="notes-lead-top-row">
+              <div class="notes-lead-title-h">MAIN LEAD</div>
+              <div class="notes-lead-nameage-row-h">
+                <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="semi" value="${escapeHtml(e.semi.name || '')}">
+                <input type="text" class="lead-age-input" placeholder="age" data-lead-age="semi" value="${escapeHtml(e.semi.age || '')}">
+              </div>
             </div>
-            ${!isSFW() ? `<div class="flag-picker">${renderFlagPicker(e.semi.flag, 'semi')}</div>` : ''}
-            <div class="flag-picker">${renderPositionPicker(e.semi.position, 'semi')}</div>
-            <div class="flag-picker">${renderBodyTypePicker(e.semi.bodyType, 'semi')}</div>
-            <div class="flag-picker">${renderDynamicPicker(e.semi.dynamic, 'semi')}</div>
-            <div class="flag-picker">${renderTemperamentPicker(e.semi.temperament, 'semi')}</div>
-            <div class="flag-picker">${renderArchetypePicker(e.semi.archetype, 'semi')}</div>
-            <div class="flag-picker">${renderEnergyPicker(e.semi.energy, 'semi')}</div>
+            <div class="notes-lead-body-h">
+              <label class="char-photo-slot polaroid-frame notes-lead-photo-h" style="cursor:pointer;">
+                ${renderCharPhoto(e.semi.photo)}
+                <input type="file" accept="image/*" style="display:none" data-char-photo="semi">
+              </label>
+              <div class="notes-lead-buttons-h">
+                <div class="flag-picker-h">
+                  ${!isSFW() ? renderFlagPicker(e.semi.flag, 'semi') : ''}
+                  ${renderPositionPicker(e.semi.position, 'semi')}
+                </div>
+                <div class="flag-picker-h">
+                  ${renderDynamicPicker(e.semi.dynamic, 'semi')}
+                  ${renderBodyTypePicker(e.semi.bodyType, 'semi')}
+                </div>
+                <div class="flag-picker-h">
+                  ${renderTemperamentPicker(e.semi.temperament, 'semi')}
+                </div>
+                <div class="flag-picker-h energy-row-h">
+                  ${renderArchetypePicker(e.semi.archetype, 'semi')}
+                  ${renderEnergyPicker(e.semi.energy, 'semi')}
+                </div>
+              </div>
+            </div>
           </div>
-          <div class="notes-lead-col" data-flag="${e.uke.flag || ''}">
-            <div class="notes-lead-head">MAIN CHARACTER</div>
-            <label class="char-photo-slot polaroid-frame" style="cursor:pointer;">
-              ${renderCharPhoto(e.uke.photo)}
-              <input type="file" accept="image/*" style="display:none" data-char-photo="uke">
-            </label>
-            <div class="lead-name-row">
-              <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="uke" value="${escapeHtml(e.uke.name || '')}">
-              <input type="text" class="lead-age-input" placeholder="age" data-lead-age="uke" value="${escapeHtml(e.uke.age || '')}">
+          <div class="notes-lead-block-h" data-flag="${e.uke.flag || ''}">
+            <div class="notes-lead-top-row">
+              <div class="notes-lead-title-h">MAIN CHARACTER</div>
+              <div class="notes-lead-nameage-row-h">
+                <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="uke" value="${escapeHtml(e.uke.name || '')}">
+                <input type="text" class="lead-age-input" placeholder="age" data-lead-age="uke" value="${escapeHtml(e.uke.age || '')}">
+              </div>
             </div>
-            ${!isSFW() ? `<div class="flag-picker">${renderFlagPicker(e.uke.flag, 'uke')}</div>` : ''}
-            <div class="flag-picker">${renderPositionPicker(e.uke.position, 'uke')}</div>
-            <div class="flag-picker">${renderBodyTypePicker(e.uke.bodyType, 'uke')}</div>
-            <div class="flag-picker">${renderDynamicPicker(e.uke.dynamic, 'uke')}</div>
-            <div class="flag-picker">${renderTemperamentPicker(e.uke.temperament, 'uke')}</div>
-            <div class="flag-picker">${renderArchetypePicker(e.uke.archetype, 'uke')}</div>
-            <div class="flag-picker">${renderEnergyPicker(e.uke.energy, 'uke')}</div>
+            <div class="notes-lead-body-h">
+              <label class="char-photo-slot polaroid-frame notes-lead-photo-h" style="cursor:pointer;">
+                ${renderCharPhoto(e.uke.photo)}
+                <input type="file" accept="image/*" style="display:none" data-char-photo="uke">
+              </label>
+              <div class="notes-lead-buttons-h">
+                <div class="flag-picker-h">
+                  ${!isSFW() ? renderFlagPicker(e.uke.flag, 'uke') : ''}
+                  ${renderPositionPicker(e.uke.position, 'uke')}
+                </div>
+                <div class="flag-picker-h">
+                  ${renderDynamicPicker(e.uke.dynamic, 'uke')}
+                  ${renderBodyTypePicker(e.uke.bodyType, 'uke')}
+                </div>
+                <div class="flag-picker-h">
+                  ${renderTemperamentPicker(e.uke.temperament, 'uke')}
+                </div>
+                <div class="flag-picker-h energy-row-h">
+                  ${renderArchetypePicker(e.uke.archetype, 'uke')}
+                  ${renderEnergyPicker(e.uke.energy, 'uke')}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
         
@@ -10250,7 +10297,12 @@ function attachRootHandlers() {
   const shelfSelectEl = root.querySelector('[data-shelf-select]');
   if (shelfSelectEl) shelfSelectEl.onchange = async () => {
     const e = getEntry(STATE.entryId);
+    const prevShelf = e.shelf;
     e.shelf = shelfSelectEl.value;
+    // #402: this dropdown replaced the Stats container's Shelf button row,
+    // so it needs the same completedAt-stamping the old button handler did
+    // (keeps the Completed shelf's "most recently finished first" sort working).
+    if (e.shelf === 'Completed' && prevShelf !== 'Completed') e.completedAt = new Date().toISOString();
     await saveEntry(e);
     showToast('Shelf updated');
     render();
@@ -10279,6 +10331,22 @@ function attachRootHandlers() {
     e.mediaFormat = mediaFormatSelectEl.value || null;
     await saveEntry(e);
     showToast('Format updated');
+    render();
+  };
+  // #402: Style dropdown replaces the old B&W/Color toggle-button pair --
+  // same underlying tag-based storage (isBWStyle/isColorStyle just check for
+  // the BW Coloring/Color tags), just driven by one 3-way select now instead
+  // of two independent toggle buttons.
+  const styleSelectEl = root.querySelector('[data-style-select]');
+  if (styleSelectEl) styleSelectEl.onchange = async () => {
+    const e = getEntry(STATE.entryId);
+    const val = styleSelectEl.value;
+    e.tags = (e.tags || []).filter((t) => normalizeTagKey(t) !== BW_STYLE_TAG_KEY && normalizeTagKey(t) !== COLOR_STYLE_TAG_KEY);
+    e.customTags = (e.customTags || []).filter((t) => normalizeTagKey(t) !== BW_STYLE_TAG_KEY && normalizeTagKey(t) !== COLOR_STYLE_TAG_KEY);
+    if (val === 'bw') e.customTags = [...e.customTags, 'BW Coloring'];
+    if (val === 'color') e.customTags = [...e.customTags, 'Color'];
+    await saveEntry(e);
+    showToast('Style updated');
     render();
   };
   root.querySelectorAll('[data-rating]').forEach((container) => {
@@ -10478,6 +10546,35 @@ function attachRootHandlers() {
     showToast('Tags saved!');
     render();
   };
+  // #402: fixes the reported "tag box scroll jump" bug. A touch-drag that
+  // starts on a tag-pool chip (while trying to scroll the pool) can still
+  // fire a synthetic click at touchend if the finger didn't move far enough
+  // for the browser to treat it as a scroll -- that mis-click toggled the
+  // tag under the finger, which called render() and rebuilt the whole page,
+  // which reset the (newly recreated) tag-pool's scroll back to the top.
+  // Tracking touch movement and swallowing the click once it looks like a
+  // drag stops that mis-click at the source, covering every .tag-pool box
+  // (detail tags, playlist/award add panel, home tag filter) the same way.
+  root.querySelectorAll('.tag-pool').forEach((pool) => {
+    let dragStart = null;
+    pool.addEventListener('touchstart', (ev) => {
+      const t = ev.touches[0];
+      dragStart = { x: t.clientX, y: t.clientY };
+      pool.dataset.dragged = '';
+    }, { passive: true });
+    pool.addEventListener('touchmove', (ev) => {
+      if (!dragStart) return;
+      const t = ev.touches[0];
+      if (Math.abs(t.clientX - dragStart.x) > 6 || Math.abs(t.clientY - dragStart.y) > 6) pool.dataset.dragged = '1';
+    }, { passive: true });
+    pool.addEventListener('click', (ev) => {
+      if (pool.dataset.dragged === '1') {
+        pool.dataset.dragged = '';
+        ev.stopPropagation();
+        ev.preventDefault();
+      }
+    }, true);
+  });
   root.querySelectorAll('[data-tag-add-toggle]').forEach((tagAddToggleBtn) => {
     tagAddToggleBtn.onclick = () => {
       const sec = tagAddToggleBtn.getAttribute('data-tag-add-toggle');
