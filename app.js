@@ -235,11 +235,21 @@ let ALL_REACTIONS = [];            // meme/reaction image library, in-memory cac
 let ALL_H_IMAGES = [];             // standalone H-tab uploads (not pulled from an entry), in-memory cache
 let DETAIL_EDIT_MODE = false;      // whether the detail page's top fields are in edit mode
 let TAG_EDIT_MODE = false;
-let TAG_ADD_MODE = false;       // whether the inline "+ NEW TAG" input is showing
-let TAG_ADD_SECTION = null;     // #369: which section's "+ NEW TAG" panel is open (null = closed)
+// #410: single source of truth for which dropdown is open ANYWHERE in the
+// app (her explicit rule: only one dropdown open at a time, period) --
+// replaces the pile of separate per-section flags this app used to juggle
+// (TAG_ADD_SECTION/TAG_ADD_MODE, COLL_ADD_KIND, NOTES_PICK_OPEN,
+// STATS_FLAGS_OPEN, and the homepage's own TAG_FILTER_OPEN/new home-flags
+// state). Every dropdown toggle checks `OPEN_DROPDOWN_ID === itsOwnKey` and
+// setting this to a new key automatically closes whatever else was open --
+// no section needs to know about any other section. Keys in use: 'home-
+// tags', 'home-flags', 'stats-shelf', 'stats-status', 'stats-format',
+// 'stats-style', 'stats-flags', 'coll:playlist', 'coll:award',
+// 'lead:<who>:<field>', 'tag:<section>'.
+let OPEN_DROPDOWN_ID = null;
 let TAG_ADD_AUTOFOCUS = false;  // one-shot: only steal focus into the tag input when the panel was just opened or a tag was just typed -- NOT on every background re-render (that was fighting clicks on tag-pool chips via scroll/refocus)         // whether the Tags panel is showing its editable (toggle/add/save) UI
 let TAG_ENTRIES_FILTER = null;     // which tag name the "view entries with this tag" screen is showing
-let TAG_FILTER_OPEN = false;       // whether the homepage tag multi-select dropdown panel is open
+// #410: TAG_FILTER_OPEN folded into OPEN_DROPDOWN_ID (key 'home-tags') --
 let FILTERS_COLLAPSED = false;     // whether the homepage search/tabs/format/Status/Tags/Ratings&Flags block is tucked away
 let SEARCH_INPUT_SHOULD_FOCUS = false; // one-shot flag: refocus the global search box after it causes a view jump
 let MEME_SEARCH_INPUT_SHOULD_FOCUS = false; // stays false on a fresh nav into Reactions so the mobile keyboard doesn't pop uninvited
@@ -2013,6 +2023,16 @@ function escapeHtml(s) {
 // that field working across BOTH eras of data: the ~1000+ existing entries
 // whose notes are still plain text with literal "\n" line breaks, and any
 // newly-edited entry whose notes are now real HTML.
+// #413: strips the old "› " / "💦 " line-start bullet markers that the
+// pre-rich-text-editor notes box used to auto-insert -- that method is
+// obsolete now that there's a real bullet-list button in the notes
+// toolbar, so this cleans up any still-baked-in markers wherever a line
+// happens to start (right after the very beginning of the string, or
+// right after a <br>/<div> line break), without touching the emoji if it
+// shows up mid-sentence as part of what she actually typed.
+function stripLegacyNoteBullets(html) {
+  return html.replace(/(^|<br\s*\/?>|<div>)[ \t]*[💦›][ \t]*/giu, '$1');
+}
 function notesToEditorHtml(raw) {
   const s = raw || '';
   if (!s) return '';
@@ -2020,11 +2040,11 @@ function notesToEditorHtml(raw) {
   // (.notes-editor has white-space:pre-wrap, so any stray literal "\n"
   // mixed in — e.g. from a merge separator — still renders as a line break
   // even though this branch skips the escape+<br> conversion below.)
-  if (/<(b|strong|i|em|u|ul|ol|li|br|div)[\s>]/i.test(s)) return s;
+  if (/<(b|strong|i|em|u|ul|ol|li|br|div)[\s>]/i.test(s)) return stripLegacyNoteBullets(s);
   // Legacy plain text — escape it and turn real line breaks into <br> so it
   // displays exactly as it used to, the first time it's opened in the new
   // editor.
-  return escapeHtml(s).replace(/\n/g, '<br>');
+  return stripLegacyNoteBullets(escapeHtml(s).replace(/\n/g, '<br>'));
 }
 
 // Plain-text rendering of notes (for the Possible-Duplicates comparison
@@ -2037,30 +2057,12 @@ function notesToPlainText(raw) {
   return (div.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-// Notes fields on the detail page (semi/uke notes, character notes) act like
-// a bullet list: every line starts with a 💦, and hitting Enter starts a
-// fresh bulleted line automatically instead of a plain blank line.
-const NOTE_BULLET = '› ';
-function attachBulletTextarea(el) {
-  if (!el || el._bulletWired) return;
-  el._bulletWired = true;
-  el.addEventListener('keydown', (ev) => {
-    if (ev.key !== 'Enter') return;
-    ev.preventDefault();
-    const start = el.selectionStart, end = el.selectionEnd;
-    const insert = '\n' + NOTE_BULLET;
-    el.value = el.value.slice(0, start) + insert + el.value.slice(end);
-    const pos = start + insert.length;
-    el.selectionStart = el.selectionEnd = pos;
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-  el.addEventListener('focus', () => {
-    if (!el.value) {
-      el.value = NOTE_BULLET;
-      el.selectionStart = el.selectionEnd = el.value.length;
-    }
-  });
-}
+// #413: the old per-character semi/uke notes <textarea> (which used to
+// auto-insert a "› "/💦 bullet on every Enter press) and its
+// attachBulletTextarea() wiring are gone -- the single combined Notes
+// rich-text box (#user-notes) replaced them, with a real bullet-list
+// toolbar button instead of an auto-inserted glyph. See
+// migrateCharNotesToCombined() above for the one-time data migration.
 
 // Some author/artist fields came in as comma-joined names with no space
 // after the comma (e.g. "Paengyibuhseot,Solanine") — a data artifact from
@@ -2672,13 +2674,8 @@ function navigate(view, entryId, opts) {
   if (view === 'reactions') IMAGES_TAB = 'gallery'; // Images menu always opens on the Gallery tab
   DETAIL_EDIT_MODE = false;
   TAG_EDIT_MODE = false;
-  TAG_FILTER_OPEN = false;
-  TAG_ADD_MODE = false;
-  TAG_ADD_SECTION = null;
+  OPEN_DROPDOWN_ID = null;
   TAG_ADD_AUTOFOCUS = false;
-  COLL_ADD_KIND = null;
-  NOTES_PICK_OPEN = null;
-  STATS_FLAGS_OPEN = false;
   // The side-arrow list only survives while moving between the Missing
   // cover/summary page and reads opened from it.
   if (view !== 'detail' && view !== 'missingInfo') DETAIL_NAV_LIST = null;
@@ -3640,15 +3637,10 @@ const SYSTEM_COLLECTIONS = [
   { id: 'sys-artwork', name: 'Artwork', tagKey: 'artwork', tagName: 'Artwork' },
   { id: 'sys-funny', name: 'Funny', tagKey: 'funny', tagName: 'Funny' },
 ];
-let COLL_ADD_KIND = null; // which Stats row ("playlist" | "award") has its add panel open
-// #405: which Notes-container lead-attribute dropdown (keyed "who:field",
-// e.g. "semi:flag", "uke:personality") has its pool open, same
-// one-open-at-a-time pattern as COLL_ADD_KIND above.
-let NOTES_PICK_OPEN = null;
-// #408: whether the Stats container's Flags dropdown pool is open --
-// same one-open-at-a-time idea as COLL_ADD_KIND/NOTES_PICK_OPEN, just a
-// plain boolean since there's only ever one Flags row per entry.
-let STATS_FLAGS_OPEN = false;
+// #410: COLL_ADD_KIND/NOTES_PICK_OPEN/STATS_FLAGS_OPEN all folded into
+// OPEN_DROPDOWN_ID (declared up near the other top-level dropdown-state --
+// see its comment there) -- keys 'coll:playlist'/'coll:award',
+// 'lead:<who>:<field>', and 'stats-flags' respectively.
 let COLL_EDIT_MODE = false; // playlist page: show the remove (x) buttons on covers
 
 function ensureSystemCollections() {
@@ -3850,85 +3842,111 @@ function renderCollectionPage() {
     ${renderBottomNav('home')}`;
 }
 
-/* Detail page -> Stats: "Playlist" and "Awards" rows.
-   #404: converted to a dropdown per her request, same pattern as the home
-   page's "🏷️ Tags" multiselect (.tag-ms-toggle button + .tag-ms-panel) --
-   the closed button shows a summary of what this read is currently in
-   (or an "+ Add ..." prompt when it's in none), and clicking it opens the
-   panel below with every playlist/award to toggle it on/off for this
-   read, same data-toggle-coll handler as before.
-   #408: her follow-up design pass -- the toggle is now cyan, not pink
-   (her standing rule: dropdowns are cyan, buttons are pink), matching
-   the Shelf/Story Status/Format/Style selects right above it; the pool
-   itself is a plain list of rows (.tag-pool/.tag-pool-chip are
-   restyled that way app-wide now, see styles.css) instead of a grid of
-   colorful pill buttons; and once more than one playlist/award is
-   active, they show as chips filling the row -- same .tag-chip.readonly
-   look as the Tags container -- instead of being crammed as comma-joined
-   text inside the toggle itself. */
+/* #410: her full follow-up redesign pass -- every dropdown in the app
+   (Stats' Shelf/Story Status/Format/Style/Flags/Playlist/Award, the Notes
+   container's lead-attribute pickers, the Tags container's add-tag panel,
+   and the homepage's Tags/Flag filters) now shares this one renderer so
+   they finally all look, align and behave identically instead of each
+   being its own slightly-different one-off:
+     - the toggle box text is always the same font-size/weight/case/
+       alignment (plain .tag-ms-toggle/.cyan-ms-toggle styling);
+     - the open panel is a `.dd-panel` positioned ABSOLUTELY under the
+       toggle (see styles.css) so it floats as a popup over whatever's
+       below it instead of pushing that content down -- opening/closing a
+       dropdown (or picking something in it) never changes any surrounding
+       layout height, which is what was causing the Notes container's
+       leftover/fluctuating whitespace and the photo box "zoom" glitch
+       (that was the photo's grid row being stretched by the panel's own
+       inline height);
+     - exactly one dropdown can be open anywhere in the app at a time
+       (OPEN_DROPDOWN_ID is the single shared flag -- see its declaration
+       up top) and clicking anywhere outside the open one closes it (see
+       the document-level click handler near the bottom of this file);
+     - once more than one item is picked, the picks show as chips INSIDE
+       the toggle box itself (growing it taller as needed) instead of in
+       a separate row underneath -- "I want them to show up in the blue
+       dropdown box", not below it like the Tags container's own chips.
+   `items` is [{value,label,icon?,dataAttr,on}] (dataAttr is a full
+   `data-foo="bar"` attribute string, reusing whatever per-item click
+   handler already exists for that field -- nothing about selection
+   itself changes, only how it's presented). `closeOnPick` is true for
+   strictly single-select pickers (Shelf/Status/Format/Style/Flag), which
+   behave like a native <select> and dismiss themselves the instant
+   something's chosen; it's false for multi-select ones (Position/2nd
+   Gender/Physique/Personality/Flags/Playlist/Award), which stay open so
+   she can keep picking before closing it herself. `blankWhenEmpty` shows
+   nothing at all (rather than falling back to `title`) when nothing's
+   picked -- her rule for the Stats container's own dropdowns only; the
+   Notes container's lead-attribute pickers keep showing their category
+   name as a placeholder instead. */
+function renderDropdownToggle(key, title, items, { blankWhenEmpty = false, closeOnPick = false } = {}) {
+  const isOpen = OPEN_DROPDOWN_ID === key;
+  const selected = items.filter((i) => i.on);
+  const chipHtml = (i) => `<span class="dd-chip">${i.icon ? i.icon + ' ' : ''}${escapeHtml(i.label)}</span>`;
+  let inner;
+  if (selected.length > 1) {
+    inner = `<div class="dd-chip-wrap">${selected.map(chipHtml).join('')}</div>`;
+  } else if (selected.length === 1) {
+    inner = `<span class="dd-toggle-label">${selected[0].icon ? selected[0].icon + ' ' : ''}${escapeHtml(selected[0].label)}</span>`;
+  } else {
+    inner = blankWhenEmpty ? '' : `<span class="dd-toggle-label">${escapeHtml(title)}</span>`;
+  }
+  const toggleBtn = `<button type="button" class="tag-ms-toggle cyan-ms-toggle dd-toggle ${isOpen ? 'active' : ''}" data-dd-toggle="${escapeHtml(key)}" data-dd-close-on-pick="${closeOnPick ? '1' : ''}">${inner}<span class="chevron">${isOpen ? '▴' : '▾'}</span></button>`;
+  let panel = '';
+  if (isOpen) {
+    const pool = items.map((i) => `<span class="tag-pool-chip ${i.on ? 'active' : ''}" ${i.dataAttr}>${i.icon ? i.icon + ' ' : ''}${escapeHtml(i.label)}</span>`).join('');
+    panel = `<div class="dd-panel"><div class="tag-pool">${pool || '<div style="color:var(--text-dim);font-size:12px;padding:4px;">Nothing here yet.</div>'}</div></div>`;
+  }
+  return `<div class="dd-wrap">${toggleBtn}${panel}</div>`;
+}
+
+// #411: wraps a Stats-container row so BOTH the pink label and the blue
+// dropdown box open/close it -- her follow-up ("make them also show the
+// dropdown when clicking on the section header, vs right now it's got a
+// dropdown carat in the blue box"), matching how the Tags container's own
+// pink section headers already work as their dropdown's toggle.
+function statsRowHtml(labelText, key, contentHtml) {
+  return `<div class="stats-row"><div class="stats-row-label" data-dd-toggle="${escapeHtml(key)}" style="cursor:pointer;">${escapeHtml(labelText)}</div><div class="stats-row-content coll-row-content">
+      ${contentHtml}
+    </div></div>`;
+}
+
+/* Detail page -> Stats: "Playlist" and "Awards" rows -- see
+   renderDropdownToggle's own comment above for the shared design this
+   (and every other dropdown in the app) now follows. Picking a
+   playlist/award keeps the panel open (closeOnPick: false) since a read
+   can be in several at once; an empty one shows fully blank, same as
+   Flags, rather than a "+ Add..." prompt -- her call, for full visual
+   consistency with Flags over keeping that affordance text. */
 function statsCollectionRowHtml(e, kind) {
   const label = kind === 'award' ? 'Awards' : 'Playlist';
   const mine = entryCollections(e, kind);
-  const isOpen = COLL_ADD_KIND === kind;
-  const toggleLabel = mine.length === 1 ? mine[0].name : (mine.length ? label : `+ Add ${kind === 'award' ? 'award' : 'playlist'}`);
-  const toggleBtn = `<button type="button" class="tag-ms-toggle cyan-ms-toggle ${isOpen ? 'active' : ''}" data-coll-add-toggle="${kind}">${escapeHtml(toggleLabel)} <span class="chevron">${isOpen ? '▴' : '▾'}</span></button>`;
-  const chipsRow = mine.length > 1 ? `<div class="lead-pick-chips">${mine.map((c) => `<div class="tag-chip readonly" data-toggle-coll="${escapeHtml(c.id)}" title="Click to remove">${escapeHtml(c.name)}</div>`).join('')}</div>` : '';
-  let panel = '';
-  if (isOpen) {
-    // Offer every active (non-hidden) collection to add to, plus any hidden
-    // one this read is already in (so it can still be removed from here) --
-    // a hidden collection otherwise shouldn't show up as something new to
-    // add, same as a hidden tag doesn't show in the tag picker pool.
-    const poolColls = [...activeCollectionsOfKind(kind), ...mine.filter((c) => c.hidden)];
-    const pool = poolColls.map((c) => {
-      const on = mine.some((m) => m.id === c.id);
-      return `<span class="tag-pool-chip ${on ? 'active' : ''}" data-toggle-coll="${escapeHtml(c.id)}">${escapeHtml(c.name)}</span>`;
-    }).join('');
-    panel = `
-      <div class="tag-ms-panel open" style="margin-top:6px;width:100%;">
-        <div class="tag-picker-box">
-          <input type="text" id="new-coll-input" class="tag-picker-input" data-coll-kind="${kind}" placeholder="Type a new ${kind === 'award' ? 'award' : 'playlist'} name and press Enter..." autocomplete="off">
-        </div>
-        <div class="tag-pool" id="coll-pool">${pool || `<div style="color:var(--text-dim);font-size:12px;padding:4px;">No ${kind === 'award' ? 'awards' : 'playlists'} yet.</div>`}</div>
-      </div>`;
-  }
-  return `<div class="stats-row"><div class="stats-row-label">${label}</div><div class="stats-row-content coll-row-content">
-      ${toggleBtn}${chipsRow}${panel}
-    </div></div>`;
+  // Offer every active (non-hidden) collection to add to, plus any hidden
+  // one this read is already in (so it can still be removed from here) --
+  // a hidden collection otherwise shouldn't show up as something new to
+  // add, same as a hidden tag doesn't show in the tag picker pool.
+  const poolColls = [...activeCollectionsOfKind(kind), ...mine.filter((c) => c.hidden)];
+  const items = poolColls.map((c) => ({
+    value: c.id, label: c.name, on: mine.some((m) => m.id === c.id),
+    dataAttr: `data-toggle-coll="${escapeHtml(c.id)}"`,
+  }));
+  return statsRowHtml(label, 'coll:' + kind, renderDropdownToggle('coll:' + kind, label, items, { blankWhenEmpty: true, closeOnPick: false }));
 }
 
-// #408: Stats container's Flags row -- converted from a squished row of
-// pink toggle buttons into the same cyan dropdown pattern as everything
-// else in this container, per her follow-up ("the flags is not a
-// dropdown like the rest"). Each flag keeps its own existing boolean
-// toggle handler (data-toggle-hentai/-hd/-fav/-artwork) completely
-// unchanged -- only the markup around them changed, from an always-visible
-// button grid to a closed toggle (title, or the single active flag's
-// label, or the title again once more than one is active) + a plain pool
-// list when open, with active flags shown as chips (same look as the
-// Tags container) once there's more than one.
+// #408/#410: Stats container's Flags row -- same shared dropdown as
+// everything else in this container now; each flag keeps its own existing
+// boolean toggle handler (data-toggle-hentai/-hd/-fav/-artwork) completely
+// unchanged, only the surrounding markup is shared now. Blank when nothing's
+// active, per her rule for this container.
 function statsFlagsRowHtml(e) {
   const items = [
-    { key: 'hentai', icon: '💦', label: 'NSFW', on: isHentai(e), attr: 'data-toggle-hentai="1"', show: !isSFW() },
-    { key: 'hd', icon: '💾', label: 'On HD', on: isOnDrive(e), attr: 'data-toggle-hd="1"', show: true },
-    { key: 'fav', icon: e.favorite ? '💜' : '🤍', label: 'Favorite', on: !!e.favorite, attr: 'data-toggle-fav="1"', show: true },
-    { key: 'artwork', icon: '🎨', label: 'Artwork', on: isArtwork(e), attr: 'data-toggle-artwork="1"', show: true },
+    { value: 'hentai', icon: '💦', label: 'NSFW', on: isHentai(e), dataAttr: 'data-toggle-hentai="1"', show: !isSFW() },
+    { value: 'hd', icon: '💾', label: 'On HD', on: isOnDrive(e), dataAttr: 'data-toggle-hd="1"', show: true },
+    { value: 'fav', icon: e.favorite ? '💜' : '🤍', label: 'Favorite', on: !!e.favorite, dataAttr: 'data-toggle-fav="1"', show: true },
+    { value: 'artwork', icon: '🎨', label: 'Artwork', on: isArtwork(e), dataAttr: 'data-toggle-artwork="1"', show: true },
   ].filter((i) => i.show);
-  const selected = items.filter((i) => i.on);
-  const isOpen = STATS_FLAGS_OPEN;
-  const toggleLabel = selected.length === 1 ? `${selected[0].icon} ${selected[0].label}` : 'Flags';
-  const toggleBtn = `<button type="button" class="tag-ms-toggle cyan-ms-toggle ${isOpen ? 'active' : ''}" data-flags-toggle="1">${toggleLabel} <span class="chevron">${isOpen ? '▴' : '▾'}</span></button>`;
-  const chipsRow = selected.length > 1 ? `<div class="lead-pick-chips">${selected.map((i) => `<div class="tag-chip readonly" ${i.attr} title="Click to remove">${i.icon} ${i.label}</div>`).join('')}</div>` : '';
-  let panel = '';
-  if (isOpen) {
-    const pool = items.map((i) => `<span class="tag-pool-chip ${i.on ? 'active' : ''}" ${i.attr}>${i.icon} ${i.label}</span>`).join('');
-    panel = `<div class="tag-ms-panel open" style="margin-top:6px;width:100%;"><div class="tag-pool">${pool}</div></div>`;
-  }
-  return `<div class="stats-row"><div class="stats-row-label">Flags</div><div class="stats-row-content coll-row-content">
-      ${toggleBtn}${chipsRow}${panel}
-    </div></div>`;
+  return statsRowHtml('Flags', 'stats-flags', renderDropdownToggle('stats-flags', 'Flags', items, { blankWhenEmpty: true, closeOnPick: false }));
 }
-
 function openCreatePlaylistModal() {
   openModal(`
     <h3>Create playlist</h3>
@@ -3991,13 +4009,9 @@ function attachCollectionHandlers(root) {
   root.querySelectorAll('[data-coll-add-read]').forEach((el) => {
     el.onclick = (ev) => { ev.stopPropagation(); openAddReadToCollectionModal(el.getAttribute('data-coll-add-read')); };
   });
-  root.querySelectorAll('[data-coll-add-toggle]').forEach((el) => {
-    el.onclick = () => { const k = el.getAttribute('data-coll-add-toggle'); COLL_ADD_KIND = COLL_ADD_KIND === k ? null : k; render(); };
-  });
-  // #408: Stats container's Flags dropdown open/close toggle.
-  root.querySelectorAll('[data-flags-toggle]').forEach((el) => {
-    el.onclick = () => { STATS_FLAGS_OPEN = !STATS_FLAGS_OPEN; render(); };
-  });
+  // #410: the Playlist/Award/Flags dropdown open/close toggles are now
+  // handled generically by the document-level [data-dd-toggle] delegation
+  // near the bottom of this file, same as every other dropdown in the app.
   root.querySelectorAll('[data-toggle-coll]').forEach((el) => {
     el.onclick = async () => {
       const c = COLLECTIONS[el.getAttribute('data-toggle-coll')];
@@ -4160,22 +4174,37 @@ function renderHome() {
   // 'Completed' shelf), but per her direct correction that silently dropped
   // the whole Reading Status row out of the filter box, which she hadn't
   // asked for. Restored unconditionally.
-  const shelfChips = `<div class="filter-dropdown-col"><select id="home-shelf-select" class="filter-select">${['ALL', ...SHELVES_READING].map((s) => `<option value="${escapeHtml(s)}" ${STATE.shelf === s ? 'selected' : ''}>${s === 'ALL' ? 'Shelf' : escapeHtml(shelfLabel(s))}</option>`).join('')}</select></div>`;
+  // #415: Shelf/Story Status/Format converted from native <select>s to the
+  // same shared renderDropdownToggle/.dd-wrap popup component as every
+  // other dropdown in the app -- she wanted the "pop up" behavior she liked
+  // about the native select kept, just restyled to look like the Tags/
+  // Flags dropdowns instead of the OS's own select-list chrome. These have
+  // no section-header/pink button next to them, so (her rule) the title
+  // shows centered in the blue box itself until something's picked.
+  const shelfChips = `<div class="filter-dropdown-col">${renderDropdownToggle('home-shelf', 'Shelf', SHELVES_READING.map((s) => ({
+    value: s, label: shelfLabel(s), on: STATE.shelf === s, dataAttr: `data-home-shelf-pick="${escapeHtml(s)}"`,
+  })), { blankWhenEmpty: false, closeOnPick: true })}</div>`;
   // Story Status (WIP/Finished) — the story's own completion state, distinct
   // from Reading Status (her shelf: Currently Reading/Completed/etc, which is
   // about her progress through it, not whether the author's finished it).
-  const storyStatusChips = `<div class="filter-dropdown-col"><select id="home-story-status-select" class="filter-select">${['ALL', 'WIP', 'Finished', 'Discontinued'].map((s) => `<option value="${escapeHtml(s)}" ${(STATE.storyStatusFilter || 'ALL') === s ? 'selected' : ''}>${s === 'ALL' ? 'Story Status' : escapeHtml(s)}</option>`).join('')}</select></div>`;
+  const storyStatusChips = `<div class="filter-dropdown-col">${renderDropdownToggle('home-status', 'Story Status', ['WIP', 'Finished', 'Discontinued'].map((s) => ({
+    value: s, label: s, on: STATE.storyStatusFilter === s, dataAttr: `data-home-status-pick="${escapeHtml(s)}"`,
+  })), { blankWhenEmpty: false, closeOnPick: true })}</div>`;
   // Format filter row — replaces the old book/tv icon toggle (STATE.format)
   // with a proper dropdown, same row as Shelf/Story Status above it.
-  const mediaFormatChips = `<div class="filter-dropdown-col"><select id="home-format-select" class="filter-select">${['ALL', ...MEDIA_FORMATS.map((f) => f.value)].map((v) => {
-    const label = v === 'ALL' ? 'Format' : mediaFormatLabel(v);
-    return `<option value="${escapeHtml(v)}" ${(STATE.mediaFormatFilter || 'ALL') === v ? 'selected' : ''}>${escapeHtml(label)}</option>`;
-  }).join('')}</select></div>`;
+  const mediaFormatChips = `<div class="filter-dropdown-col">${renderDropdownToggle('home-format', 'Format', MEDIA_FORMATS.map((f) => ({
+    value: f.value, label: f.label, on: STATE.mediaFormatFilter === f.value, dataAttr: `data-home-format-pick="${escapeHtml(f.value)}"`,
+  })), { blankWhenEmpty: false, closeOnPick: true })}</div>`;
+  // #410/#412: migrated off its own dedicated TAG_FILTER_OPEN flag onto the
+  // shared OPEN_DROPDOWN_ID/.dd-wrap system (key 'home-tags') -- same single-
+  // dropdown-open-at-a-time rule and the same generic outside-click-closes
+  // delegation now cover this control too, instead of a bespoke flag/handler.
+  const homeTagsOpen = OPEN_DROPDOWN_ID === 'home-tags';
   const tagMsPanel = tags.map((t) => `<span class="tag-pool-chip ${STATE.tagFilters.includes(t) ? 'active' : ''}" data-toggle-home-tag="${escapeHtml(t)}">${escapeHtml(capTag(t))}</span>`).join('');
   const tagMultiselect = `
-    <div class="tag-multiselect">
-      <button class="tag-ms-toggle" data-tag-ms-toggle="1">🏷️ Tags${STATE.tagFilters.length ? ` (${STATE.tagFilters.length})` : ''} <span class="chevron">${TAG_FILTER_OPEN ? '▴' : '▾'}</span></button>
-      <div class="tag-ms-panel ${TAG_FILTER_OPEN ? 'open' : ''}" id="tag-ms-panel">
+    <div class="tag-multiselect dd-wrap">
+      <button type="button" class="tag-ms-toggle dd-toggle ${homeTagsOpen ? 'active' : ''}" data-dd-toggle="home-tags">🏷️ Tags${STATE.tagFilters.length ? ` (${STATE.tagFilters.length})` : ''} <span class="chevron">${homeTagsOpen ? '▴' : '▾'}</span></button>
+      ${homeTagsOpen ? `<div class="dd-panel" id="tag-ms-panel">
         <div class="tag-picker-box">
           <input type="text" id="home-tag-filter-search" class="tag-picker-input" placeholder="Search tags...">
         </div>
@@ -4183,16 +4212,41 @@ function renderHome() {
           ${tagMsPanel || '<div style="color:var(--text-dim);font-size:12px;padding:4px;">No tags yet.</div>'}
         </div>
         ${STATE.tagFilters.length ? `<button class="ref-btn" style="width:100%;margin-top:6px;" data-tag-ms-clear="1">Clear selected</button>` : ''}
-      </div>
+      </div>` : ''}
     </div>`;
   // Award/Playlist filters — her own collections, same shelf dropdown style
   // as Shelf/Story Status/Format above, sitting on their own row directly
   // below the Tags multiselect per her request.
   const awardOptions = activeCollectionsOfKind('award');
   const playlistOptions = activeCollectionsOfKind('playlist');
-  const awardChips = `<div class="filter-dropdown-col"><select id="home-award-select" class="filter-select">${['ALL', ...awardOptions.map((c) => c.id)].map((v) => `<option value="${escapeHtml(v)}" ${(STATE.awardFilter || 'ALL') === v ? 'selected' : ''}>${v === 'ALL' ? 'Award' : escapeHtml(awardOptions.find((c) => c.id === v).name)}</option>`).join('')}</select></div>`;
-  const playlistChips = `<div class="filter-dropdown-col"><select id="home-playlist-select" class="filter-select">${['ALL', ...playlistOptions.map((c) => c.id)].map((v) => `<option value="${escapeHtml(v)}" ${(STATE.playlistFilter || 'ALL') === v ? 'selected' : ''}>${v === 'ALL' ? 'Playlist' : escapeHtml(playlistOptions.find((c) => c.id === v).name)}</option>`).join('')}</select></div>`;
-  const collectionFilterRow = `<div class="filter-dropdown-row">${awardChips}${playlistChips}</div>`;
+  // #412: she called Award/Playlist (and the new Flag dropdown next to
+  // them) BLUE -- a distinct modifier class from the Shelf/Story Status/
+  // Format row above (which stays pink), since "they're dropdowns" was her
+  // reasoning for singling this row out, not a blanket recolor of every
+  // homepage filter.
+  const awardChips = `<div class="filter-dropdown-col dd-blue">${renderDropdownToggle('home-award', 'Award', awardOptions.map((c) => ({
+    value: c.id, label: c.name, on: STATE.awardFilter === c.id, dataAttr: `data-home-award-pick="${escapeHtml(c.id)}"`,
+  })), { blankWhenEmpty: false, closeOnPick: true })}</div>`;
+  const playlistChips = `<div class="filter-dropdown-col dd-blue">${renderDropdownToggle('home-playlist', 'Playlist', playlistOptions.map((c) => ({
+    value: c.id, label: c.name, on: STATE.playlistFilter === c.id, dataAttr: `data-home-playlist-pick="${escapeHtml(c.id)}"`,
+  })), { blankWhenEmpty: false, closeOnPick: true })}</div>`;
+  // #412: her follow-up -- the four "blue button" radio filters (NSFW/
+  // Artwork/Favorite/On HD) consolidated into one "Flag" dropdown (same
+  // shared renderDropdownToggle as every other dropdown, recolored blue to
+  // match Award/Playlist next to it) instead of a row of standalone
+  // buttons; Linked/Unlinked stay as their own two buttons on their own
+  // row below, per her explicit call to keep those separate. Picking one
+  // still runs through the exact same data-nav-filter handler as before
+  // (which itself already closes any open dropdown via navigate()), so no
+  // selection logic changed, only how it's presented.
+  const homeFlagItems = [
+    !isSFW() ? { value: 'hentai', icon: '💦', label: 'NSFW', on: STATE.showHentaiOnly, dataAttr: `data-nav-filter="${STATE.showHentaiOnly ? 'home' : 'hentai'}"` } : null,
+    { value: 'artwork', icon: '🖌️', label: 'Artwork', on: STATE.showArtworkOnly, dataAttr: `data-nav-filter="${STATE.showArtworkOnly ? 'home' : 'artwork'}"` },
+    { value: 'favorites', icon: '💜', label: 'Favorite', on: STATE.showFavoritesOnly, dataAttr: `data-nav-filter="${STATE.showFavoritesOnly ? 'home' : 'favorites'}"` },
+    { value: 'onDrive', icon: '💾', label: 'On HD', on: STATE.showOnDriveOnly, dataAttr: `data-nav-filter="${STATE.showOnDriveOnly ? 'home' : 'onDrive'}"` },
+  ].filter(Boolean);
+  const homeFlagDropdown = `<div class="filter-dropdown-col dd-blue">${renderDropdownToggle('home-flags', 'Flag', homeFlagItems, { blankWhenEmpty: false, closeOnPick: true })}</div>`;
+  const collectionFilterRow = `<div class="filter-dropdown-row">${homeFlagDropdown}${playlistChips}${awardChips}</div>`;
 
   // #399: Overall/Smut/Crying/WTF/Darkness dropdowns dropped from the
   // homepage filter row per her request -- same as #395's Laughing removal,
@@ -4200,24 +4254,12 @@ function renderHome() {
   // removes them as something you can filter the homepage shelf by. STATE's
   // qualityFilter/smutFilter/cryFilter/wtfFilter/darknessFilter fields and
   // their filteredEntries() checks are deliberately left in place.
-  // Semi/Uke green/red/black flags are hidden entirely for SFW accounts —
-  // her explicit call: this is a general relationship-dynamic marker, not
-  // just a hentai-adjacent thing, but it's still part of the SFW cut.
-  const flagChips = isSFW() ? '' : FLAG_COLORS.map((c) => `<span class="rating-pick-icon flag-filter-icon ${STATE.flagFilter === c ? 'active' : ''}" data-flag-filter="${c}" style="color:${FLAG_HEX[c]}" title="${c} flag">&#9873;</span>`).join('');
-  // Favorites/On HD used to be separate bottom-nav destinations; they're now
-  // toggle chips here instead (same nav-filter mechanism the hentai chip
-  // already used), so removing them from the bottom nav doesn't lose access.
-  // Hidden entirely for SFW accounts, same as the H nav item/gallery.
-  const hentaiChip = isSFW() ? '' : `<span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.showHentaiOnly ? 'active' : ''}" data-nav-filter="${STATE.showHentaiOnly ? 'home' : 'hentai'}" title="NSFW only"><span class="ffb-icon">💦</span><span class="ffb-label">NSFW</span></span>`;
-  const artworkChip = `<span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.showArtworkOnly ? 'active' : ''}" data-nav-filter="${STATE.showArtworkOnly ? 'home' : 'artwork'}" title="Artwork only"><span class="ffb-icon">🖌️</span><span class="ffb-label">Artwork</span></span>`;
-  const favoritesChip = `<span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.showFavoritesOnly ? 'active' : ''}" data-nav-filter="${STATE.showFavoritesOnly ? 'home' : 'favorites'}" title="Favorites only"><span class="ffb-icon">💜</span><span class="ffb-label">Favorite</span></span>`;
-  const onDriveChip = `<span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.showOnDriveOnly ? 'active' : ''}" data-nav-filter="${STATE.showOnDriveOnly ? 'home' : 'onDrive'}" title="On HD only"><span class="ffb-icon">💾</span><span class="ffb-label">On HD</span></span>`;
-  // Reading-link chip — unlike favorites/on-HD/hentai this doesn't replace
-  // the whole shelf, it's an additive AND-filter like smut/quality/flag, so
-  // it stacks with whatever else is already filtered.
+  // Reading-link chips — unlike favorites/on-HD/hentai these don't replace
+  // the whole shelf, they're additive AND-filters like smut/quality/flag,
+  // so they stack with whatever else is already filtered. #412: she asked
+  // to keep these two as standalone buttons (not folded into the Flag
+  // dropdown above), on their own row directly below Flag/Playlist/Award.
   const linkChip = `<span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.linkFilter ? 'active' : ''}" data-link-filter="1" title="Has a reading link attached"><span class="ffb-icon">🔗</span><span class="ffb-label">Linked</span></span>`;
-  // Inverse of linkChip — same additive AND-filter mechanism, just for
-  // entries with NO reading link attached instead of ones that have one.
   const noLinkChip = `<span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.noLinkFilter ? 'active' : ''}" data-no-link-filter="1" title="No reading link attached"><span class="ffb-icon">⛓️‍💥</span><span class="ffb-label">Unlinked</span></span>`;
 
   return `
@@ -4227,7 +4269,7 @@ function renderHome() {
         <div class="filter-dropdown-row">${shelfChips}${storyStatusChips}${mediaFormatChips}</div>
         ${tagMultiselect}
         ${collectionFilterRow}
-        <div class="rating-pick-row">${hentaiChip}${artworkChip}${favoritesChip}${onDriveChip}${linkChip}${noLinkChip}</div>
+        <div class="rating-pick-row rating-pick-row-2">${linkChip}${noLinkChip}</div>
         <div class="create-playlist-row"><button type="button" class="create-playlist-btn" data-create-playlist="1">+ Create playlist</button></div>
       </div>
     </div>
@@ -8327,49 +8369,38 @@ function renderTemperamentPicker(current, who) { return renderMultiPicker(LEAD_T
 function renderArchetypePicker(current, who) { return renderMultiPicker(LEAD_ARCHETYPES, current, who, 'archetype-pick'); }
 function renderEnergyPicker(current, who) { return renderMultiPicker(LEAD_ENERGY, current, who, 'energy-pick'); }
 
-// #405: Notes container's lead-attribute button rows condensed into
-// dropdowns to save space (especially on mobile), per her request -- same
-// .tag-ms-toggle/.tag-ms-panel pattern as the Playlist/Award rows and the
-// home page's Tags filter. The closed toggle shows the category title
-// (e.g. "Flag") until something's picked, then shows that pick instead;
-// Personality merges Temperament+Archetype+Energy into one dropdown (all
-// three read as "personality" to her) and so can rack up several picks at
-// once -- once there's more than one, they display filling the row as
-// tag-style chips (same look as the Tags container) instead of cramming
-// them into the toggle's own label; tapping one of those chips untoggles
-// it directly without reopening the dropdown. `groups` is normally a
-// single {options,current,dataAttr} entry, but Personality passes all
-// three so they pool/summarize together under one toggle -- each option
-// still carries its original data attribute, so the existing
-// per-attribute click-handler loop (wired by attribute name, not by which
-// dropdown rendered it) and the dedicated flag-pick handler both keep
-// working completely unchanged.
-// #408: the toggle is cyan, not pink (her standing rule: dropdowns are
-// cyan, buttons are pink), matching the Shelf/Story Status/Format/Style
-// selects right above it in the Stats container.
+// #405/#410/#411: Notes container's lead-attribute button rows condensed
+// into dropdowns to save space (especially on mobile), now sharing the
+// exact same renderDropdownToggle component as every other dropdown in the
+// app. The closed toggle shows the category title (e.g. "Flag") until
+// something's picked, then shows that pick instead -- blank-when-empty is
+// deliberately OFF here (unlike the Stats container), so these keep
+// reading as labeled fields rather than going empty. Personality merges
+// Temperament+Archetype+Energy into one dropdown (all three read as
+// "personality" to her) and so can rack up several picks at once -- once
+// there's more than one, they show as chips filling the toggle box itself
+// (not a separate row underneath, per her "show up in the blue dropdown
+// box" follow-up). `groups` is normally a single {options,current,
+// dataAttr} entry, but Personality passes all three so they pool/
+// summarize together under one toggle -- each option still carries its
+// original data attribute, so the existing per-attribute click-handler
+// loop (wired by attribute name, not by which dropdown rendered it) and
+// the dedicated flag-pick handler both keep working completely unchanged.
+// Flag is the only strictly single-select one here (closeOnPick: true);
+// Position/2nd Gender/Physique/Personality can all hold several picks at
+// once and so stay open after a pick, same as Playlist/Award/Flags.
 function renderLeadPickDropdown(who, title, groups, openKeySuffix) {
-  const openKey = `${who}:${openKeySuffix}`;
-  const isOpen = NOTES_PICK_OPEN === openKey;
+  const openKey = `lead:${who}:${openKeySuffix}`;
   const items = [];
   groups.forEach((g) => {
     const arr = toPickArray(g.current);
     g.options.forEach((opt) => {
       const value = typeof opt === 'string' ? opt : opt.value;
       const label = typeof opt === 'string' ? `${opt[0].toUpperCase()}${opt.slice(1)}` : opt.label;
-      items.push({ value, label, dataAttr: g.dataAttr, on: arr.includes(value) });
+      items.push({ value, label, on: arr.includes(value), dataAttr: `data-${g.dataAttr}="${who}:${value}"` });
     });
   });
-  const selected = items.filter((i) => i.on);
-  const chipHtml = (i) => `<div class="tag-chip readonly" data-${i.dataAttr}="${who}:${i.value}" title="Click to remove">${escapeHtml(i.label)}</div>`;
-  const toggleLabel = selected.length === 1 ? escapeHtml(selected[0].label) : escapeHtml(title);
-  const toggleBtn = `<button type="button" class="tag-ms-toggle cyan-ms-toggle lead-pick-toggle ${isOpen ? 'active' : ''}" data-lead-pick-toggle="${openKey}">${toggleLabel} <span class="chevron">${isOpen ? '▴' : '▾'}</span></button>`;
-  const chipsRow = selected.length > 1 ? `<div class="lead-pick-chips">${selected.map(chipHtml).join('')}</div>` : '';
-  let panel = '';
-  if (isOpen) {
-    const pool = items.map((i) => `<span class="tag-pool-chip ${i.on ? 'active' : ''}" data-${i.dataAttr}="${who}:${i.value}">${escapeHtml(i.label)}</span>`).join('');
-    panel = `<div class="tag-ms-panel open lead-pick-panel"><div class="tag-pool">${pool}</div></div>`;
-  }
-  return `<div class="lead-pick-dropdown">${toggleBtn}${chipsRow}${panel}</div>`;
+  return renderDropdownToggle(openKey, title, items, { blankWhenEmpty: false, closeOnPick: openKeySuffix === 'flag' });
 }
 
 function renderCharPhoto(photo) {
@@ -8536,7 +8567,7 @@ function renderTagChipsInline(e) {
   // General/etc.) per the confirmed tag-categorization mapping, each with
   // its own pink section-header, a borderless bunch of that section's
   // tags, and its own add-panel (all wired to the same shared
-  // TAG_ADD_MODE add-panel below).
+  // OPEN_DROPDOWN_ID add-panel below).
   // #407: the section header is now the dropdown toggle itself (her
   // "make the tags drop down instead of the tag box" follow-up -- the
   // original #361 "+ NEW TAG" chip already opened an alphabetical pool to
@@ -8547,10 +8578,12 @@ function renderTagChipsInline(e) {
   // as chips at all times (that's the entry's actual data, not something
   // to hide behind a toggle) -- only the "pick another tag" pool is what
   // opens/closes.
-  // #408: no chevron on this one, per her follow-up -- it stays the plain
-  // pink section-header block she already had, just clickable now; the
-  // other dropdowns in this container keep their chevron since she only
-  // flagged this one as cluttered.
+  // #408/#410: no chevron on this one, per her follow-up -- it stays the
+  // plain pink section-header block she already had, just clickable now;
+  // the open-key lives in the same shared OPEN_DROPDOWN_ID as every other
+  // dropdown (key 'tag:<section>'), and the panel is the same absolutely-
+  // positioned popup (.dd-wrap/.dd-panel) everything else uses now, so it
+  // floats over whatever's below instead of pushing it down.
   const all = (e.tags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: false }))
     .concat((e.customTags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: true })));
   const bySection = newTagBuckets();
@@ -8558,12 +8591,13 @@ function renderTagChipsInline(e) {
   const sectionOrder = tagSectionOrder();
   return sectionOrder.map((sec) => {
     const chips = bySection[sec].map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}" data-remove-tag="${escapeHtml(t)}" title="Click to remove">${escapeHtml(capTag(t))}</div>`).join('');
-    const isOpen = TAG_ADD_SECTION === sec;
-    return `<div class="tag-section-row">
-      <button type="button" class="tag-section-header tag-section-header-toggle ${isOpen ? 'active' : ''}" data-tag-add-toggle="${sec}">${sec}</button>
+    const ddKey = 'tag:' + sec;
+    const isOpen = OPEN_DROPDOWN_ID === ddKey;
+    return `<div class="tag-section-row dd-wrap">
+      <button type="button" class="tag-section-header tag-section-header-toggle ${isOpen ? 'active' : ''}" data-dd-toggle="${escapeHtml(ddKey)}">${sec}</button>
       <div class="tag-section-tags">${chips}</div>
-    </div>
-    ${isOpen ? renderTagAddPanelForSection(e, sec) : ''}`;
+      ${isOpen ? renderTagAddPanelForSection(e, sec) : ''}
+    </div>`;
   }).join('');
 }
 
@@ -8576,7 +8610,7 @@ function renderTagChipsInline(e) {
 // defaulting to General.
 function renderTagAddPanelForSection(e, sec) {
   return `
-    <div class="tag-ms-panel open" style="margin-top:6px;">
+    <div class="dd-panel">
       <div class="tag-picker-box">
         <input type="text" id="new-tag-input-inline" class="tag-picker-input" placeholder="Type a tag and press Enter..." autocomplete="off">
       </div>
@@ -8600,16 +8634,20 @@ function renderDetailTagPool(e, sec) {
 // photo in the new combined Notes panel) -- any notes already typed into
 // them get folded into the single combined Notes textarea (semi's lines,
 // then uke's, then whatever was already in the combined box), each
-// re-bulleted with the new "›" marker instead of the old 💦 one. Runs
-// silently the first time this entry is opened after the redesign; a
-// harmless no-op on every render after that (both old fields are blank).
+// merged in as plain lines -- no leading bullet marker. #413: this used to
+// re-bullet every line with a "›" marker (replacing the even older 💦 one),
+// but that whole leading-glyph convention is retired now that there's a
+// real bullet-list button in the notes toolbar, so lines merge in plain,
+// with no marker added. Runs silently the first time this entry is opened
+// after the redesign; a harmless no-op on every render after that (both
+// old fields are blank).
 function migrateCharNotesToCombined(e) {
   const oldSemi = (e.semi && e.semi.notes) ? e.semi.notes.trim() : '';
   const oldUke = (e.uke && e.uke.notes) ? e.uke.notes.trim() : '';
   if (!oldSemi && !oldUke) return;
   const toLines = (s) => s.split('\n').map((l) => l.replace(/^[💦›]\s*/u, '').trim()).filter(Boolean);
   const merged = [...toLines(oldSemi), ...toLines(oldUke), ...toLines(e.notes || '')];
-  e.notes = merged.map((l) => '› ' + l).join('\n');
+  e.notes = merged.join('\n');
   if (e.semi) e.semi.notes = '';
   if (e.uke) e.uke.notes = '';
   saveEntry(e, { silent: true });
@@ -8625,7 +8663,9 @@ function migrateCharNotesToCombined(e) {
 function migrateLegacyNoteToCombined(e) {
   const legacy = (e.legacyNote || '').trim();
   if (!legacy) return;
-  const legacyHtml = '<div>› ' + escapeHtml(legacy) + '</div>';
+  // #413: no leading "›" marker anymore -- see migrateCharNotesToCombined's
+  // comment just above, same retired convention.
+  const legacyHtml = '<div>' + escapeHtml(legacy) + '</div>';
   e.notes = legacyHtml + notesToEditorHtml(e.notes);
   e.legacyNote = '';
   saveEntry(e, { silent: true });
@@ -8693,33 +8733,36 @@ function renderDetail(e) {
   // Used to only render for reading (manhwa/manga) entries — now shared with
   // watching (anime/tv) entries too, just relabeled "Viewing Status" there
   // (see topFieldsHtml below); the underlying shelf options are the same.
-  const shelfSelect = `
-    <select class="shelf-select status-pill-select" data-shelf-select="1">
-      ${SHELVES_READING.map((s) => `<option value="${escapeHtml(s)}" ${e.shelf === s ? 'selected' : ''}>${escapeHtml(shelfLabelForEntry(s, isReading))}</option>`).join('')}
-    </select>`;
+  // #411: Shelf/Story Status/Format/Style all converted from native
+  // <select>s to the same shared dropdown as everything else in this
+  // container, per her "make the information for dropdowns the same
+  // across the board" follow-up -- a native <select>'s own text can't be
+  // made to match a custom button's font-size/case/alignment reliably
+  // across browsers, so sharing one real component is what actually gets
+  // them all to look and act identically. Each is strictly single-select
+  // (closeOnPick: true) and Shelf always has a value so blankWhenEmpty
+  // never actually triggers for it; Status/Format/Style replace their old
+  // "—" placeholder option with the same blank-when-empty her Flags rule
+  // already established for this container.
+  const shelfSelect = renderDropdownToggle('stats-shelf', 'Shelf', SHELVES_READING.map((s) => ({
+    value: s, label: shelfLabelForEntry(s, isReading), on: e.shelf === s, dataAttr: `data-shelf-pick="${escapeHtml(s)}"`,
+  })), { blankWhenEmpty: true, closeOnPick: true });
 
   // Media type dropdown (Manhwa/Manhua/Manga/Novel/Doujinshi/TV Show/Movie) —
-  // separate from e.format's Reading/Watching split. Live-editable like
-  // shelfSelect/status-select above, no pencil-edit-mode needed.
-  const mediaFormatSelect = `
-    <select class="shelf-select status-pill-select" data-mediaformat-select="1">
-      <option value="" ${!e.mediaFormat ? 'selected' : ''}>—</option>
-      ${MEDIA_FORMATS.map((f) => `<option value="${f.value}" ${e.mediaFormat === f.value ? 'selected' : ''}>${f.label}</option>`).join('')}
-    </select>`;
+  // separate from e.format's Reading/Watching split.
+  const mediaFormatSelect = renderDropdownToggle('stats-format', 'Format', MEDIA_FORMATS.map((f) => ({
+    value: f.value, label: f.label, on: e.mediaFormat === f.value, dataAttr: `data-format-pick="${escapeHtml(f.value)}"`,
+  })), { blankWhenEmpty: true, closeOnPick: true });
 
   // #402: Story Status and Style (B&W/Color) dropdowns for the Stats
-  // container, same markup pattern as shelfSelect/mediaFormatSelect above.
-  const statusSelect = `
-    <select class="shelf-select status-pill-select" data-status-select="1">
-      <option value="" ${!e.status ? 'selected' : ''}>—</option>
-      ${['WIP', 'Finished', 'Discontinued'].map((s) => `<option value="${s}" ${e.status === s ? 'selected' : ''}>${s}</option>`).join('')}
-    </select>`;
-  const styleSelect = `
-    <select class="shelf-select status-pill-select" data-style-select="1">
-      <option value="" ${(!isBWStyle(e) && !isColorStyle(e)) ? 'selected' : ''}>—</option>
-      <option value="bw" ${isBWStyle(e) ? 'selected' : ''}>B&amp;W</option>
-      <option value="color" ${isColorStyle(e) ? 'selected' : ''}>Color</option>
-    </select>`;
+  // container, same shared component as shelfSelect/mediaFormatSelect above.
+  const statusSelect = renderDropdownToggle('stats-status', 'Story Status', ['WIP', 'Finished', 'Discontinued'].map((s) => ({
+    value: s, label: s, on: e.status === s, dataAttr: `data-status-pick="${escapeHtml(s)}"`,
+  })), { blankWhenEmpty: true, closeOnPick: true });
+  const styleSelect = renderDropdownToggle('stats-style', 'Style', [
+    { value: 'bw', label: 'B&W', on: isBWStyle(e), dataAttr: 'data-style-pick="bw"' },
+    { value: 'color', label: 'Color', on: isColorStyle(e), dataAttr: 'data-style-pick="color"' },
+  ], { blankWhenEmpty: true, closeOnPick: true });
 
   // Display vs. edit mode for the top fields (Title, Alt Title, Novel, Author,
   // Artist, Chapters/Seasons, Status) — toggled by the pencil icon.
@@ -8805,10 +8848,10 @@ function renderDetail(e) {
         <!-- #402/#408: Shelf/Story Status/Format/Style/Flags all converted
              from button rows to the same cyan dropdown pattern per her
              request. -->
-        <div class="stats-row"><div class="stats-row-label">Shelf</div><div class="stats-row-content">${shelfSelect}</div></div>
-        <div class="stats-row"><div class="stats-row-label">Story Status</div><div class="stats-row-content">${statusSelect}</div></div>
-        <div class="stats-row"><div class="stats-row-label">Format</div><div class="stats-row-content">${mediaFormatSelect}</div></div>
-        <div class="stats-row"><div class="stats-row-label">Style</div><div class="stats-row-content">${styleSelect}</div></div>
+        ${statsRowHtml('Shelf', 'stats-shelf', shelfSelect)}
+        ${statsRowHtml('Story Status', 'stats-status', statusSelect)}
+        ${statsRowHtml('Format', 'stats-format', mediaFormatSelect)}
+        ${statsRowHtml('Style', 'stats-style', styleSelect)}
         ${statsFlagsRowHtml(e)}
         ${statsCollectionRowHtml(e, 'playlist')}
         ${statsCollectionRowHtml(e, 'award')}
@@ -10170,34 +10213,51 @@ function attachRootHandlers() {
       render();
     };
   });
-  const homeShelfSelect = root.querySelector('#home-shelf-select');
-  if (homeShelfSelect) homeShelfSelect.onchange = () => { STATE.shelf = homeShelfSelect.value; render(); };
-  const homeStoryStatusSelect = root.querySelector('#home-story-status-select');
-  if (homeStoryStatusSelect) homeStoryStatusSelect.onchange = () => {
-    const val = homeStoryStatusSelect.value;
-    STATE.storyStatusFilter = val === 'ALL' ? null : val;
-    render();
-  };
-  const homeFormatSelect = root.querySelector('#home-format-select');
-  if (homeFormatSelect) homeFormatSelect.onchange = () => {
-    const val = homeFormatSelect.value;
-    STATE.mediaFormatFilter = val === 'ALL' ? null : val;
-    render();
-  };
-  const homeAwardSelect = root.querySelector('#home-award-select');
-  if (homeAwardSelect) homeAwardSelect.onchange = () => {
-    const val = homeAwardSelect.value;
-    STATE.awardFilter = val === 'ALL' ? null : val;
-    render();
-  };
-  const homePlaylistSelect = root.querySelector('#home-playlist-select');
-  if (homePlaylistSelect) homePlaylistSelect.onchange = () => {
-    const val = homePlaylistSelect.value;
-    STATE.playlistFilter = val === 'ALL' ? null : val;
-    render();
-  };
-  const tagMsToggle = root.querySelector('[data-tag-ms-toggle]');
-  if (tagMsToggle) tagMsToggle.onclick = () => { TAG_FILTER_OPEN = !TAG_FILTER_OPEN; render(); };
+  // #415: Shelf/Story Status/Format/Award/Playlist on the homepage are now
+  // the shared renderDropdownToggle component instead of native <select>s,
+  // so their click targets changed to data-home-*-pick attributes read by
+  // the generic [data-dd-toggle] delegation for open/close -- these
+  // handlers just do the selecting. Clicking an already-selected item
+  // clears it back to "ALL" (no filter), same toggle-off convention used
+  // everywhere else a single-select dropdown in this app clears itself.
+  root.querySelectorAll('[data-home-shelf-pick]').forEach((el) => {
+    el.onclick = () => {
+      const val = el.getAttribute('data-home-shelf-pick');
+      STATE.shelf = STATE.shelf === val ? 'ALL' : val;
+      render();
+    };
+  });
+  root.querySelectorAll('[data-home-status-pick]').forEach((el) => {
+    el.onclick = () => {
+      const val = el.getAttribute('data-home-status-pick');
+      STATE.storyStatusFilter = STATE.storyStatusFilter === val ? null : val;
+      render();
+    };
+  });
+  root.querySelectorAll('[data-home-format-pick]').forEach((el) => {
+    el.onclick = () => {
+      const val = el.getAttribute('data-home-format-pick');
+      STATE.mediaFormatFilter = STATE.mediaFormatFilter === val ? null : val;
+      render();
+    };
+  });
+  root.querySelectorAll('[data-home-award-pick]').forEach((el) => {
+    el.onclick = () => {
+      const val = el.getAttribute('data-home-award-pick');
+      STATE.awardFilter = STATE.awardFilter === val ? null : val;
+      render();
+    };
+  });
+  root.querySelectorAll('[data-home-playlist-pick]').forEach((el) => {
+    el.onclick = () => {
+      const val = el.getAttribute('data-home-playlist-pick');
+      STATE.playlistFilter = STATE.playlistFilter === val ? null : val;
+      render();
+    };
+  });
+  // #410: the Tags filter's own toggle is now a generic [data-dd-toggle]
+  // handled by the document-level delegation (OPEN_DROPDOWN_ID), same as
+  // every other dropdown -- no dedicated handler needed here anymore.
   root.querySelectorAll('[data-toggle-home-tag]').forEach((el) => {
     el.onclick = () => {
       const t = el.getAttribute('data-toggle-home-tag');
@@ -10450,61 +10510,61 @@ function attachRootHandlers() {
       render();
     };
   });
-  const shelfSelectEl = root.querySelector('[data-shelf-select]');
-  if (shelfSelectEl) shelfSelectEl.onchange = async () => {
-    const e = getEntry(STATE.entryId);
-    const prevShelf = e.shelf;
-    e.shelf = shelfSelectEl.value;
-    // #402: this dropdown replaced the Stats container's Shelf button row,
-    // so it needs the same completedAt-stamping the old button handler did
-    // (keeps the Completed shelf's "most recently finished first" sort working).
-    if (e.shelf === 'Completed' && prevShelf !== 'Completed') e.completedAt = new Date().toISOString();
-    await saveEntry(e);
-    showToast('Shelf updated');
-    render();
-  };
-  const statusSelectEl = root.querySelector('[data-status-select]');
-  if (statusSelectEl) statusSelectEl.onchange = async () => {
-    const e = getEntry(STATE.entryId);
-    e.status = statusSelectEl.value;
-    await saveEntry(e);
-    showToast('Status updated');
-    render();
-  };
-  root.querySelectorAll('[data-mediaformat-btn]').forEach((btn) => {
-    btn.onclick = async () => {
+  // #411: Shelf/Story Status/Format/Style are now the shared single-select
+  // dropdown (renderDropdownToggle) instead of native <select>s -- each
+  // pool item carries its own data-*-pick attribute, and the dropdown
+  // itself dismisses after a pick via the close-on-pick handling in the
+  // document-level [data-dd-toggle] delegation near the bottom of this file.
+  root.querySelectorAll('[data-shelf-pick]').forEach((el) => {
+    el.onclick = async () => {
       const e = getEntry(STATE.entryId);
-      const val = btn.getAttribute('data-mediaformat-btn');
-      e.mediaFormat = (e.mediaFormat === val) ? null : val;
+      const prevShelf = e.shelf;
+      e.shelf = el.getAttribute('data-shelf-pick');
+      // Keeps the Completed shelf's "most recently finished first" sort working.
+      if (e.shelf === 'Completed' && prevShelf !== 'Completed') e.completedAt = new Date().toISOString();
+      await saveEntry(e);
+      showToast('Shelf updated');
+      render();
+    };
+  });
+  root.querySelectorAll('[data-status-pick]').forEach((el) => {
+    el.onclick = async () => {
+      const e = getEntry(STATE.entryId);
+      const val = el.getAttribute('data-status-pick');
+      e.status = e.status === val ? '' : val;
+      await saveEntry(e);
+      showToast('Status updated');
+      render();
+    };
+  });
+  root.querySelectorAll('[data-format-pick]').forEach((el) => {
+    el.onclick = async () => {
+      const e = getEntry(STATE.entryId);
+      const val = el.getAttribute('data-format-pick');
+      e.mediaFormat = e.mediaFormat === val ? null : val;
       await saveEntry(e);
       showToast('Format updated');
       render();
     };
   });
-  const mediaFormatSelectEl = root.querySelector('[data-mediaformat-select]');
-  if (mediaFormatSelectEl) mediaFormatSelectEl.onchange = async () => {
-    const e = getEntry(STATE.entryId);
-    e.mediaFormat = mediaFormatSelectEl.value || null;
-    await saveEntry(e);
-    showToast('Format updated');
-    render();
-  };
-  // #402: Style dropdown replaces the old B&W/Color toggle-button pair --
-  // same underlying tag-based storage (isBWStyle/isColorStyle just check for
-  // the BW Coloring/Color tags), just driven by one 3-way select now instead
-  // of two independent toggle buttons.
-  const styleSelectEl = root.querySelector('[data-style-select]');
-  if (styleSelectEl) styleSelectEl.onchange = async () => {
-    const e = getEntry(STATE.entryId);
-    const val = styleSelectEl.value;
-    e.tags = (e.tags || []).filter((t) => normalizeTagKey(t) !== BW_STYLE_TAG_KEY && normalizeTagKey(t) !== COLOR_STYLE_TAG_KEY);
-    e.customTags = (e.customTags || []).filter((t) => normalizeTagKey(t) !== BW_STYLE_TAG_KEY && normalizeTagKey(t) !== COLOR_STYLE_TAG_KEY);
-    if (val === 'bw') e.customTags = [...e.customTags, 'BW Coloring'];
-    if (val === 'color') e.customTags = [...e.customTags, 'Color'];
-    await saveEntry(e);
-    showToast('Style updated');
-    render();
-  };
+  // #402: Style dropdown drives the same underlying tag-based storage
+  // (isBWStyle/isColorStyle just check for the BW Coloring/Color tags).
+  root.querySelectorAll('[data-style-pick]').forEach((el) => {
+    el.onclick = async () => {
+      const e = getEntry(STATE.entryId);
+      const val = el.getAttribute('data-style-pick');
+      const already = (val === 'bw' && isBWStyle(e)) || (val === 'color' && isColorStyle(e));
+      e.tags = (e.tags || []).filter((t) => normalizeTagKey(t) !== BW_STYLE_TAG_KEY && normalizeTagKey(t) !== COLOR_STYLE_TAG_KEY);
+      e.customTags = (e.customTags || []).filter((t) => normalizeTagKey(t) !== BW_STYLE_TAG_KEY && normalizeTagKey(t) !== COLOR_STYLE_TAG_KEY);
+      if (!already) {
+        if (val === 'bw') e.customTags = [...e.customTags, 'BW Coloring'];
+        if (val === 'color') e.customTags = [...e.customTags, 'Color'];
+      }
+      await saveEntry(e);
+      showToast('Style updated');
+      render();
+    };
+  });
   root.querySelectorAll('[data-rating]').forEach((container) => {
     const field = container.getAttribute('data-rating');
     container.querySelectorAll('[data-rate]').forEach((star) => {
@@ -10558,25 +10618,13 @@ function attachRootHandlers() {
       };
     });
   });
-  // #405: opens/closes a Notes-container lead-attribute dropdown (Flag,
-  // Position, 2nd Gender, Physique, Personality) -- same one-open-at-a-time
-  // pattern as COLL_ADD_KIND for the Stats container's Playlist/Award rows.
-  root.querySelectorAll('[data-lead-pick-toggle]').forEach((el) => {
-    el.onclick = () => {
-      const key = el.getAttribute('data-lead-pick-toggle');
-      NOTES_PICK_OPEN = NOTES_PICK_OPEN === key ? null : key;
-      render();
-    };
-  });
-  root.querySelectorAll('[data-char-notes]').forEach((el) => {
-    attachBulletTextarea(el);
-    el.onblur = async () => {
-      const who = el.getAttribute('data-char-notes');
-      const e = getEntry(STATE.entryId);
-      e[who].notes = el.value;
-      await saveEntry(e);
-    };
-  });
+  // #410: Notes-container lead-attribute dropdowns (Flag, Position, 2nd
+  // Gender, Physique, Personality) now open/close via the generic
+  // document-level [data-dd-toggle] delegation, same as every other
+  // dropdown in the app.
+  // #413: [data-char-notes] wiring removed -- no markup emits that attribute
+  // anymore (the per-character notes textarea was replaced by the single
+  // combined #user-notes rich-text box; see its own wiring below).
   root.querySelectorAll('[data-char-photo]').forEach((el) => {
     el.onchange = () => applyCharPhotoFile(el.getAttribute('data-char-photo'), el.files[0]);
   });
@@ -10741,24 +10789,14 @@ function attachRootHandlers() {
       }
     }, true);
   });
-  root.querySelectorAll('[data-tag-add-toggle]').forEach((tagAddToggleBtn) => {
-    tagAddToggleBtn.onclick = () => {
-      const sec = tagAddToggleBtn.getAttribute('data-tag-add-toggle');
-      TAG_ADD_SECTION = TAG_ADD_SECTION === sec ? null : sec;
-      TAG_ADD_MODE = !!TAG_ADD_SECTION;
-      // Bug fix: this used to set TAG_ADD_AUTOFOCUS = TAG_ADD_MODE, which
-      // called .focus() on the inline text input the instant the panel
-      // opened -- on mobile, focusing a text input is exactly what pops the
-      // keyboard up, so just tapping "+ NEW TAG" to open the panel (to
-      // browse/tap existing tag-pool chips below it, say) yanked the
-      // keyboard open too. Autofocus should only fire after she's already
-      // typing -- see the Enter-key handler below, which still sets it
-      // after a tag is added so she can chain-add another without having to
-      // re-tap the box. Opening the panel itself should leave focus alone;
-      // the keyboard should only appear once she taps inside the white box.
-      render();
-    };
-  });
+  // #410: the Tags section header's open/close toggle is now handled by
+  // the generic document-level [data-dd-toggle] delegation, same as every
+  // other dropdown. Opening it deliberately leaves focus alone (autofocus
+  // used to fire the instant the panel opened, which popped the mobile
+  // keyboard just from tapping "+ NEW TAG" to browse the pool below it --
+  // it should only fire after she's already typing; see the Enter-key
+  // handler below, which still sets it after a tag is added so she can
+  // chain-add another without re-tapping the box).
   const newTagInputInline = root.querySelector('#new-tag-input-inline');
   if (newTagInputInline) {
     if (TAG_ADD_AUTOFOCUS) { newTagInputInline.focus(); TAG_ADD_AUTOFOCUS = false; }
@@ -10772,7 +10810,7 @@ function attachRootHandlers() {
       if (ev.key !== 'Enter') return;
       ev.preventDefault();
       const raw = newTagInputInline.value.trim();
-      if (!raw) { TAG_ADD_MODE = false; render(); return; }
+      if (!raw) { OPEN_DROPDOWN_ID = null; render(); return; }
       {
         const _hk = normalizeTagKey(raw);
         if (USER_HIDDEN_TAG_KEYS.has(_hk) && !HIDDEN_TAG_KEYS.has(_hk) && !DELETED_TAG_KEYS.has(_hk)) {
@@ -10792,8 +10830,9 @@ function attachRootHandlers() {
       // #369: a brand-new tag (never used anywhere before) gets pinned to
       // whichever section box its "+ NEW TAG" was opened from, so it shows
       // up there instead of defaulting to General.
-      if (!canonical && TAG_ADD_SECTION) {
-        await setTagSectionOverride(val, TAG_ADD_SECTION);
+      const openTagSection = OPEN_DROPDOWN_ID && OPEN_DROPDOWN_ID.startsWith('tag:') ? OPEN_DROPDOWN_ID.slice(4) : null;
+      if (!canonical && openTagSection) {
+        await setTagSectionOverride(val, openTagSection);
       }
       await saveEntry(e);
       showToast('Tag added');
@@ -10905,7 +10944,20 @@ function attachRootHandlers() {
     };
     notesArea.addEventListener('keyup', updateToolbarState);
     notesArea.addEventListener('mouseup', updateToolbarState);
-    notesArea.addEventListener('focus', updateToolbarState);
+    // #414: some browsers leave a brand-new/empty contenteditable in a
+    // "bold" formatting state with no button ever pressed, so the very
+    // first text she types comes out bold -- force that state off on
+    // focus whenever the box is empty, so typed text starts out normal
+    // weight (as the explicit font-weight:400 on .notes-editor also
+    // reinforces) and only turns bold when she clicks the B button herself.
+    notesArea.addEventListener('focus', () => {
+      try {
+        if (!notesArea.textContent.trim() && document.queryCommandState('bold')) {
+          document.execCommand('bold', false, null);
+        }
+      } catch (err) {}
+      updateToolbarState();
+    });
     root.querySelectorAll('.notes-fmt-btn[data-notes-cmd]').forEach((btn) => {
       // mousedown (not click) so the notes editor's text selection isn't
       // lost to the button stealing focus before the command runs.
@@ -11701,8 +11753,38 @@ function renderHomeInPlace() {
 
 document.addEventListener('click', async (ev) => {
   const t = ev.target;
-  if (TAG_FILTER_OPEN && !t.closest('.tag-multiselect') && STATE.view === 'home') {
-    TAG_FILTER_OPEN = false;
+  // #410: one shared open/close toggle for every dropdown in the app --
+  // opening any one of them always sets this same OPEN_DROPDOWN_ID flag,
+  // so opening a new dropdown automatically closes whatever else was
+  // open, anywhere, satisfying her "only one dropdown open at a time"
+  // rule without any section needing to know about any other section.
+  const ddToggle = t.closest('[data-dd-toggle]');
+  if (ddToggle) {
+    const key = ddToggle.getAttribute('data-dd-toggle');
+    OPEN_DROPDOWN_ID = OPEN_DROPDOWN_ID === key ? null : key;
+    render();
+    return;
+  }
+  // Picking an option whose dropdown is marked close-on-pick (the strictly
+  // single-select ones -- Shelf/Story Status/Format/Style/Flag -- behave
+  // like a native <select> and dismiss themselves the instant something's
+  // chosen); every multi-select dropdown's pool stays open so she can keep
+  // picking before closing it herself. The item's own click handler (wired
+  // separately, by data attribute) runs first and mutates the entry
+  // synchronously before this fires, so closing here doesn't race it.
+  const poolChip = t.closest('.dd-panel .tag-pool-chip');
+  if (poolChip && OPEN_DROPDOWN_ID) {
+    const wrap = poolChip.closest('.dd-wrap');
+    const ownToggle = wrap && wrap.querySelector('[data-dd-toggle]');
+    if (ownToggle && ownToggle.getAttribute('data-dd-close-on-pick') === '1') {
+      OPEN_DROPDOWN_ID = null;
+      render();
+      return;
+    }
+  }
+  // Click anywhere outside the open dropdown's own box closes it.
+  if (OPEN_DROPDOWN_ID && !t.closest('.dd-wrap')) {
+    OPEN_DROPDOWN_ID = null;
     render();
     return;
   }

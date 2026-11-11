@@ -158,6 +158,9 @@ flex: 0 1 auto; text-align: center;
 .chip.active { background: var(--pink); color: #ffffff; border-color: var(--border); opacity: 1; box-shadow: 0 0 0 2px var(--yellow) inset; }
 
 .rating-pick-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 6px; align-items: stretch; }
+/* #412: Linked/Unlinked's own row -- just the two of them, not stretched
+   across the same 3-column grid the old 6-chip row used. */
+.rating-pick-row-2 { grid-template-columns: repeat(2, 1fr); }
 .rating-pick-icon {
 font-size: 20px; opacity: .35; cursor: pointer; filter: grayscale(.6);
 padding: 2px; line-height: 1;
@@ -237,21 +240,49 @@ display: flex; align-items: center; justify-content: space-between;
    lead-attribute dropdowns, matching the cyan Shelf/Story Status/
    Format/Style selects already in this same Stats container. */
 .cyan-ms-toggle { background: var(--cyan-fill); color: var(--text); }
-.tag-ms-panel {
-display: none; background: var(--card-2); border: 1px solid var(--border); border-radius: 0;
-padding: 8px; margin-top: 6px;
+
+/* #410/#412/#415: the one shared "dropdown" component used everywhere in
+   the app now -- Stats container rows, the Notes container's lead-
+   attribute pickers, the Tags container's add-a-tag pool, and every
+   homepage filter (Shelf/Story Status/Format/Flag/Playlist/Award/Tags).
+   .dd-wrap is the positioning context; .dd-panel floats over the page as
+   an absolutely-positioned popup instead of pushing the rest of the
+   layout down -- this is what stops the leftover/fluctuating whitespace
+   and the Notes-container photo-box "zoom" glitch that came from the old
+   inline panel stretching its CSS Grid row open/closed. */
+.dd-wrap { position: relative; }
+/* Her rule -- every dropdown box shows its text/placeholder centered, not
+   left-aligned, so Shelf/Format (previously centered native <select>s) and
+   Flags/Playlist/Award (previously left-aligned custom buttons) stop
+   looking inconsistent with each other. The chevron is pulled out of the
+   centered flow and pinned to the right edge instead. */
+.dd-toggle {
+  position: relative; justify-content: center; text-align: center; padding-right: 26px;
 }
-.tag-ms-panel.open {
-display: block;
+.dd-toggle .chevron {
+  position: absolute; right: 10px; top: 50%; transform: translateY(-50%); opacity: .8;
 }
-.tag-ms-item {
-display: flex; align-items: center; gap: 4px; padding: 6px 3px; font-size: 11px; color: var(--text);
-border-radius: 0; cursor: pointer; min-width: 0;
+.dd-toggle-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+/* Multiple selections shown as pink pill chips sitting inside the toggle's
+   own blue/cyan box (her reference images), instead of a separate row of
+   chips underneath it. */
+.dd-chip-wrap { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
+.dd-chip {
+  background: var(--pink-soft); color: var(--text); border: 1px solid var(--pink); border-radius: 0;
+  padding: 2px 7px; font-size: 10.5px; font-weight: 700; white-space: nowrap;
 }
-.tag-ms-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tag-ms-item:hover { background: rgba(255,255,255,.04); }
-.tag-ms-item input { accent-color: var(--purple); flex: 0 0 auto; }
-.tag-ms-panel.open > button, .tag-ms-panel.open > div { grid-column: 1 / -1; }
+/* Floats over the page -- positioned relative to its own .dd-wrap, so it
+   never affects that wrap's height/layout while it's open. */
+.dd-panel {
+  position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 30;
+  background: var(--card-2); border: 2px solid var(--border); border-radius: 0;
+  box-shadow: 4px 4px 0 var(--border); padding: 6px;
+}
+/* #412: Award/Playlist/the homepage's new Flag dropdown are blue (her
+   "they're dropdowns" rule), same cyan-fill-adjacent blue used for user-
+   made collections elsewhere, not the pink filter row above them. */
+.dd-blue .dd-toggle { background: var(--blue); color: var(--text); }
+.dd-blue .dd-chip { border-color: var(--border); }
 /* ---------- Main / grid ---------- */
 main { padding: 12px; max-width: 900px; margin: 0 auto; padding-bottom: calc(150px + env(safe-area-inset-bottom, 0px)); }
 .section-title { font-size: 19px; font-weight: 700; text-align: center; color: var(--text); text-transform: uppercase; letter-spacing: .06em; margin: 18px 4px 10px; }
@@ -628,7 +659,11 @@ background: var(--card-2); border-radius: 0; padding: 8px; min-height: 20px;
 }
 .tag-section-tags .tag-chip { border: none; }
 .tag-section-tags .tag-chip.custom { border: none; }
-.tag-chip.custom { background: var(--pink-soft); color: var(--pink); border-color: var(--pink); }
+/* #411: her rule -- all tag chip text is the same (black), whether it's a
+   built-in tag or one she typed herself; a custom tag still gets a subtle
+   pink-tinted border/background so it's distinguishable, just not a
+   different text color anymore. */
+.tag-chip.custom { background: var(--pink-soft); color: var(--text); border-color: var(--pink); }
 .tag-chip.tag-removed { opacity: .35; text-decoration: line-through; }
 .tag-chip.readonly { cursor: pointer; }
 .tag-chip.readonly:hover { background: var(--pink); color: #fff; }
@@ -648,12 +683,10 @@ background: var(--card-2); border-radius: 0; padding: 8px; min-height: 20px;
 .stats-row-content {
   flex: 1; display: flex; align-items: center; background: var(--card-2); border-radius: 0; padding: 8px; min-height: 20px;
 }
-.stats-row-content .status-pill-select,
-.stats-row-content .shelf-select {
-  background-color: var(--cyan-fill); color: var(--text); font-weight: 800; border: 2px solid var(--border);
-  background-image: linear-gradient(45deg, transparent 50%, #0b0f2b 50%), linear-gradient(135deg, #0b0f2b 50%, transparent 50%);
-  background-position: right 8px center, right 4px center; background-size: 4px 4px, 4px 4px; background-repeat: no-repeat;
-}
+/* #415: Shelf/Story Status/Format are the shared dd-wrap dropdown now
+   (not native <select>s), so their wrap needs to fill this row the same
+   way the old select used to. */
+.stats-row-content .dd-wrap { flex: 1; min-width: 0; }
 .add-tag-input { background: var(--card); color: var(--text); border: 2px solid var(--border); border-radius: 0; padding: 4px 10px; font-size: 12px; font-weight: 600; font-family: inherit; outline: none; min-width: 140px; }
 .tag-chip button { background: none; border: none; color: inherit; font-size: 13px; cursor: pointer; padding: 0; }
 .add-tag-row { display: flex; gap: 6px; }
@@ -707,6 +740,12 @@ padding: 5px 12px; font-size: 13px; font-weight: 700; cursor: pointer; min-width
 width: 100%; background: var(--navy-2); color: var(--text); border: 1px solid var(--border);
 border-radius: 0; padding: 8px; font-size: 13.5px; min-height: 70px; box-sizing: border-box;
 white-space: pre-wrap; overflow-wrap: break-word;
+/* #414: her rule -- typed text stays normal weight unless she bolds it
+   herself with the toolbar; some browsers' contenteditable defaults an
+   empty field to a "bold" formatting state (so the very first thing you
+   type comes out bold with no button pressed), so this is reinforced
+   with an explicit focus-time check in app.js too, not just this default. */
+font-weight: 400;
 }
 .notes-editor:empty::before { content: attr(data-placeholder); color: var(--text-dim); font-weight: 400; }
 .notes-editor ul { margin: 4px 0 4px 20px; padding: 0; }
@@ -1048,7 +1087,7 @@ margin: -18px -18px 14px; padding: 12px 18px; border-bottom: 3px solid var(--bor
 
 /* Mobile: homepage filter dropdowns/buttons match the blue chips; Stats format buttons in 2 columns */
 @media (max-width: 700px) {
-  .filter-select, .rating-filter-select, .tag-ms-toggle { font-size: 12px !important; letter-spacing: .02em; }
+  .rating-filter-select, .tag-ms-toggle, .dd-toggle { font-size: 12px !important; letter-spacing: .02em; }
   .stats-format-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
 }
 
@@ -1113,23 +1152,16 @@ body[data-bg="grid"] .app-header, body[data-bg="grid-blue"] .app-header, body[da
    particular row (Energy's multi-word labels included) -- white-space:nowrap
    is the only thing CSS needs to set, the sizing itself is dynamic. */
 .flag-picker-h .lead-flag-btn span { display: block; width: 100%; white-space: nowrap; }
-/* #405: the Notes container's lead-attribute rows are now dropdowns
-   (renderLeadPickDropdown in app.js) instead of button rows -- each
-   dropdown flexes to share its .flag-picker-h row same as the old
-   buttons did, and its picked-item chips (shown once more than one
-   thing is picked, e.g. Personality) wrap onto their own line below the
-   toggle rather than forcing the row taller right away. */
-.flag-picker-h .lead-pick-dropdown { flex: 1; min-width: 0; }
-.lead-pick-dropdown { display: flex; flex-direction: column; gap: 4px; }
-.lead-pick-toggle { font-size: 11.5px; padding: 7px 8px; }
-/* #408: once more than one item is picked, show them as chips filling
-   the row -- same .tag-chip look as the Tags container (reused directly,
-   see statsCollectionRowHtml/renderLeadPickDropdown/statsFlagsRowHtml in
-   app.js), not the plain-list .tag-pool-chip rows used for the dropdown
-   pool itself. */
-.lead-pick-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.lead-pick-chips .tag-chip { font-size: 10.5px; padding: 3px 8px; }
-.lead-pick-panel .tag-pool { max-height: 180px; }
+/* #405/#410: the Notes container's lead-attribute rows are dropdowns
+   (renderLeadPickDropdown -> the shared renderDropdownToggle/.dd-wrap
+   component) instead of button rows -- each one flexes to share its
+   .flag-picker-h row same as the old buttons did, and its picked-item
+   chips (shown once more than one thing is picked, e.g. Personality)
+   render INSIDE the toggle box itself (.dd-chip-wrap) rather than as a
+   separate row underneath it. */
+.flag-picker-h .dd-wrap { flex: 1; min-width: 0; }
+.flag-picker-h .dd-toggle { font-size: 11.5px; padding: 7px 8px; }
+.flag-picker-h .dd-panel .tag-pool { max-height: 180px; }
 .notes-lead-block-h[data-flag="green"] .polaroid-frame { border: 7px solid #1e6b3a; }
 .notes-lead-block-h[data-flag="red"] .polaroid-frame { border: 7px solid #b71c1c; }
 .notes-lead-block-h[data-flag="black"] .polaroid-frame { border: 7px solid #000; }
