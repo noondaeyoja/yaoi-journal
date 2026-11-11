@@ -3321,7 +3321,7 @@ async function setSuggestionsCollapsed(collapsed) {
 // resetting open every time the homepage re-renders.
 let HOME_COLLAPSED_SECTIONS = new Set();
 let HOME_EXPANDED_SECTIONS = new Set();
-const HOME_SECTION_CAP = 10;
+const HOME_SECTION_CAP = 12;
 document.addEventListener('click', (ev) => {
   const b = ev.target && ev.target.closest && ev.target.closest('[data-home-show-all]');
   if (!b) return;
@@ -3905,8 +3905,8 @@ function renderDropdownToggle(key, title, items, { blankWhenEmpty = false, close
 // dropdown when clicking on the section header, vs right now it's got a
 // dropdown carat in the blue box"), matching how the Tags container's own
 // pink section headers already work as their dropdown's toggle.
-function statsRowHtml(labelText, key, contentHtml) {
-  return `<div class="stats-row"><div class="stats-row-label" data-dd-toggle="${escapeHtml(key)}" style="cursor:pointer;">${escapeHtml(labelText)}</div><div class="stats-row-content coll-row-content">
+function statsRowHtml(labelText, key, contentHtml, labelClass) {
+  return `<div class="stats-row"><div class="stats-row-label ${labelClass || ''}" data-dd-toggle="${escapeHtml(key)}" style="cursor:pointer;">${escapeHtml(labelText)}</div><div class="stats-row-content coll-row-content">
       ${contentHtml}
     </div></div>`;
 }
@@ -4157,6 +4157,13 @@ function renderHome() {
       if (group.length === 0) return;
       // Completed shelf: most recently marked complete first.
       if (shelf === 'Completed') group.sort((a, b) => new Date(b.completedAt || b.updatedAt || 0) - new Date(a.completedAt || a.updatedAt || 0));
+      // #417: Currently Reading shelf only -- most recently updated chapter
+      // input jumps to the front, per her request. chapterUpdatedAt is
+      // stamped only when the chapter field's value actually changes (see
+      // the #current-chapter-input blur handler), so entries she hasn't
+      // touched the chapter box on just keep their normal relative order
+      // (sort is stable, and they all share the 0 fallback).
+      if (shelf === 'Currently Reading') group.sort((a, b) => (b.chapterUpdatedAt || 0) - (a.chapterUpdatedAt || 0));
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
       body += homeSectionHtml(rowId, shelfLabel(shelf), group.length, group.map((e) => renderCoverCard(e)));
     });
@@ -4199,11 +4206,17 @@ function renderHome() {
   // shared OPEN_DROPDOWN_ID/.dd-wrap system (key 'home-tags') -- same single-
   // dropdown-open-at-a-time rule and the same generic outside-click-closes
   // delegation now cover this control too, instead of a bespoke flag/handler.
+  // #416: Tags is a dropdown too, so (her "dropdowns are cyan/blue, buttons
+  // are pink" rule) it gets the same cyan-ms-toggle treatment as Shelf/
+  // Story Status/Format/Flag/Playlist/Award now, instead of staying the odd
+  // one out in pink. It also no longer takes a full-width row of its own --
+  // she asked to put it on the same line as Linked/Unlinked now that it's
+  // a compact dropdown, not a wide button.
   const homeTagsOpen = OPEN_DROPDOWN_ID === 'home-tags';
   const tagMsPanel = tags.map((t) => `<span class="tag-pool-chip ${STATE.tagFilters.includes(t) ? 'active' : ''}" data-toggle-home-tag="${escapeHtml(t)}">${escapeHtml(capTag(t))}</span>`).join('');
   const tagMultiselect = `
-    <div class="tag-multiselect dd-wrap">
-      <button type="button" class="tag-ms-toggle dd-toggle ${homeTagsOpen ? 'active' : ''}" data-dd-toggle="home-tags">🏷️ Tags${STATE.tagFilters.length ? ` (${STATE.tagFilters.length})` : ''} <span class="chevron">${homeTagsOpen ? '▴' : '▾'}</span></button>
+    <div class="filter-dropdown-col tag-multiselect dd-wrap">
+      <button type="button" class="tag-ms-toggle cyan-ms-toggle dd-toggle ${homeTagsOpen ? 'active' : ''}" data-dd-toggle="home-tags">🏷️ Tags${STATE.tagFilters.length ? ` (${STATE.tagFilters.length})` : ''} <span class="chevron">${homeTagsOpen ? '▴' : '▾'}</span></button>
       ${homeTagsOpen ? `<div class="dd-panel" id="tag-ms-panel">
         <div class="tag-picker-box">
           <input type="text" id="home-tag-filter-search" class="tag-picker-input" placeholder="Search tags...">
@@ -4219,33 +4232,30 @@ function renderHome() {
   // below the Tags multiselect per her request.
   const awardOptions = activeCollectionsOfKind('award');
   const playlistOptions = activeCollectionsOfKind('playlist');
-  // #412: she called Award/Playlist (and the new Flag dropdown next to
-  // them) BLUE -- a distinct modifier class from the Shelf/Story Status/
-  // Format row above (which stays pink), since "they're dropdowns" was her
-  // reasoning for singling this row out, not a blanket recolor of every
-  // homepage filter.
-  const awardChips = `<div class="filter-dropdown-col dd-blue">${renderDropdownToggle('home-award', 'Award', awardOptions.map((c) => ({
+  // #416: she asked for every dropdown to share one single blue/cyan --
+  // dropped the separate "collections are blue" dd-blue modifier that
+  // #412 had given Award/Playlist/Flag, so they match Shelf/Story Status/
+  // Format/Tags exactly now instead of standing out as a different shade.
+  const awardChips = `<div class="filter-dropdown-col">${renderDropdownToggle('home-award', 'Award', awardOptions.map((c) => ({
     value: c.id, label: c.name, on: STATE.awardFilter === c.id, dataAttr: `data-home-award-pick="${escapeHtml(c.id)}"`,
   })), { blankWhenEmpty: false, closeOnPick: true })}</div>`;
-  const playlistChips = `<div class="filter-dropdown-col dd-blue">${renderDropdownToggle('home-playlist', 'Playlist', playlistOptions.map((c) => ({
+  const playlistChips = `<div class="filter-dropdown-col">${renderDropdownToggle('home-playlist', 'Playlist', playlistOptions.map((c) => ({
     value: c.id, label: c.name, on: STATE.playlistFilter === c.id, dataAttr: `data-home-playlist-pick="${escapeHtml(c.id)}"`,
   })), { blankWhenEmpty: false, closeOnPick: true })}</div>`;
-  // #412: her follow-up -- the four "blue button" radio filters (NSFW/
-  // Artwork/Favorite/On HD) consolidated into one "Flag" dropdown (same
-  // shared renderDropdownToggle as every other dropdown, recolored blue to
-  // match Award/Playlist next to it) instead of a row of standalone
-  // buttons; Linked/Unlinked stay as their own two buttons on their own
-  // row below, per her explicit call to keep those separate. Picking one
-  // still runs through the exact same data-nav-filter handler as before
-  // (which itself already closes any open dropdown via navigate()), so no
-  // selection logic changed, only how it's presented.
+  // #412: the four "blue button" radio filters (NSFW/Artwork/Favorite/On
+  // HD) consolidated into one "Flag" dropdown (same shared
+  // renderDropdownToggle as every other dropdown) instead of a row of
+  // standalone buttons. Picking one still runs through the exact same
+  // data-nav-filter handler as before (which itself already closes any
+  // open dropdown via navigate()), so no selection logic changed, only
+  // how it's presented.
   const homeFlagItems = [
     !isSFW() ? { value: 'hentai', icon: '💦', label: 'NSFW', on: STATE.showHentaiOnly, dataAttr: `data-nav-filter="${STATE.showHentaiOnly ? 'home' : 'hentai'}"` } : null,
     { value: 'artwork', icon: '🖌️', label: 'Artwork', on: STATE.showArtworkOnly, dataAttr: `data-nav-filter="${STATE.showArtworkOnly ? 'home' : 'artwork'}"` },
     { value: 'favorites', icon: '💜', label: 'Favorite', on: STATE.showFavoritesOnly, dataAttr: `data-nav-filter="${STATE.showFavoritesOnly ? 'home' : 'favorites'}"` },
     { value: 'onDrive', icon: '💾', label: 'On HD', on: STATE.showOnDriveOnly, dataAttr: `data-nav-filter="${STATE.showOnDriveOnly ? 'home' : 'onDrive'}"` },
   ].filter(Boolean);
-  const homeFlagDropdown = `<div class="filter-dropdown-col dd-blue">${renderDropdownToggle('home-flags', 'Flag', homeFlagItems, { blankWhenEmpty: false, closeOnPick: true })}</div>`;
+  const homeFlagDropdown = `<div class="filter-dropdown-col">${renderDropdownToggle('home-flags', 'Flag', homeFlagItems, { blankWhenEmpty: false, closeOnPick: true })}</div>`;
   const collectionFilterRow = `<div class="filter-dropdown-row">${homeFlagDropdown}${playlistChips}${awardChips}</div>`;
 
   // #399: Overall/Smut/Crying/WTF/Darkness dropdowns dropped from the
@@ -4256,20 +4266,19 @@ function renderHome() {
   // their filteredEntries() checks are deliberately left in place.
   // Reading-link chips — unlike favorites/on-HD/hentai these don't replace
   // the whole shelf, they're additive AND-filters like smut/quality/flag,
-  // so they stack with whatever else is already filtered. #412: she asked
-  // to keep these two as standalone buttons (not folded into the Flag
-  // dropdown above), on their own row directly below Flag/Playlist/Award.
-  const linkChip = `<span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.linkFilter ? 'active' : ''}" data-link-filter="1" title="Has a reading link attached"><span class="ffb-icon">🔗</span><span class="ffb-label">Linked</span></span>`;
-  const noLinkChip = `<span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.noLinkFilter ? 'active' : ''}" data-no-link-filter="1" title="No reading link attached"><span class="ffb-icon">⛓️‍💥</span><span class="ffb-label">Unlinked</span></span>`;
+  // so they stack with whatever else is already filtered. #416: now sharing
+  // Tags' row (she asked for this once Tags became a compact dropdown);
+  // still plain buttons, so still pink, not cyan/blue like the dropdowns.
+  const linkChip = `<div class="filter-dropdown-col"><span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.linkFilter ? 'active' : ''}" data-link-filter="1" title="Has a reading link attached"><span class="ffb-icon">🔗</span><span class="ffb-label">Linked</span></span></div>`;
+  const noLinkChip = `<div class="filter-dropdown-col"><span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.noLinkFilter ? 'active' : ''}" data-no-link-filter="1" title="No reading link attached"><span class="ffb-icon">⛓️‍💥</span><span class="ffb-label">Unlinked</span></span></div>`;
 
   return `
     <div class="app-header">
       <button class="filters-toggle-btn" data-toggle-filters="1">${FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
       <div class="filters-collapsible ${FILTERS_COLLAPSED ? 'collapsed' : ''}" id="filters-collapsible">
         <div class="filter-dropdown-row">${shelfChips}${storyStatusChips}${mediaFormatChips}</div>
-        ${tagMultiselect}
+        <div class="filter-dropdown-row">${tagMultiselect}${linkChip}${noLinkChip}</div>
         ${collectionFilterRow}
-        <div class="rating-pick-row rating-pick-row-2">${linkChip}${noLinkChip}</div>
         <div class="create-playlist-row"><button type="button" class="create-playlist-btn" data-create-playlist="1">+ Create playlist</button></div>
       </div>
     </div>
@@ -8400,6 +8409,26 @@ function renderLeadPickDropdown(who, title, groups, openKeySuffix) {
       items.push({ value, label, on: arr.includes(value), dataAttr: `data-${g.dataAttr}="${who}:${value}"` });
     });
   });
+  // #416: Personality gets the Tags-container's own look (pink section-
+  // header block + plain chip box), per her reference image, instead of
+  // the generic cyan dd-toggle -- Flag/Position/2nd Gender/Physique above
+  // keep the regular cyan dropdown toggle unchanged. The box shows the
+  // current picks as clickable chips (clicking one toggles it off, reusing
+  // the exact same data attribute the add-panel pool below uses to toggle
+  // it on -- so this is still the same dataAttr-based click delegation as
+  // before, just styled differently), and the pink header button opens
+  // that same add-panel pool everything else here already uses.
+  if (openKeySuffix === 'personality') {
+    const isOpen = OPEN_DROPDOWN_ID === openKey;
+    const selected = items.filter((i) => i.on);
+    const chips = selected.map((i) => `<div class="tag-chip" ${i.dataAttr} title="Tap to remove">${escapeHtml(i.label)}</div>`).join('');
+    const pool = items.map((i) => `<span class="tag-pool-chip ${i.on ? 'active' : ''}" ${i.dataAttr}>${escapeHtml(i.label)}</span>`).join('');
+    return `<div class="tag-section-row dd-wrap">
+      <button type="button" class="tag-section-header tag-section-header-toggle ${isOpen ? 'active' : ''}" data-dd-toggle="${escapeHtml(openKey)}">${escapeHtml(title)}</button>
+      <div class="tag-section-tags">${chips}</div>
+      ${isOpen ? `<div class="dd-panel"><div class="tag-pool">${pool}</div></div>` : ''}
+    </div>`;
+  }
   return renderDropdownToggle(openKey, title, items, { blankWhenEmpty: false, closeOnPick: openKeySuffix === 'flag' });
 }
 
@@ -8849,7 +8878,7 @@ function renderDetail(e) {
              from button rows to the same cyan dropdown pattern per her
              request. -->
         ${statsRowHtml('Shelf', 'stats-shelf', shelfSelect)}
-        ${statsRowHtml('Story Status', 'stats-status', statusSelect)}
+        ${statsRowHtml('Story Status', 'stats-status', statusSelect, 'stats-row-label-compact')}
         ${statsRowHtml('Format', 'stats-format', mediaFormatSelect)}
         ${statsRowHtml('Style', 'stats-style', styleSelect)}
         ${statsFlagsRowHtml(e)}
@@ -10383,10 +10412,19 @@ function attachRootHandlers() {
     render();
   };
   const currentChapterInput = root.querySelector('#current-chapter-input');
+  // #417: stamps chapterUpdatedAt only when the chapter value actually
+  // changed on blur -- that timestamp is what the Currently Reading
+  // homepage shelf (only that shelf) now sorts by, most-recent-first, per
+  // her request. Just re-blurring without changing anything (or editing
+  // any other field on this page) never bumps it.
   if (currentChapterInput) currentChapterInput.onblur = async () => {
     const e = getEntry(STATE.entryId);
     if (!e) return;
-    e.currentChapter = currentChapterInput.value.trim();
+    const newVal = currentChapterInput.value.trim();
+    if (newVal !== (e.currentChapter || '')) {
+      e.currentChapter = newVal;
+      e.chapterUpdatedAt = Date.now();
+    }
     await saveEntry(e);
   };
   const hdBtn = root.querySelector('[data-toggle-hd]');
@@ -11712,6 +11750,10 @@ function renderHomeInPlace() {
       if (group.length === 0) return;
       // Completed shelf: most recently marked complete first.
       if (shelf === 'Completed') group.sort((a, b) => new Date(b.completedAt || b.updatedAt || 0) - new Date(a.completedAt || a.updatedAt || 0));
+      // #417: Currently Reading shelf only -- see the matching comment in
+      // renderHome() above (same sort, kept identical so in-place re-renders
+      // while typing in search don't show a different order).
+      if (shelf === 'Currently Reading') group.sort((a, b) => (b.chapterUpdatedAt || 0) - (a.chapterUpdatedAt || 0));
       const rowId = 'row-' + shelf.replace(/[^a-z0-9]+/gi, '-');
       body += homeSectionHtml(rowId, shelfLabel(shelf), group.length, group.map((e) => renderCoverCard(e)));
     });

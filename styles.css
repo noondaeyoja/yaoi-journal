@@ -102,7 +102,12 @@ background: var(--bg-cyan);
 backdrop-filter: blur(10px);
 border-bottom: 1px solid var(--border);
 padding: 10px 12px 8px;
-overflow: hidden;
+/* #416: was overflow:hidden (leftover from the old sticky/collapsing header,
+   #311), which clipped any dd-panel popup opened from the filter row the
+   moment it extended past this box's own (short) height -- that's the
+   "dropdown clipped by the size of the filter box" bug. Nothing here still
+   depends on clipping now that the header is static, not collapsing. */
+overflow: visible;
 transition: max-height .25s ease, opacity .2s ease, padding-top .25s ease, padding-bottom .25s ease, border-bottom-width .25s ease;
 }
 body[data-bg='pink'] .app-header { background: var(--bg-pink); }
@@ -181,15 +186,19 @@ text-align: center; text-transform: uppercase; letter-spacing: .02em;
 background-color: var(--pink); border: 2px solid var(--border); border-radius: 0; padding: 9px 8px; box-sizing: border-box;
 appearance: none; -webkit-appearance: none; cursor: pointer;
 }
+/* #416: her rule -- dropdowns are cyan/blue, buttons are pink. Linked/
+   Unlinked are plain toggle buttons (not dropdowns), so they're pink now,
+   not cyan -- this is the only remaining use of .flag-filter-btn now that
+   NSFW/Artwork/Favorite/On HD moved into the Flag dropdown. */
 .rating-pick-icon.flag-filter-btn {
 display: flex; align-items: center; justify-content: center; gap: 5px; font-size: 12px; font-weight: 800; font-family: inherit;
 text-transform: uppercase; letter-spacing: .02em;
-background: var(--cyan-fill); color: var(--text); border: 2px solid var(--border); padding: 9px 6px; border-radius: 0;
+background: var(--pink); color: #ffffff; border: 2px solid var(--border); padding: 9px 6px; border-radius: 0;
 opacity: 1; filter: none; text-shadow: none; width: 100%; box-sizing: border-box;
 }
 .rating-pick-icon.flag-filter-btn .ffb-icon { font-size: 15px; line-height: 1; }
 .rating-pick-icon.flag-filter-btn .ffb-label { white-space: nowrap; }
-.rating-pick-icon.flag-filter-btn.active { background: var(--cyan-fill); border-color: var(--yellow); box-shadow: 2px 2px 0 var(--yellow); text-shadow: none; }
+.rating-pick-icon.flag-filter-btn.active { background: var(--pink); border-color: var(--yellow); box-shadow: 2px 2px 0 var(--yellow); text-shadow: none; }
 .rating-pick-divider { width: 1px; align-self: stretch; background: var(--border); margin: 2px 6px; }
 .rating-filter-select {
 appearance: none; -webkit-appearance: none; background: var(--pink); color: var(--text);
@@ -221,10 +230,14 @@ display: block; width: 100%; text-align: center; background: none; border: none;
 font-size: 11px; padding: 6px 0 2px; cursor: pointer; letter-spacing: .04em; font-weight: 600;
 }
 .filters-collapsible {
-max-height: 3000px; overflow: hidden; opacity: 1;
+/* #416: overflow:visible while expanded, so a dd-panel popup opened from
+   any filter row isn't clipped by this box's own (short, content-driven)
+   height -- only the .collapsed state below still clips, which is what
+   that state actually needs (hiding everything while animating shut). */
+max-height: 3000px; overflow: visible; opacity: 1;
 transition: max-height .25s ease, opacity .2s ease, margin .2s ease;
 }
-.filters-collapsible.collapsed { max-height: 0; opacity: 0; pointer-events: none; padding-top: 0 !important; padding-bottom: 0 !important; margin-top: 0 !important; margin-bottom: 0 !important; border: 0 !important; }
+.filters-collapsible.collapsed { overflow: hidden; max-height: 0; opacity: 0; pointer-events: none; padding-top: 0 !important; padding-bottom: 0 !important; margin-top: 0 !important; margin-bottom: 0 !important; border: 0 !important; }
 
 .tag-multiselect { margin-bottom: 4px; }
 .tag-ms-toggle {
@@ -680,6 +693,12 @@ background: var(--card-2); border-radius: 0; padding: 8px; min-height: 20px;
   box-shadow: 3px 3px 0 var(--border); font-weight: 800; text-transform: uppercase; font-size: 12px;
   padding: 8px 4px; letter-spacing: .02em;
 }
+/* #417: her "STORY STATUS" label was the only two-word pink block in this
+   list, so it wrapped to 2 lines and stretched that whole row taller than
+   every one-word row (Shelf/Format/Style/Flags/Playlist/Awards) next to
+   it. Tighter letter-spacing + a touch smaller font keeps it on one line,
+   same row height as the rest. */
+.stats-row-label-compact { font-size: 10.5px; letter-spacing: 0; white-space: nowrap; }
 .stats-row-content {
   flex: 1; display: flex; align-items: center; background: var(--card-2); border-radius: 0; padding: 8px; min-height: 20px;
 }
@@ -687,6 +706,11 @@ background: var(--card-2); border-radius: 0; padding: 8px; min-height: 20px;
    (not native <select>s), so their wrap needs to fill this row the same
    way the old select used to. */
 .stats-row-content .dd-wrap { flex: 1; min-width: 0; }
+/* #417: her rule -- a blank dropdown box (Flags/Playlist/Awards with
+   nothing picked yet) should be exactly the same size as one with a value
+   in it, never shorter/taller just because it has no text to size itself
+   by. Pins every toggle in this container to the same minimum height. */
+.stats-row-content .dd-toggle { min-height: 38px; box-sizing: border-box; }
 .add-tag-input { background: var(--card); color: var(--text); border: 2px solid var(--border); border-radius: 0; padding: 4px 10px; font-size: 12px; font-weight: 600; font-family: inherit; outline: none; min-width: 140px; }
 .tag-chip button { background: none; border: none; color: inherit; font-size: 13px; cursor: pointer; padding: 0; }
 .add-tag-row { display: flex; gap: 6px; }
@@ -1124,7 +1148,10 @@ body[data-bg="grid"] .app-header, body[data-bg="grid-blue"] .app-header, body[da
    rows so this can't drift, and box-sizing:border-box is forced back on
    just the photo slot below so it exactly fills its column instead of
    overflowing it again. */
-.notes-lead-cols-h { display: flex; flex-direction: column; gap: 20px; margin-bottom: 4px; }
+/* #417: margin-bottom bumped from 4px -- she called the gap between the
+   Main Lead block and the formatting-button toolbar/text box below it too
+   squished. */
+.notes-lead-cols-h { display: flex; flex-direction: column; gap: 20px; margin-bottom: 18px; }
 .notes-lead-top-row, .notes-lead-body-h {
   display: grid; grid-template-columns: 160px 1fr; gap: 8px; align-items: stretch;
 }
@@ -1139,10 +1166,23 @@ body[data-bg="grid"] .app-header, body[data-bg="grid-blue"] .app-header, body[da
 .notes-lead-nameage-row-h { display: flex; gap: 8px; min-width: 0; }
 .notes-lead-nameage-row-h .lead-name-input { flex: 1; width: auto; margin: 0; }
 .notes-lead-nameage-row-h .lead-age-input { flex: 0 0 60px; width: 60px; margin: 0; }
+/* #417: restored to a square (her "like it was originally" -- the #402
+   horizontal redesign had stretched this to fill the row's full height,
+   which read as squished once the button column grew taller than the
+   photo's natural width). aspect-ratio back to 1/1 gives it a fixed,
+   always-square size from its 160px grid column; align-self: start stops
+   the grid's default item-stretch from re-stretching it to match the
+   button column's height. */
 .char-photo-slot.polaroid-frame.notes-lead-photo-h {
-  width: 100%; box-sizing: border-box; aspect-ratio: auto; height: auto; margin: 0;
+  width: 100%; box-sizing: border-box; aspect-ratio: 1/1; height: auto; margin: 0; align-self: start;
 }
-.notes-lead-buttons-h { min-width: 0; display: flex; flex-direction: column; gap: 8px; justify-content: space-between; }
+/* #416: was justify-content:space-between, which redistributed any leftover
+   vertical space (from each block's own, independently-stretched photo
+   height) as extra gap between the 3 rows -- that's why Main Character and
+   Main Lead's row-spacing differed whenever their photo heights differed.
+   flex-start keeps the rows packed at a fixed gap regardless of photo height,
+   so both sections now match. */
+.notes-lead-buttons-h { min-width: 0; display: flex; flex-direction: column; gap: 8px; justify-content: flex-start; }
 .flag-picker-h { display: flex; gap: 8px; width: 100%; margin: 0; }
 .flag-picker-h .lead-flag-btn { flex: 1; min-width: 0; }
 /* #403: her standing rule -- a button filling a line item never shows "...";
@@ -1192,8 +1232,10 @@ body[data-bg="grid"] .app-header, body[data-bg="grid-blue"] .app-header, body[da
 .coll-add-thumb { border: 3px dashed var(--border) !important; background: var(--blue-soft); font-size: 34px; font-weight: 800; color: var(--text); }
 .coll-add-tile .cover-title { color: var(--text-dim); }
 .create-playlist-row { display: flex; justify-content: center; margin-top: 10px; }
+/* #416: it's a button, not a dropdown, so it's pink like Linked/Unlinked --
+   not the same blue as the collection dropdowns above it. */
 .create-playlist-btn {
-  background: var(--blue); color: var(--text); border: 2px solid var(--border); box-shadow: 3px 3px 0 var(--border);
+  background: var(--pink); color: var(--text); border: 2px solid var(--border); box-shadow: 3px 3px 0 var(--border);
   font-family: inherit; font-weight: 800; text-transform: uppercase; letter-spacing: .03em; font-size: 13px; padding: 9px 22px; cursor: pointer;
 }
 .coll-row-content { flex-direction: column; align-items: stretch; }
