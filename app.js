@@ -5225,6 +5225,15 @@ function allAppImages() {
   // accurate immediately, and they fill in with the real picture as
   // hydration catches up.
   const pending = [];
+  // #421: reverse index (image dataUrl -> entries that carry it), built
+  // once in the same pass over ALL_ENTRIES below instead of the old
+  // `ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(img.dataUrl))`
+  // that ran once PER IMAGE further down -- with ~3,600+ entries and
+  // hundreds-to-thousands of images, that was an O(images × entries) scan
+  // re-run from scratch on every single render (any click in the Images
+  // tab re-renders it), which is what made opening or filtering Images take
+  // several seconds. This index turns it into one O(entries + images) pass.
+  const entriesByImageUrl = new Map();
   ALL_ENTRIES.forEach((e) => {
     if (e.semi && e.semi.photo) {
       const rec = map.get(e.semi.photo) || { dataUrl: e.semi.photo, reactionId: null, createdAt: e.updatedAt || e.createdAt, kinds: new Set() };
@@ -5259,6 +5268,20 @@ function allAppImages() {
     for (let i = 0; i < missingScreencaps; i++) {
       pending.push({ pending: true, entryId: e.id, entryTitle: e.title, kinds: ['screencap'], createdAt: e.updatedAt || e.createdAt });
     }
+    // Index every image URL this entry carries (screencaps + semi/uke
+    // photos — the exact set entryImageUrls() computes) against this one
+    // entry, once, instead of recomputing entryImageUrls() for all 3,600+
+    // entries per image below. De-duped per entry first -- a handful of
+    // entries have the same photo appear twice in their own list (e.g. a
+    // semi/uke photo that's also still sitting in screencaps), and the old
+    // `.filter(...).includes(...)` only ever counted an entry once per
+    // image no matter how many times it showed up internally; indexing the
+    // raw (non-deduped) list would double that entry into attachedEntries.
+    new Set(entryImageUrls(e)).forEach((url) => {
+      let list = entriesByImageUrl.get(url);
+      if (!list) { list = []; entriesByImageUrl.set(url, list); }
+      list.push(e);
+    });
   });
   const hydrated = Array.from(map.values())
     // Images pulled into the H tab (see H_IMAGE_KEYS / pullImageIntoH) stay
@@ -5271,7 +5294,7 @@ function allAppImages() {
       dataUrl: img.dataUrl,
       pending: false,
       kinds: Array.from(img.kinds),
-      attachedEntries: ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(img.dataUrl)),
+      attachedEntries: entriesByImageUrl.get(img.dataUrl) || [],
     }));
   // Standalone reactions that were uploaded straight into the Images tab (via
   // #reaction-upload-input -> addReactionFiles()) never touch any entry, so
@@ -5299,7 +5322,7 @@ function allAppImages() {
       createdAt: r.createdAt,
       pending: false,
       kinds: [],
-      attachedEntries: ALL_ENTRIES.filter((e) => entryImageUrls(e).includes(r.dataUrl)),
+      attachedEntries: entriesByImageUrl.get(r.dataUrl) || [],
     }));
   const pendingItems = pending.map((p) => ({
     ...p,
