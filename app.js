@@ -3559,7 +3559,7 @@ function renderCoverCard(e, reviewMode) {
   const isSuggested = !e.coverUrl && e.suggestedMatch && e.suggestedMatch.coverUrl;
   const coverSrc = e.coverUrl || (e.suggestedMatch ? e.suggestedMatch.coverUrl : null);
   const cover = coverSrc
-    ? `<img src="${escapeHtml(coverSrc)}" alt="" loading="lazy" referrerpolicy="no-referrer" style="${isSuggested ? 'opacity:.55' : ''}" onerror="this.parentElement.innerHTML='<div class=\\'cover-placeholder\\'>${themeIcon()}</div>'">`
+    ? `<img src="${escapeHtml(coverSrc)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" style="${isSuggested ? 'opacity:.55' : ''}" onerror="this.parentElement.innerHTML='<div class=\\'cover-placeholder\\'>${themeIcon()}</div>'">`
     : `<div class="cover-placeholder">${themeIcon()}</div>`;
   const flagColor = e.semi && e.semi.flag ? FLAG_HEX[e.semi.flag] : (e.uke && e.uke.flag ? FLAG_HEX[e.uke.flag] : null);
   // Cards in the Suggested Matches row open the quick-review carousel modal
@@ -12535,10 +12535,30 @@ function renderFailedUploadCard(t) {
 // (closing tabs, clearing site data, etc.) on the user's end.
 function setupAutoUpdatingServiceWorker() {
   let reloading = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
+  // #420: the most common case for this firing is the VERY common one --
+  // she opens the app, a worker left "waiting" from a deploy earlier in the
+  // same browsing session (or one that just landed) gets promoted within
+  // the first second or two, and controllerchange used to reload instantly.
+  // That collided with this exact boot's own entries/covers still loading
+  // (loadAllEntries/sync/render haven't finished yet), aborting all of it
+  // mid-flight and restarting the WHOLE boot from scratch -- which is why
+  // the network panel shows every homepage cover fetched twice back to
+  // back on a fresh load. Giving the current boot a few seconds' grace
+  // before reloading lets it reach a stable first paint first, so the
+  // common case (opening the app shortly after a deploy) only pays for one
+  // full set of image loads instead of two. The update is still applied
+  // automatically, just not mid-boot.
+  const PAGE_BOOT_AT = Date.now();
+  const RELOAD_GRACE_MS = 3000;
+  const doReload = () => {
     if (reloading) return;
     reloading = true;
     window.location.reload();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    const elapsed = Date.now() - PAGE_BOOT_AT;
+    if (elapsed >= RELOAD_GRACE_MS) { doReload(); return; }
+    setTimeout(doReload, RELOAD_GRACE_MS - elapsed);
   });
   navigator.serviceWorker.register('./sw.js').then((reg) => {
     const activateWaiting = () => { if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' }); };
