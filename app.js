@@ -311,7 +311,8 @@ let STATE = {
   wtfFilter: null,          // null or 1-5, meaning "at least N WTFs"
   darknessFilter: null,     // null or 1-5, meaning "at least N Darkness"
   search: '',
-  awardFilter: null,        // null or a collection id — only show entries belonging to this award
+  // #419: Awards merged into Playlists (redundant kinds) -- awardFilter
+  // removed, playlistFilter is now the only collection filter.
   playlistFilter: null,     // null or a collection id — only show entries belonging to this playlist
 };
 
@@ -338,7 +339,6 @@ function resetHomeFiltersClean() {
   STATE.noLinkFilter = false;
   STATE.storyStatusFilter = null;
   STATE.mediaFormatFilter = null;
-  STATE.awardFilter = null;
   STATE.playlistFilter = null;
   FILTERS_COLLAPSED = false;
 }
@@ -3193,13 +3193,11 @@ function normalizeSearchText(s) {
 }
 function filteredEntries() {
   const q = normalizeSearchText(STATE.search);
-  // Award/Playlist filters: precompute the matching collection's member ids
-  // ONCE here (collectionMembers() does its own full ALL_ENTRIES pass), not
+  // Playlist filter: precompute the matching collection's member ids ONCE
+  // here (collectionMembers() does its own full ALL_ENTRIES pass), not
   // inside the per-entry filter below, so a single dropdown pick doesn't
-  // re-scan every entry per entry.
-  const awardColl = STATE.awardFilter ? COLLECTIONS[STATE.awardFilter] : null;
+  // re-scan every entry per entry. (#419: Awards merged into Playlists.)
   const playlistColl = STATE.playlistFilter ? COLLECTIONS[STATE.playlistFilter] : null;
-  const awardIds = awardColl ? new Set(collectionMembers(awardColl).map((e) => e.id)) : null;
   const playlistIds = playlistColl ? new Set(collectionMembers(playlistColl).map((e) => e.id)) : null;
   return ALL_ENTRIES.filter((e) => {
     // Favorites and On Yaoi Drive tabs both pull from Reading + Watching,
@@ -3237,7 +3235,6 @@ function filteredEntries() {
     }
     if (STATE.linkFilter && !e.readingLink) return false;
     if (STATE.noLinkFilter && e.readingLink) return false;
-    if (awardIds && !awardIds.has(e.id)) return false;
     if (playlistIds && !playlistIds.has(e.id)) return false;
     if (q) {
       const hay = normalizeSearchText([e.title, e.altTitle, e.author, e.artist, e.notes, ...(e.tags || []), ...(e.customTags || [])]
@@ -3290,11 +3287,12 @@ let TAG_SECTION_CUSTOM_ORDER = [];
 // Which Tag Manager tab is showing: 'active', 'hidden', or 'manage'.
 let TAG_MGR_TAB = 'active';
 // Which content type the Tags page's Active/Hidden/Manage row operates on:
-// 'tags' (default), 'award', or 'playlist'. Awards/Playlists reuse the exact
-// same Active/Hidden/Manage tabs as tags rather than getting their own
-// separate page -- "Manage" just means reorder/rename/delete for them
-// instead of the section-bucket drag-and-drop tags get, since they aren't
-// categorized the same way.
+// 'tags' (default) or 'playlist'. (#419: 'award' retired -- Awards merged
+// into Playlists, redundant kinds.) Playlists reuse the exact same
+// Active/Hidden/Manage tabs as tags rather than getting their own separate
+// page -- "Manage" just means reorder/rename/delete for them instead of the
+// section-bucket drag-and-drop tags get, since they aren't categorized the
+// same way.
 let TAG_MGR_KIND = 'tags';
 // Search text to restore + re-apply after an auto tab-switch triggered by the Tag Manager search box.
 let TAG_MGR_SEARCH_PENDING = '';
@@ -3497,6 +3495,30 @@ async function runFlagTagBackfillOnce() {
   }
 }
 
+// #419: one-time migration (idempotent, same pattern as the two above) that
+// merges Awards into Playlists per her request -- she said the two were
+// redundant and wanted to keep only Playlists. Collection membership
+// (e.collections) is stored kind-agnostically by collection id, so this is
+// just a `kind` field flip on the existing collection rows, not a rewrite of
+// every entry: anything that was in an Award still shows up under Playlists
+// afterward with zero membership changes. Runs in boot(), right after
+// COLLECTIONS is loaded from idb, so it's done before the first render.
+async function runAwardToPlaylistMigrationOnce() {
+  try {
+    const done = await idbGet(STORE_META, 'awardToPlaylistMigrationDone');
+    if (done && done.value) return;
+    const changedIds = [];
+    Object.values(COLLECTIONS).forEach((c) => {
+      if (c && c.kind === 'award') { c.kind = 'playlist'; changedIds.push(c.id); }
+    });
+    if (changedIds.length) await persistCollections(changedIds);
+    await idbPut(STORE_META, { key: 'awardToPlaylistMigrationDone', value: true });
+    if (changedIds.length) console.log(`Award/Playlist merge: converted ${changedIds.length} award(s) to playlists.`);
+  } catch (err) {
+    console.error('Award to playlist migration failed:', err);
+  }
+}
+
 // "On HD" is the tag the HD-match tool (and the HD-scan import) uses to mark
 // a title as physically saved on the Yaoi Drive. Matched case/spacing-agnostic
 // via normalizeTagKey so a rename like "on hd" or "On-HD" still counts.
@@ -3608,9 +3630,15 @@ function recentsSectionHtml(entries) {
 }
 
 /* ---------------------------------------------------------------------- */
-/* PLAYLISTS & AWARDS (user-made "blue" collections)                      */
+/* PLAYLISTS (user-made "blue" collections)                                */
 /* ---------------------------------------------------------------------- */
-// Registry of every playlist/award: { [id]: { id, kind, name, order,      */
+// #419: Awards used to be a second collection "kind" alongside Playlists --
+// she said they were redundant and asked to merge them, keeping only
+// Playlists. runAwardToPlaylistMigrationOnce() (below runFlagTagBackfillOnce)
+// flips every existing kind:'award' row over to kind:'playlist' once, after
+// which 'award' is retired everywhere (filters, dropdowns, the Tag Manager
+// tab, icon/label branches) -- Playlists is the only collection kind left.
+// Registry of every playlist: { [id]: { id, kind, name, order,            */
 // deleted, system } }. Which reads are IN a collection is stored on the   */
 // read itself (e.collections = [id, ...]) -- same idea as tags, so a read */
 // can sit in any number of them and that membership syncs with the read's */
@@ -3734,7 +3762,7 @@ async function createCollection(kind, name) {
   if (!name) return null;
   const existing = collectionsOfKind(kind).find((c) => c.name.toLowerCase() === name.toLowerCase());
   if (existing) return existing;
-  const id = uid(kind === 'award' ? 'award' : 'pl');
+  const id = uid('pl'); // #419: 'award' kind retired, always a playlist id now
   const maxOrder = collectionsOfKind(kind).reduce((m, c) => Math.max(m, c.order || 0), -1);
   COLLECTIONS[id] = { id, kind, name, order: maxOrder + 1, deleted: false };
   await persistCollections([id]);
@@ -3781,13 +3809,14 @@ async function mergeRemoteCollections(data) {
 }
 
 /* Homepage: one blue row per playlist (incl. Favorites/Artwork/Funny),
-   then one per award, below the pink shelf rows. Each starts with a dashed
-   portrait "+" tile for adding a read. */
+   below the pink shelf rows. Each starts with a dashed portrait "+" tile
+   for adding a read. (#419: Awards merged into Playlists -- no more
+   separate award rows.) */
 function collectionRowHtml(c) {
   const rowId = 'row-coll-' + c.id;
   const collapsed = HOME_COLLAPSED_SECTIONS.has(rowId);
   const members = collectionMembers(c);
-  const icon = c.kind === 'award' ? '🏆' : (c.id === 'sys-favorites' ? '💜' : c.id === 'sys-artwork' ? '🎨' : c.id === 'sys-funny' ? '😂' : '📜');
+  const icon = c.id === 'sys-favorites' ? '💜' : c.id === 'sys-artwork' ? '🎨' : c.id === 'sys-funny' ? '😂' : '📜';
   return `
     <div class='panel home-section-panel coll-panel'>
       <div class='panel-title-row home-section-title' data-toggle-home-section='${rowId}' style='cursor:pointer;'>
@@ -3806,10 +3835,10 @@ function collAddTileHtml(c) {
     </div>`;
 }
 function collectionsHomeHtml() {
-  return [...activeCollectionsOfKind('playlist'), ...activeCollectionsOfKind('award')].map(collectionRowHtml).join('');
+  return activeCollectionsOfKind('playlist').map(collectionRowHtml).join('');
 }
 
-/* Full page for one playlist/award. */
+/* Full page for one playlist. */
 function renderCollectionPage() {
   ensureSystemCollections();
   const c = COLLECTIONS[STATE.entryId];
@@ -3818,7 +3847,7 @@ function renderCollectionPage() {
   }
   const members = collectionMembers(c);
   const isSys = !!systemDef(c.id);
-  const kindLabel = c.kind === 'award' ? 'award' : 'playlist';
+  const kindLabel = 'playlist';
   const siblings = collectionsOfKind(c.kind);
   const idx = siblings.findIndex((x) => x.id === c.id);
   const cards = members.map((e) => `
@@ -3828,7 +3857,7 @@ function renderCollectionPage() {
     </div>`).join('');
   return `
     <div class="app-header">
-      <div class="brand-row"><h1>${c.kind === 'award' ? '🏆' : '📜'} ${escapeHtml(c.name)}</h1></div>
+      <div class="brand-row"><h1>📜 ${escapeHtml(c.name)}</h1></div>
       <div style="color:var(--text-dim);font-size:12px;margin:0 0 10px;">${members.length} read${members.length === 1 ? '' : 's'} in this ${kindLabel}${isSys ? ' — fills in automatically from the ' + escapeHtml(systemDef(c.id).tagName) + ' ' + (c.id === 'sys-funny' ? 'tag' : 'button') : ''}</div>
       <div class="coll-toolbar">
         <button type="button" class="ref-btn ${COLL_EDIT_MODE ? 'active' : ''}" data-coll-edit-toggle="1">${COLL_EDIT_MODE ? 'Done' : 'Remove reads'}</button>
@@ -4128,7 +4157,7 @@ function renderHome() {
   const tags = topTags(ALL_ENTRIES.filter((e) => !STATE.format || e.format === STATE.format));
 
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter && !STATE.awardFilter && !STATE.playlistFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter && !STATE.playlistFilter) {
     // Suggested-matches row sits above the shelf rows, same section-title +
     // horizontal-scroll treatment, so unconfirmed matches are easy to spot
     // and jump into without leaving the homepage.
@@ -4227,18 +4256,15 @@ function renderHome() {
         ${STATE.tagFilters.length ? `<button class="ref-btn" style="width:100%;margin-top:6px;" data-tag-ms-clear="1">Clear selected</button>` : ''}
       </div>` : ''}
     </div>`;
-  // Award/Playlist filters — her own collections, same shelf dropdown style
-  // as Shelf/Story Status/Format above, sitting on their own row directly
-  // below the Tags multiselect per her request.
-  const awardOptions = activeCollectionsOfKind('award');
+  // Playlist filter — her own collections, same shelf dropdown style as
+  // Shelf/Story Status/Format above, sitting on their own row directly
+  // below the Tags multiselect per her request. (#419: Awards merged into
+  // Playlists, so the separate Award dropdown is gone.)
   const playlistOptions = activeCollectionsOfKind('playlist');
   // #416: she asked for every dropdown to share one single blue/cyan --
   // dropped the separate "collections are blue" dd-blue modifier that
   // #412 had given Award/Playlist/Flag, so they match Shelf/Story Status/
   // Format/Tags exactly now instead of standing out as a different shade.
-  const awardChips = `<div class="filter-dropdown-col">${renderDropdownToggle('home-award', 'Award', awardOptions.map((c) => ({
-    value: c.id, label: c.name, on: STATE.awardFilter === c.id, dataAttr: `data-home-award-pick="${escapeHtml(c.id)}"`,
-  })), { blankWhenEmpty: false, closeOnPick: true })}</div>`;
   const playlistChips = `<div class="filter-dropdown-col">${renderDropdownToggle('home-playlist', 'Playlist', playlistOptions.map((c) => ({
     value: c.id, label: c.name, on: STATE.playlistFilter === c.id, dataAttr: `data-home-playlist-pick="${escapeHtml(c.id)}"`,
   })), { blankWhenEmpty: false, closeOnPick: true })}</div>`;
@@ -4256,7 +4282,7 @@ function renderHome() {
     { value: 'onDrive', icon: '💾', label: 'On HD', on: STATE.showOnDriveOnly, dataAttr: `data-nav-filter="${STATE.showOnDriveOnly ? 'home' : 'onDrive'}"` },
   ].filter(Boolean);
   const homeFlagDropdown = `<div class="filter-dropdown-col">${renderDropdownToggle('home-flags', 'Flag', homeFlagItems, { blankWhenEmpty: false, closeOnPick: true })}</div>`;
-  const collectionFilterRow = `<div class="filter-dropdown-row">${homeFlagDropdown}${playlistChips}${awardChips}</div>`;
+  const collectionFilterRow = `<div class="filter-dropdown-row">${homeFlagDropdown}${playlistChips}</div>`;
 
   // #399: Overall/Smut/Crying/WTF/Darkness dropdowns dropped from the
   // homepage filter row per her request -- same as #395's Laughing removal,
@@ -4936,22 +4962,23 @@ function tagsKindSwitchHtml() {
     <div class="tagmgr-tabs" style="margin-bottom:8px;">
       <button class="tagmgr-tab ${TAG_MGR_KIND === 'tags' ? 'active' : ''}" data-tagmgr-kind="tags">🏷️ Tags</button>
       ${TAG_MGR_KIND === 'tags' ? `<button class="tagmgr-tab ${TAG_MGR_TAB === 'manage' ? 'active' : ''}" data-tagmgr-tab="manage">🗂️ Manage Sections</button>` : ''}
-      <button class="tagmgr-tab ${TAG_MGR_KIND === 'award' ? 'active' : ''}" data-tagmgr-kind="award">🏆 Awards</button>
       <button class="tagmgr-tab ${TAG_MGR_KIND === 'playlist' ? 'active' : ''}" data-tagmgr-kind="playlist">📜 Playlists</button>
     </div>`;
 }
 
-// Awards/Playlists manager. Active/Hidden are filters (shared tab row with
-// Tags -- see renderTagManager); every row carries the full action set --
-// hide/show, merge, rename, delete, reorder -- same as Tags' Active rows,
-// per her call on the scope of this. No separate "Manage" tab/page anymore:
-// it used to hold reorder+rename+delete behind its own click, but that's
-// all inline now.
+// Playlist manager. (#419: Awards merged into Playlists -- this used to be
+// shared with an 'award' kind too, kept the `kind` param since nothing else
+// needs to change, but it's always called with 'playlist' now.) Active/
+// Hidden are filters (shared tab row with Tags -- see renderTagManager);
+// every row carries the full action set -- hide/show, merge, rename,
+// delete, reorder -- same as Tags' Active rows, per her call on the scope
+// of this. No separate "Manage" tab/page anymore: it used to hold
+// reorder+rename+delete behind its own click, but that's all inline now.
 function renderCollectionManager(kind) {
   ensureSystemCollections();
-  const label = kind === 'award' ? 'Award' : 'Playlist';
-  const labelPlural = kind === 'award' ? 'Awards' : 'Playlists';
-  const icon = kind === 'award' ? '🏆' : '📜';
+  const label = 'Playlist';
+  const labelPlural = 'Playlists';
+  const icon = '📜';
   const all = collectionsOfKind(kind);
   const activeList = activeCollectionsOfKind(kind);
   const hiddenList = hiddenCollectionsOfKind(kind);
@@ -8883,7 +8910,6 @@ function renderDetail(e) {
         ${statsRowHtml('Style', 'stats-style', styleSelect)}
         ${statsFlagsRowHtml(e)}
         ${statsCollectionRowHtml(e, 'playlist')}
-        ${statsCollectionRowHtml(e, 'award')}
         </div>
       </div>
 
@@ -10270,13 +10296,6 @@ function attachRootHandlers() {
       render();
     };
   });
-  root.querySelectorAll('[data-home-award-pick]').forEach((el) => {
-    el.onclick = () => {
-      const val = el.getAttribute('data-home-award-pick');
-      STATE.awardFilter = STATE.awardFilter === val ? null : val;
-      render();
-    };
-  });
   root.querySelectorAll('[data-home-playlist-pick]').forEach((el) => {
     el.onclick = () => {
       const val = el.getAttribute('data-home-playlist-pick');
@@ -10412,13 +10431,25 @@ function attachRootHandlers() {
     render();
   };
   const currentChapterInput = root.querySelector('#current-chapter-input');
-  // #417: stamps chapterUpdatedAt only when the chapter value actually
+  // #417/#418: stamps chapterUpdatedAt only when the chapter value actually
   // changed on blur -- that timestamp is what the Currently Reading
   // homepage shelf (only that shelf) now sorts by, most-recent-first, per
   // her request. Just re-blurring without changing anything (or editing
   // any other field on this page) never bumps it.
+  // #418 fix: this field's entry id used to be read from STATE.entryId
+  // *inside* the handler -- but tapping a nav button (Home/back/etc) calls
+  // navigate(), which sets STATE.entryId to the NEXT screen's id and only
+  // then calls render(), which is what actually removes this input from
+  // the page and fires its blur. So by the time this ran, STATE.entryId
+  // already pointed at the new screen (null, for Home) and getEntry()
+  // returned nothing -- the edit silently never saved, which is exactly
+  // why editing the chapter box and tapping away never moved the read to
+  // the front of Currently Reading. Capturing the entry id once, when this
+  // handler is bound (while this page's own entry is still the current
+  // one), fixes it regardless of how the field loses focus.
+  const chapterEntryId = STATE.entryId;
   if (currentChapterInput) currentChapterInput.onblur = async () => {
-    const e = getEntry(STATE.entryId);
+    const e = getEntry(chapterEntryId);
     if (!e) return;
     const newVal = currentChapterInput.value.trim();
     if (newVal !== (e.currentChapter || '')) {
@@ -11738,7 +11769,7 @@ function renderHomeInPlace() {
   const main = root.querySelector('main');
   const entries = filteredEntries();
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter && !STATE.awardFilter && !STATE.playlistFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter && !STATE.playlistFilter) {
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
       body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)));
@@ -12578,6 +12609,12 @@ async function boot() {
     if (savedCollections && savedCollections.value && typeof savedCollections.value === 'object') COLLECTIONS = savedCollections.value;
     const savedCollectionsTs = await idbGet(STORE_META, 'collectionsTs');
     if (savedCollectionsTs && savedCollectionsTs.value && typeof savedCollectionsTs.value === 'object') COLLECTIONS_TS = savedCollectionsTs.value;
+    // #419: merge Awards into Playlists (one-time, idempotent) -- runs here,
+    // right after COLLECTIONS loads and before the first render, same as the
+    // other local-only migrations below run after sign-in. Doesn't need a
+    // signed-in user: it only flips a field on collections already loaded
+    // from this device's own IndexedDB, same as ensureSystemCollections().
+    await runAwardToPlaylistMigrationOnce();
     const savedImageTagMap = await idbGet(STORE_META, 'imageTagMap');
     if (savedImageTagMap && savedImageTagMap.value && typeof savedImageTagMap.value === 'object') IMAGE_TAG_MAP = savedImageTagMap.value;
     const savedImageTagMapTs = await idbGet(STORE_META, 'imageTagMapTs');

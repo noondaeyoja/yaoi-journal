@@ -97,7 +97,16 @@ padding: 5px 12px; font-size: 12px; font-weight: 700; cursor: pointer; flex-shri
 
 .app-header {
 /* #311: reverted from sticky to static per user request -- the sticky scroll-hide mechanism kept getting stuck mid-transition no matter what fix was tried. Scroll to the top to see the filters/tabs again. */
-position: static; z-index: 30;
+/* #418: position:static meant z-index:30 below was silently ignored (z-index
+   only applies to positioned elements), while backdrop-filter still forced
+   this header into its own stacking context -- so its dd-panel popups (Tags,
+   etc.) were painted UNDER <main>'s later content instead of above it,
+   letting the Recents/Currently Reading section counts show through the
+   open Tags list. position:relative keeps this in normal document flow
+   exactly like static (no top/left offset, so nothing sticks or shifts) but
+   makes the z-index actually apply, raising the header -- and any popup it
+   opens -- above <main>. */
+position: relative; z-index: 30;
 background: var(--bg-cyan);
 backdrop-filter: blur(10px);
 border-bottom: 1px solid var(--border);
@@ -1176,13 +1185,16 @@ body[data-bg="grid"] .app-header, body[data-bg="grid-blue"] .app-header, body[da
 .char-photo-slot.polaroid-frame.notes-lead-photo-h {
   width: 100%; box-sizing: border-box; aspect-ratio: 1/1; height: auto; margin: 0; align-self: start;
 }
-/* #416: was justify-content:space-between, which redistributed any leftover
-   vertical space (from each block's own, independently-stretched photo
-   height) as extra gap between the 3 rows -- that's why Main Character and
-   Main Lead's row-spacing differed whenever their photo heights differed.
-   flex-start keeps the rows packed at a fixed gap regardless of photo height,
-   so both sections now match. */
-.notes-lead-buttons-h { min-width: 0; display: flex; flex-direction: column; gap: 8px; justify-content: flex-start; }
+/* #418: back to space-between (readopted from #416's flex-start). #416
+   fixed a real mismatch, but the cause was the photo stretching to an
+   inconsistent height between Main Character/Main Lead -- now that the
+   photo is pinned to a fixed square (#417), both blocks' photos are
+   always the same height, so that mismatch can't happen anymore. With a
+   fixed-height box to fill, flex-start just left empty space bunched at
+   the bottom (her "distribute more evenly" report); space-between spreads
+   the 3 rows evenly across the box's full height, flush with the photo's
+   top and bottom, in both blocks identically. */
+.notes-lead-buttons-h { min-width: 0; display: flex; flex-direction: column; gap: 8px; justify-content: space-between; }
 .flag-picker-h { display: flex; gap: 8px; width: 100%; margin: 0; }
 .flag-picker-h .lead-flag-btn { flex: 1; min-width: 0; }
 /* #403: her standing rule -- a button filling a line item never shows "...";
