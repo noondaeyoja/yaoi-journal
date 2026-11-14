@@ -11022,6 +11022,11 @@ function attachRootHandlers() {
   });
   const notesArea = root.querySelector('#user-notes');
   if (notesArea) {
+    // #422: this entry's id and the box's starting HTML, captured once here
+    // while this page's own entry is still the current one -- see why
+    // below, same root cause as the #418 chapter-input fix.
+    const notesEntryId = STATE.entryId;
+    const notesStartingHtml = notesArea.innerHTML;
     // Plain Enter should insert a line break, not a new paragraph block —
     // this is what makes hitting Enter behave like a normal text box
     // instead of auto-bulleting (the old behavior). Only affects THIS
@@ -11060,8 +11065,32 @@ function attachRootHandlers() {
         updateToolbarState();
       };
     });
+    // #422: this used to read STATE.entryId *and* save unconditionally,
+    // every single time this box lost focus -- which includes a plain nav
+    // tap (navigate() reassigns STATE.entryId to the NEXT screen before
+    // render() ever fires this blur, same stale-id bug #418 fixed for the
+    // chapter input) and a backgrounded tab/app (forceSaveActiveField()
+    // blurs the active element on visibilitychange/pagehide). Two real
+    // failures came out of that: (1) with no "did anything change" check,
+    // just opening a read and clicking away re-saved it -- and saveEntry()
+    // always stamps a fresh updatedAt, so a device with a merely-stale
+    // local copy of an entry (hadn't pulled a newer edit from another
+    // device yet) could re-push its OLD notes with a BRAND NEW timestamp,
+    // which then wins Firestore's newest-wins sync and silently overwrites
+    // a genuinely newer note everywhere else -- exactly how a read's real
+    // notes can "disappear" without her ever touching that field. (2) on
+    // the stale-STATE.entryId path, it could write this box's leftover
+    // content onto a DIFFERENT entry entirely. Comparing against the id
+    // and HTML captured above when this page first rendered fixes both: a
+    // no-op blur (nothing typed) never touches storage at all, and a real
+    // edit always saves to the entry it actually belongs to.
     notesArea.onblur = async () => {
-      const e = getEntry(STATE.entryId); e.notes = notesArea.innerHTML; await saveEntry(e);
+      const newHtml = notesArea.innerHTML;
+      if (newHtml === notesStartingHtml) return;
+      const e = getEntry(notesEntryId);
+      if (!e) return;
+      e.notes = newHtml;
+      await saveEntry(e);
     };
   }
   const screencapInput = root.querySelector('#screencap-input');
