@@ -3430,6 +3430,15 @@ function allKnownPersonalityWords() {
     .concat(LEAD_ENERGY.map((o) => o.label));
   return new Set([...presetLabels, ...Array.from(CUSTOM_PERSONALITY_WORDS)].map((w) => w.toLowerCase()));
 }
+// #426: normalizeTagKey-keyed version of the above, for sectionForTag's
+// bucket classification -- allKnownPersonalityWords() only lowercases (it's
+// compared against other lowercased tag strings in syncPersonalityTags),
+// but TAG_SECTIONS/TAG_SECTION_OVERRIDES keys strip spaces/punctuation too,
+// so a multi-word preset like "Black Cat Energy" needs the same stripping
+// here or it'll never match and fall through to General.
+function isPersonalityTagKey(key) {
+  return Array.from(allKnownPersonalityWords()).some((w) => normalizeTagKey(w) === key);
+}
 // Every Personality word currently picked for either lead on this entry,
 // as display-ready labels (not raw stored values -- LEAD_ENERGY stores a
 // short value like 'blackcat' but the filterable tag should read "Black Cat
@@ -5054,11 +5063,15 @@ function sectionForTag(t) {
   // different asks), so they just land in General now, same as everything
   // else that used to resolve to the now-gone Couple section.
   if (/^(green|red|black) ?flag/.test(key) && !TAG_SECTION_OVERRIDES[key]) return 'General';
-  // #426: a custom Personality word (migrated from Couple, or typed fresh
-  // into a Personality picker) defaults into the new Personality bucket --
-  // same as every other tag, an explicit override still wins if she's
-  // dragged it somewhere else on purpose.
-  if (!TAG_SECTION_OVERRIDES[key] && !TAG_SECTIONS[key] && findCustomPersonalityWord(t)) return 'Personality';
+  // #426: any known Personality word -- a fixed Temperament/Archetype/
+  // Energy preset (e.g. "Psycho", "Black Cat Energy"), not just a custom/
+  // migrated one -- defaults into the new Personality bucket, same as every
+  // other tag, with an explicit override still winning if she's dragged it
+  // somewhere else on purpose. isPersonalityTagKey covers both; the
+  // narrower findCustomPersonalityWord (custom words only) is reserved for
+  // the rename/merge/delete hooks, since the built-in presets aren't
+  // renamed or deleted that way.
+  if (!TAG_SECTION_OVERRIDES[key] && !TAG_SECTIONS[key] && isPersonalityTagKey(key)) return 'Personality';
   const raw = TAG_SECTION_OVERRIDES[key] || TAG_SECTIONS[key] || 'General';
   const s = TAG_SECTION_ALIASES[raw] || raw;
   return tagSectionOrder().includes(s) ? s : 'General';
