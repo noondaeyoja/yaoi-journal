@@ -58,6 +58,16 @@ const LEAD_ENERGY = [
   { value: 'blackcat', label: 'Black Cat Energy' },
   { value: 'goldenretriever', label: 'Golden Retriever Energy' },
 ];
+// #425: Personality used to be strictly these three fixed, hardcoded
+// 3-9-word presets (Temperament/Archetype/Energy above) -- she asked to be
+// able to type brand-new words on the fly, the same way regular tags work.
+// Rather than make the hardcoded lists themselves mutable, new/typed words
+// (and, per #426 below, the old Couple-section tags being folded in) land
+// in this separate, persisted-and-synced set instead, which the Personality
+// pool pulls in alongside the three presets. See addCustomPersonalityWord()
+// and its meta-sync counterpart in applyMetaSnapshot() for how it's kept in
+// sync across devices, same mechanism as USER_HIDDEN_TAG_KEYS etc.
+let CUSTOM_PERSONALITY_WORDS = new Set();
 // #345: shared name-builder for the auto-tag each flag button keeps in
 // sync with the tag box (one-way: flag -> tag only). "who" is 'semi'
 // (Main Lead) or 'uke' (Main Character), matching the notes-lead-head
@@ -294,9 +304,11 @@ let STATE = {
                             // driven by any homepage UI (replaced by mediaFormatFilter below);
                             // left in place since e.format itself still matters per-entry.
   mediaFormatFilter: null,  // null or one of MEDIA_FORMATS' values — homepage Format filter row
-  showFavoritesOnly: false,
-  showOnDriveOnly: false,   // "On Yaoi Drive" homepage tab — entries tagged as saved on the drive
-  showHentaiOnly: false,    // "Hentai" filter — entries tagged as hentai
+  // #424: showFavoritesOnly/showOnDriveOnly/showHentaiOnly/showArtworkOnly
+  // removed -- NSFW/On HD/Favorite/Artwork filtering now goes entirely
+  // through playlistFilter below (they're system playlists, same as
+  // Favorites/Artwork always were), so there's one filter field for this
+  // instead of five overlapping ones.
   shelf: 'ALL',             // 'ALL' or one of SHELVES_READING
   tagFilters: [],           // array of tag strings; entry matches if it has ANY of these
   smutFilter: null,         // null or 1-5, meaning "at least N eggplants"
@@ -307,7 +319,6 @@ let STATE = {
   linkFilter: false,        // true = only show entries with a reading link attached
   noLinkFilter: false,      // true = only show entries WITHOUT a reading link attached
   storyStatusFilter: null,  // null or 'WIP'|'Finished' — the story's own completion state
-  showArtworkOnly: false,   // "Artwork" filter — entries tagged as artwork
   wtfFilter: null,          // null or 1-5, meaning "at least N WTFs"
   darknessFilter: null,     // null or 1-5, meaning "at least N Darkness"
   search: '',
@@ -324,10 +335,6 @@ function resetHomeFiltersClean() {
   STATE.shelf = 'ALL';
   STATE.tagFilters = [];
   STATE.search = '';
-  STATE.showFavoritesOnly = false;
-  STATE.showOnDriveOnly = false;
-  STATE.showHentaiOnly = false;
-  STATE.showArtworkOnly = false;
   STATE.smutFilter = null;
   STATE.qualityFilter = null;
   STATE.lolFilter = null;
@@ -977,6 +984,17 @@ async function applyMetaSnapshot(data) {
     IGNORED_TAG_SUGGESTIONS = new Set([...IGNORED_TAG_SUGGESTIONS, ...data.ignoredTagSuggestions]);
     if (IGNORED_TAG_SUGGESTIONS.size !== before) changed = true;
     await idbPut(STORE_META, { key: 'ignoredTagSuggestions', value: Array.from(IGNORED_TAG_SUGGESTIONS) });
+  }
+  // #425: union merge, same shape as ignoredTagSuggestions above -- a word
+  // added/renamed/deleted elsewhere only ever needs the union pulled in here;
+  // renameCustomPersonalityWord/deleteCustomPersonalityWord already pushed
+  // their own trimmed-down array from whichever device made that change, so
+  // this device's next boot/listener tick adopts it the same way.
+  if (Array.isArray(data.customPersonalityWords)) {
+    const before = CUSTOM_PERSONALITY_WORDS.size;
+    CUSTOM_PERSONALITY_WORDS = new Set([...CUSTOM_PERSONALITY_WORDS, ...data.customPersonalityWords]);
+    if (CUSTOM_PERSONALITY_WORDS.size !== before) changed = true;
+    await idbPut(STORE_META, { key: 'customPersonalityWords', value: Array.from(CUSTOM_PERSONALITY_WORDS) });
   }
   // Only fill in the proxy URL from the cloud if this device doesn't
   // already have one set locally — never overwrite a value someone just
@@ -2279,9 +2297,11 @@ function mediaModalNavNeighbors(list, current) {
 // there's an actual flat list to step through (not the default homepage).
 function detailBrowseNeighbors(id) {
   const activeFilter = STATE.shelf !== 'ALL' || STATE.tagFilters.length || STATE.search
-    || STATE.showFavoritesOnly || STATE.showOnDriveOnly || STATE.showHentaiOnly || STATE.showArtworkOnly
     || STATE.smutFilter || STATE.qualityFilter || STATE.lolFilter || STATE.cryFilter
-    || STATE.flagFilter || STATE.linkFilter || STATE.noLinkFilter || STATE.storyStatusFilter;
+    || STATE.flagFilter || STATE.linkFilter || STATE.noLinkFilter || STATE.storyStatusFilter
+    // #424: Favorites/On HD/NSFW/Artwork no longer have their own STATE
+    // booleans -- they're playlistFilter picks now, already covered below.
+    || STATE.playlistFilter;
   if (!activeFilter) return { prev: null, next: null };
   const list = filteredEntries().map((x) => x.id);
   return mediaModalNavNeighbors(list, id);
@@ -3214,17 +3234,15 @@ function filteredEntries() {
   const playlistColl = STATE.playlistFilter ? COLLECTIONS[STATE.playlistFilter] : null;
   const playlistIds = playlistColl ? new Set(collectionMembers(playlistColl).map((e) => e.id)) : null;
   return ALL_ENTRIES.filter((e) => {
-    // Favorites and On Yaoi Drive tabs both pull from Reading + Watching,
-    // ignoring the format toggle — same as each other.
-    if (STATE.showFavoritesOnly) {
-      if (!e.favorite) return false;
-    } else if (STATE.showOnDriveOnly) {
-      if (!isOnDrive(e)) return false;
-    } else if (STATE.showHentaiOnly) {
-      if (!isHentai(e)) return false;
-    } else if (STATE.showArtworkOnly) {
-      if (!isArtwork(e)) return false;
-    } else if (STATE.format && e.format !== STATE.format) {
+    // #424: Favorites/On HD/NSFW/Artwork used to be their own STATE booleans
+    // here, checked instead of (not alongside) the format toggle. Now that
+    // they're just system playlists like any other, they go through the
+    // same playlistIds AND-filter every other playlist uses below -- which
+    // means, unlike before, picking one of these four now DOES still respect
+    // the Reading/Watching format toggle rather than overriding it. That's
+    // the one real behavior change from unifying them; everything else about
+    // this filter works exactly as it did.
+    if (STATE.format && e.format !== STATE.format) {
       // STATE.format is null when both the book and TV icons are off — that
       // means no format filter at all, so Reading and Watching entries show
       // mixed together instead of the usual either/or split.
@@ -3370,6 +3388,85 @@ async function setTagSectionOverride(name, section) {
   TAG_SECTION_OVERRIDES[key] = section;
   await idbPut(STORE_META, { key: 'tagSectionOverrides', value: TAG_SECTION_OVERRIDES });
   pushMetaField('tagSectionOverrides', TAG_SECTION_OVERRIDES);
+}
+// #425: adds a brand-new word to the shared Personality pool (persisted +
+// synced across devices, same dual-write pattern as every other piece of
+// meta state here). Case-insensitive dedupe against what's already there --
+// callers are expected to have already checked the three hardcoded preset
+// lists themselves (see the personality-input Enter handler).
+async function addCustomPersonalityWord(word) {
+  const w = word.trim();
+  if (!w) return;
+  if (Array.from(CUSTOM_PERSONALITY_WORDS).some((x) => x.toLowerCase() === w.toLowerCase())) return;
+  CUSTOM_PERSONALITY_WORDS.add(w);
+  await idbPut(STORE_META, { key: 'customPersonalityWords', value: Array.from(CUSTOM_PERSONALITY_WORDS) });
+  pushMetaField('customPersonalityWords', Array.from(CUSTOM_PERSONALITY_WORDS));
+}
+// #426: renames (Manage Tags-style) or permanently removes one Personality
+// word from the shared pool. Renaming does NOT touch which reads/leads
+// currently have the OLD word picked (same limitation as a tag rename not
+// rewriting history would -- acceptable here since this is a small, curated
+// word list she edits deliberately, not a fast-moving tag cloud).
+async function renameCustomPersonalityWord(oldWord, newWord) {
+  const w = newWord.trim();
+  if (!w) return;
+  CUSTOM_PERSONALITY_WORDS.delete(oldWord);
+  CUSTOM_PERSONALITY_WORDS.add(w);
+  await idbPut(STORE_META, { key: 'customPersonalityWords', value: Array.from(CUSTOM_PERSONALITY_WORDS) });
+  pushMetaField('customPersonalityWords', Array.from(CUSTOM_PERSONALITY_WORDS));
+}
+async function deleteCustomPersonalityWord(word) {
+  CUSTOM_PERSONALITY_WORDS.delete(word);
+  await idbPut(STORE_META, { key: 'customPersonalityWords', value: Array.from(CUSTOM_PERSONALITY_WORDS) });
+  pushMetaField('customPersonalityWords', Array.from(CUSTOM_PERSONALITY_WORDS));
+}
+// #425: every word she can currently pick from in a Personality dropdown --
+// the fixed Temperament/Archetype/Energy presets plus whatever she's typed
+// in on the fly -- all flattened to lowercase label text, for cheaply
+// checking "is this tag actually a personality word" in syncPersonalityTags.
+function allKnownPersonalityWords() {
+  const presetLabels = [...LEAD_TEMPERAMENTS, ...LEAD_ARCHETYPES]
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .concat(LEAD_ENERGY.map((o) => o.label));
+  return new Set([...presetLabels, ...Array.from(CUSTOM_PERSONALITY_WORDS)].map((w) => w.toLowerCase()));
+}
+// Every Personality word currently picked for either lead on this entry,
+// as display-ready labels (not raw stored values -- LEAD_ENERGY stores a
+// short value like 'blackcat' but the filterable tag should read "Black Cat
+// Energy").
+function entryPersonalityWords(e) {
+  const labelFor = (val, list) => {
+    const found = list.find((o) => (typeof o === 'string' ? o : o.value) === val);
+    if (!found) return val;
+    return typeof found === 'string' ? (found.charAt(0).toUpperCase() + found.slice(1)) : found.label;
+  };
+  const words = new Set();
+  ['semi', 'uke'].forEach((who) => {
+    const who_ = e[who] || {};
+    toPickArray(who_.temperament).forEach((v) => words.add(labelFor(v, LEAD_TEMPERAMENTS)));
+    toPickArray(who_.archetype).forEach((v) => words.add(labelFor(v, LEAD_ARCHETYPES)));
+    toPickArray(who_.energy).forEach((v) => words.add(labelFor(v, LEAD_ENERGY)));
+    toPickArray(who_.customPersonality).forEach((v) => words.add(v));
+  });
+  return words;
+}
+// #424/#425: item 4 wants Personality words selectable/filterable from the
+// homepage's existing all-together Tags dropdown, rather than adding new
+// filter UI. One-way sync, same shape as flagTagName's field->tag pattern:
+// whenever a Personality pick changes for either lead, make e.customTags
+// match exactly which personality words are currently picked (removing any
+// personality-word tag that's no longer picked, adding any that newly is),
+// without touching any other tag she's added by hand.
+function syncPersonalityTags(e) {
+  const current = entryPersonalityWords(e);
+  const known = allKnownPersonalityWords();
+  e.customTags = (e.customTags || []).filter((t) => {
+    if (!known.has(t.toLowerCase())) return true;
+    return Array.from(current).some((w) => w.toLowerCase() === t.toLowerCase());
+  });
+  current.forEach((w) => {
+    if (!e.customTags.some((t) => t.toLowerCase() === w.toLowerCase())) e.customTags.push(w);
+  });
 }
 // Lets her add her own Manage Sections buckets (e.g. "Non Human", "Romance")
 // beyond the 6 built-in ones. Case-insensitive dedupe against both the
@@ -3533,6 +3630,56 @@ async function runAwardToPlaylistMigrationOnce() {
   }
 }
 
+// #426: one-time migration for her "merge Couple tags into Personality"
+// request. 'Couple' is dropped from TAG_SECTION_ORDER (see below) so the
+// Tags container no longer shows that section header at all; every tag
+// that already had a real reads on it and resolved to 'Couple' (the
+// 150-ish-keyword TAG_SECTIONS map, plus any of her own
+// TAG_SECTION_OVERRIDES pointing somewhere Couple-aliased) gets its exact
+// stored spelling added to CUSTOM_PERSONALITY_WORDS as a new pickable
+// Personality word, going forward. Per her explicit answer, this does NOT
+// touch any entry's data at all: existing e.tags/e.customTags are left
+// completely alone (so nothing is deleted off any read), and no read gets
+// auto-checked for that word on either lead -- she's reassigning those by
+// hand. Only ACTUALLY-USED tag text is migrated (via allTagCounts()), not
+// every keyword in the static map, so the pool isn't flooded with words
+// she's never once used. sectionForTag()'s own "resolve, else fall back to
+// General" safety net means this is non-destructive even if something here
+// goes wrong -- an entry's existing Couple-ish tags just render under
+// General from now on, same as the old Themes merge did.
+async function runCoupleToPersonalityMigrationOnce() {
+  try {
+    const done = await idbGet(STORE_META, 'coupleToPersonalityMigrationDone');
+    if (done && done.value) return;
+    const added = [];
+    // Resolved inline against a SNAPSHOT of the old alias chain (not the
+    // current TAG_SECTION_ALIASES, which now points Appearance/Tropes/
+    // Occupation straight at General instead of at the now-gone Couple) and
+    // not via sectionForTag() either, so this still correctly finds every
+    // tag that USED TO mean 'Couple' -- directly, or via Appearance/Tropes/
+    // Occupation having been folded into it earlier -- even though both
+    // changes above land in this same deploy.
+    const OLD_COUPLE_ALIASES = new Set(['Couple', 'Appearance', 'Tropes', 'Occupation']);
+    Object.keys(allTagCounts()).forEach((t) => {
+      const key = normalizeTagKey(t);
+      const raw = TAG_SECTION_OVERRIDES[key] || TAG_SECTIONS[key] || 'General';
+      if (!OLD_COUPLE_ALIASES.has(raw)) return;
+      const label = capTag(t);
+      if (Array.from(CUSTOM_PERSONALITY_WORDS).some((w) => w.toLowerCase() === label.toLowerCase())) return;
+      CUSTOM_PERSONALITY_WORDS.add(label);
+      added.push(label);
+    });
+    if (added.length) {
+      await idbPut(STORE_META, { key: 'customPersonalityWords', value: Array.from(CUSTOM_PERSONALITY_WORDS) });
+      pushMetaField('customPersonalityWords', Array.from(CUSTOM_PERSONALITY_WORDS));
+    }
+    await idbPut(STORE_META, { key: 'coupleToPersonalityMigrationDone', value: true });
+    if (added.length) console.log(`Couple/Personality merge: migrated ${added.length} tag(s) into the Personality word pool.`, added);
+  } catch (err) {
+    console.error('Couple to Personality migration failed:', err);
+  }
+}
+
 // "On HD" is the tag the HD-match tool (and the HD-scan import) uses to mark
 // a title as physically saved on the Yaoi Drive. Matched case/spacing-agnostic
 // via normalizeTagKey so a rename like "on hd" or "On-HD" still counts.
@@ -3674,10 +3821,21 @@ function recentsSectionHtml(entries) {
 // or removing a read from one of them just flips that underlying tag.
 let COLLECTIONS = {};
 let COLLECTIONS_TS = {};
+// #424: NSFW and On HD added as system playlists alongside Favorites/Artwork
+// -- she pointed out these four ("flags") were really just playlists wearing
+// a different hat: a dedicated homepage "Flag" dropdown AND, for two of the
+// four (Favorites/Artwork), ALSO a Playlist entry, same underlying tag,
+// shown in two different places. Giving NSFW/On HD the same system-playlist
+// treatment as Favorites/Artwork/Funny means all four now live in exactly
+// one place (the Playlist dropdown), and nothing about their own toggle
+// buttons elsewhere (Stats Flags row, cover-card quick actions) changes --
+// those still just flip the same tag, which this view picks up automatically.
 const SYSTEM_COLLECTIONS = [
   { id: 'sys-favorites', name: 'Favorites', tagKey: 'favorite', tagName: 'Favorite' },
   { id: 'sys-artwork', name: 'Artwork', tagKey: 'artwork', tagName: 'Artwork' },
   { id: 'sys-funny', name: 'Funny', tagKey: 'funny', tagName: 'Funny' },
+  { id: 'sys-onhd', name: 'On HD', tagKey: 'onhd', tagName: 'On HD' },
+  { id: 'sys-hentai', name: 'NSFW', tagKey: 'hentai', tagName: 'Hentai', nsfwOnly: true },
 ];
 // #410: COLL_ADD_KIND/NOTES_PICK_OPEN/STATS_FLAGS_OPEN all folded into
 // OPEN_DROPDOWN_ID (declared up near the other top-level dropdown-state --
@@ -3699,9 +3857,18 @@ function collectionsOfKind(kind) {
 }
 // Hidden works the same as it does for tags: keeps a playlist/award out of
 // the homepage rows and the entry-detail "add" picker, without touching its
-// membership data. System collections (Favorites/Artwork/Funny) can't be
-// hidden -- they're just live views of an existing tag, not a real list.
-function activeCollectionsOfKind(kind) { return collectionsOfKind(kind).filter((c) => !c.hidden); }
+// membership data. System collections (Favorites/Artwork/Funny/On HD/NSFW)
+// can't be hidden -- they're just live views of an existing tag, not a real
+// list. The NSFW system playlist additionally never shows at all while
+// she's in SFW mode, same as every other NSFW-only control in the app.
+function activeCollectionsOfKind(kind) {
+  return collectionsOfKind(kind).filter((c) => {
+    if (c.hidden) return false;
+    const sys = systemDef(c.id);
+    if (sys && sys.nsfwOnly && isSFW()) return false;
+    return true;
+  });
+}
 function hiddenCollectionsOfKind(kind) { return collectionsOfKind(kind).filter((c) => c.hidden); }
 async function setCollectionHidden(c, hidden) {
   if (systemDef(c.id)) return;
@@ -3830,7 +3997,7 @@ function collectionRowHtml(c) {
   const rowId = 'row-coll-' + c.id;
   const collapsed = HOME_COLLAPSED_SECTIONS.has(rowId);
   const members = collectionMembers(c);
-  const icon = c.id === 'sys-favorites' ? '💜' : c.id === 'sys-artwork' ? '🎨' : c.id === 'sys-funny' ? '😂' : '📜';
+  const icon = c.id === 'sys-favorites' ? '💜' : c.id === 'sys-artwork' ? '🎨' : c.id === 'sys-funny' ? '😂' : c.id === 'sys-onhd' ? '💾' : c.id === 'sys-hentai' ? '💦' : '📜';
   return `
     <div class='panel home-section-panel coll-panel'>
       <div class='panel-title-row home-section-title' data-toggle-home-section='${rowId}' style='cursor:pointer;'>
@@ -3943,6 +4110,54 @@ function renderDropdownToggle(key, title, items, { blankWhenEmpty = false, close
   return `<div class="dd-wrap">${toggleBtn}${panel}</div>`;
 }
 
+// #424/#425: same toggle-button-plus-pool shape as renderDropdownToggle
+// above, but with a search box over the pool so a long list (Playlist,
+// Personality) can be typed-to-filter instead of scrolled -- same UX as the
+// Tags container's own "Type a tag and press Enter..." add panel, reused
+// generically here rather than copy-pasted per picker. Filtering itself
+// happens client-side (see wireSearchablePickPanel below), so `items` just
+// needs to already be in the order the caller wants them listed.
+// `searchInputId`/`poolId` must be unique elements on the page (two of
+// these panels can't share ids, even if only one is ever open at once).
+function renderSearchablePickDropdown(key, title, items, { blankWhenEmpty = false, closeOnPick = false, searchInputId, poolId, placeholder = 'Type to search…' } = {}) {
+  const isOpen = OPEN_DROPDOWN_ID === key;
+  const selected = items.filter((i) => i.on);
+  const chipHtml = (i) => `<span class="dd-chip">${i.icon ? i.icon + ' ' : ''}${escapeHtml(i.label)}</span>`;
+  let inner;
+  if (selected.length > 1) {
+    inner = `<div class="dd-chip-wrap">${selected.map(chipHtml).join('')}</div>`;
+  } else if (selected.length === 1) {
+    inner = `<span class="dd-toggle-label">${selected[0].icon ? selected[0].icon + ' ' : ''}${escapeHtml(selected[0].label)}</span>`;
+  } else {
+    inner = blankWhenEmpty ? '' : `<span class="dd-toggle-label">${escapeHtml(title)}</span>`;
+  }
+  const toggleBtn = `<button type="button" class="tag-ms-toggle cyan-ms-toggle dd-toggle ${isOpen ? 'active' : ''}" data-dd-toggle="${escapeHtml(key)}" data-dd-close-on-pick="${closeOnPick ? '1' : ''}">${inner}<span class="chevron">${isOpen ? '▴' : '▾'}</span></button>`;
+  let panel = '';
+  if (isOpen) {
+    const pool = items.map((i) => `<span class="tag-pool-chip ${i.on ? 'active' : ''}" data-pick-label="${escapeHtml(i.label.toLowerCase())}" ${i.dataAttr}>${i.icon ? i.icon + ' ' : ''}${escapeHtml(i.label)}</span>`).join('');
+    panel = `<div class="dd-panel">
+      <div class="tag-picker-box"><input type="text" id="${escapeHtml(searchInputId)}" class="tag-picker-input" placeholder="${escapeHtml(placeholder)}" autocomplete="off"></div>
+      <div class="tag-pool" id="${escapeHtml(poolId)}">${pool || '<div style="color:var(--text-dim);font-size:12px;padding:4px;">Nothing here yet.</div>'}</div>
+    </div>`;
+  }
+  return `<div class="dd-wrap">${toggleBtn}${panel}</div>`;
+}
+// Wires the search box a renderSearchablePickDropdown panel rendered: as she
+// types, hides/shows that panel's own pool chips client-side (no re-render,
+// same as the Tags add-panel's own search box) by matching against each
+// chip's data-pick-label. Call once per panel, after it's in the DOM, with
+// the same searchInputId/poolId passed to render it.
+function wireSearchablePickPanel(root, searchInputId, poolId) {
+  const input = root.querySelector('#' + searchInputId);
+  if (!input) return;
+  input.oninput = () => {
+    const q = input.value.toLowerCase();
+    root.querySelectorAll('#' + poolId + ' .tag-pool-chip').forEach((chip) => {
+      chip.style.display = (chip.getAttribute('data-pick-label') || '').includes(q) ? '' : 'none';
+    });
+  };
+}
+
 // #411: wraps a Stats-container row so BOTH the pink label and the blue
 // dropdown box open/close it -- her follow-up ("make them also show the
 // dropdown when clicking on the section header, vs right now it's got a
@@ -3968,12 +4183,18 @@ function statsCollectionRowHtml(e, kind) {
   // one this read is already in (so it can still be removed from here) --
   // a hidden collection otherwise shouldn't show up as something new to
   // add, same as a hidden tag doesn't show in the tag picker pool.
-  const poolColls = [...activeCollectionsOfKind(kind), ...mine.filter((c) => c.hidden)];
+  // #424: alphabetized + searchable, same as the homepage Playlist filter --
+  // this is also where NSFW/On HD now show up as pickable playlists, since
+  // they're system playlists like Favorites/Artwork.
+  const poolColls = [...activeCollectionsOfKind(kind), ...mine.filter((c) => c.hidden)]
+    .slice().sort((a, b) => a.name.localeCompare(b.name));
   const items = poolColls.map((c) => ({
     value: c.id, label: c.name, on: mine.some((m) => m.id === c.id),
     dataAttr: `data-toggle-coll="${escapeHtml(c.id)}"`,
   }));
-  return statsRowHtml(label, 'coll:' + kind, renderDropdownToggle('coll:' + kind, label, items, { blankWhenEmpty: true, closeOnPick: false }));
+  return statsRowHtml(label, 'coll:' + kind, renderSearchablePickDropdown('coll:' + kind, label, items, {
+    blankWhenEmpty: true, closeOnPick: false, searchInputId: 'coll-' + kind + '-search', poolId: 'coll-' + kind + '-pool', placeholder: 'Type to find a playlist…',
+  }));
 }
 
 // #408/#410: Stats container's Flags row -- same shared dropdown as
@@ -4171,7 +4392,7 @@ function renderHome() {
   const tags = topTags(ALL_ENTRIES.filter((e) => !STATE.format || e.format === STATE.format));
 
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter && !STATE.playlistFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter && !STATE.playlistFilter) {
     // Suggested-matches row sits above the shelf rows, same section-title +
     // horizontal-scroll treatment, so unconfirmed matches are easy to spot
     // and jump into without leaving the homepage.
@@ -4274,29 +4495,20 @@ function renderHome() {
   // Shelf/Story Status/Format above, sitting on their own row directly
   // below the Tags multiselect per her request. (#419: Awards merged into
   // Playlists, so the separate Award dropdown is gone.)
-  const playlistOptions = activeCollectionsOfKind('playlist');
-  // #416: she asked for every dropdown to share one single blue/cyan --
-  // dropped the separate "collections are blue" dd-blue modifier that
-  // #412 had given Award/Playlist/Flag, so they match Shelf/Story Status/
-  // Format/Tags exactly now instead of standing out as a different shade.
-  const playlistChips = `<div class="filter-dropdown-col">${renderDropdownToggle('home-playlist', 'Playlist', playlistOptions.map((c) => ({
+  // #424: the old separate "Flag" dropdown (NSFW/Artwork/Favorite/On HD)
+  // is gone -- those four are now plain system playlists (see
+  // SYSTEM_COLLECTIONS above) and show up right here in the Playlist list
+  // instead of a second, overlapping control. #424 also: alphabetized
+  // (her request -- `order` still decides the homepage ROW sequence
+  // elsewhere, this is just how they list in the picker) and searchable,
+  // same search-box-over-a-filterable-pool pattern as the Tags dropdown
+  // right above it ("type the playlist to locate/select like i do with
+  // the tags").
+  const playlistOptions = activeCollectionsOfKind('playlist').slice().sort((a, b) => a.name.localeCompare(b.name));
+  const playlistChips = `<div class="filter-dropdown-col">${renderSearchablePickDropdown('home-playlist', 'Playlist', playlistOptions.map((c) => ({
     value: c.id, label: c.name, on: STATE.playlistFilter === c.id, dataAttr: `data-home-playlist-pick="${escapeHtml(c.id)}"`,
-  })), { blankWhenEmpty: false, closeOnPick: true })}</div>`;
-  // #412: the four "blue button" radio filters (NSFW/Artwork/Favorite/On
-  // HD) consolidated into one "Flag" dropdown (same shared
-  // renderDropdownToggle as every other dropdown) instead of a row of
-  // standalone buttons. Picking one still runs through the exact same
-  // data-nav-filter handler as before (which itself already closes any
-  // open dropdown via navigate()), so no selection logic changed, only
-  // how it's presented.
-  const homeFlagItems = [
-    !isSFW() ? { value: 'hentai', icon: '💦', label: 'NSFW', on: STATE.showHentaiOnly, dataAttr: `data-nav-filter="${STATE.showHentaiOnly ? 'home' : 'hentai'}"` } : null,
-    { value: 'artwork', icon: '🖌️', label: 'Artwork', on: STATE.showArtworkOnly, dataAttr: `data-nav-filter="${STATE.showArtworkOnly ? 'home' : 'artwork'}"` },
-    { value: 'favorites', icon: '💜', label: 'Favorite', on: STATE.showFavoritesOnly, dataAttr: `data-nav-filter="${STATE.showFavoritesOnly ? 'home' : 'favorites'}"` },
-    { value: 'onDrive', icon: '💾', label: 'On HD', on: STATE.showOnDriveOnly, dataAttr: `data-nav-filter="${STATE.showOnDriveOnly ? 'home' : 'onDrive'}"` },
-  ].filter(Boolean);
-  const homeFlagDropdown = `<div class="filter-dropdown-col">${renderDropdownToggle('home-flags', 'Flag', homeFlagItems, { blankWhenEmpty: false, closeOnPick: true })}</div>`;
-  const collectionFilterRow = `<div class="filter-dropdown-row">${homeFlagDropdown}${playlistChips}</div>`;
+  })), { blankWhenEmpty: false, closeOnPick: true, searchInputId: 'home-playlist-search', poolId: 'home-playlist-pool', placeholder: 'Type to find a playlist…' })}</div>`;
+  const collectionFilterRow = `<div class="filter-dropdown-row">${playlistChips}</div>`;
 
   // #399: Overall/Smut/Crying/WTF/Darkness dropdowns dropped from the
   // homepage filter row per her request -- same as #395's Laughing removal,
@@ -4452,11 +4664,26 @@ const TAG_SECTIONS = {
 // list itself so its header row no longer renders, and TAG_SECTION_ALIASES
 // routes anything still resolving to 'Themes' (built-in map or an old
 // section override) into 'General' instead.
-const TAG_SECTION_ORDER = ['Couple', 'Smut', 'Setting', 'Format', 'General'];
-// Sections merged later at the user's request: Appearance folded into Couple,
-// Time Period folded into Setting, Themes folded into General. Aliases keep
-// older mappings/overrides valid.
-const TAG_SECTION_ALIASES = { 'Appearance': 'Couple', 'Time Period': 'Setting', 'Fandom': 'Format', 'Tropes': 'Couple', 'Occupation': 'Couple', 'Themes': 'General' };
+// #426: 'Couple' dropped from the order list -- its tags are migrated (see
+// runCoupleToPersonalityMigrationOnce) into the Notes container's
+// Personality pool instead, per her request. Same mechanism as the earlier
+// Themes->General merge: TAG_SECTION_ALIASES below routes anything still
+// resolving to 'Couple' (the static TAG_SECTIONS map, which has ~40 tags
+// pointing straight at it, or an old TAG_SECTION_OVERRIDES entry) into the
+// new 'Personality' bucket now, so an existing Couple tag on a read renders
+// right alongside the other words that migrated with it instead of landing
+// in General.
+// #426: 'Personality' added so the Couple tags she just merged into the
+// Notes container's Personality pool have a home of their own in Manage
+// Sections, rather than dumping into General -- and so any custom word she
+// types fresh into a Personality picker shows up there too, manageable the
+// same way as any other tag section.
+const TAG_SECTION_ORDER = ['Smut', 'Setting', 'Format', 'Personality', 'General'];
+// Sections merged later at the user's request: Appearance/Tropes/Occupation
+// folded into Couple (now Personality, see above), Time Period folded into
+// Setting, Themes folded into General. Aliases keep older mappings/
+// overrides valid.
+const TAG_SECTION_ALIASES = { 'Couple': 'Personality', 'Appearance': 'Personality', 'Time Period': 'Setting', 'Fandom': 'Format', 'Tropes': 'Personality', 'Occupation': 'Personality', 'Themes': 'General' };
 // #390: searchable merge-target picker for the Tag Manager's merge button.
 // Replaces the old free-text prompt(): shows a type-to-filter list of every
 // existing tag (except the one being merged) and resolves with the exact
@@ -4588,6 +4815,15 @@ async function mergeCollections(c, target) {
 // call the exact same code instead of two copies that can drift apart.
 // Each resolves to true if something actually changed (so callers know
 // whether a re-render is warranted), false if cancelled/no-op.
+// #426: a Couple tag that migrated into Personality (or any word she's
+// since typed into a Personality picker) is also a real, managed member of
+// CUSTOM_PERSONALITY_WORDS, kept separately from the plain tag string so
+// the per-lead picker knows which words are "hers". The built-in Temperament/
+// Archetype/Energy presets are fixed app vocabulary, not something renamed
+// or deleted via the tag manager, so this only ever matches custom words.
+function findCustomPersonalityWord(name) {
+  return Array.from(CUSTOM_PERSONALITY_WORDS).find((w) => w.toLowerCase() === name.toLowerCase());
+}
 async function tagRenameFlow(oldName) {
   const newName = prompt('Rename tag "' + oldName + '" to:', oldName);
   if (!newName || !newName.trim() || newName.trim() === oldName) return false;
@@ -4603,6 +4839,12 @@ async function tagRenameFlow(oldName) {
   const nnKey = normalizeTagKey(nn);
   const canonicalMatch = existingTagNames.find((t) => t !== oldName && normalizeTagKey(t) === nnKey);
   if (canonicalMatch) nn = canonicalMatch;
+  // #426: renaming a managed Personality word here, not just the plain tag
+  // string -- keep the actual per-lead picks (and the CUSTOM_PERSONALITY_
+  // WORDS pool itself) in sync so this one rename updates everywhere, same
+  // as renaming any other tag section's entries.
+  const personalityMatch = findCustomPersonalityWord(oldName);
+  if (personalityMatch) await renameCustomPersonalityWord(personalityMatch, nn);
   for (const e of ALL_ENTRIES) {
     let changed = false;
     if ((e.tags || []).includes(oldName)) {
@@ -4613,6 +4855,17 @@ async function tagRenameFlow(oldName) {
       e.customTags = Array.from(new Set(e.customTags.map((t) => (t === oldName ? nn : t))));
       changed = true;
     }
+    if (personalityMatch) {
+      ['uke', 'semi'].forEach((who) => {
+        if (!e[who]) return;
+        const arr = toPickArray(e[who].customPersonality);
+        if (arr.some((x) => x.toLowerCase() === oldName.toLowerCase())) {
+          e[who].customPersonality = Array.from(new Set(arr.map((x) => (x.toLowerCase() === oldName.toLowerCase() ? nn : x))));
+          changed = true;
+        }
+      });
+      if (changed) syncPersonalityTags(e);
+    }
     if (changed) await saveEntry(e);
   }
   showToast('Renamed');
@@ -4621,6 +4874,15 @@ async function tagRenameFlow(oldName) {
 async function tagMergeFlow(name) {
   const target = await pickMergeTarget(name);
   if (!target || target === name) return false;
+  // #426: same idea as the rename hook above -- if `name` is a managed
+  // Personality word, fold its per-lead picks into `target` too, and if
+  // `target` isn't already a known word (preset or custom), register it so
+  // it's pickable/manageable going forward.
+  const personalityMatch = findCustomPersonalityWord(name);
+  if (personalityMatch) {
+    if (!allKnownPersonalityWords().has(target.toLowerCase())) await addCustomPersonalityWord(target);
+    await deleteCustomPersonalityWord(personalityMatch);
+  }
   for (const e of ALL_ENTRIES) {
     let changed = false;
     if ((e.tags || []).includes(name)) {
@@ -4633,6 +4895,17 @@ async function tagMergeFlow(name) {
       if (!(e.tags || []).includes(target) && !e.customTags.includes(target)) e.customTags.push(target);
       changed = true;
     }
+    if (personalityMatch) {
+      ['uke', 'semi'].forEach((who) => {
+        if (!e[who]) return;
+        const arr = toPickArray(e[who].customPersonality);
+        if (arr.some((x) => x.toLowerCase() === name.toLowerCase())) {
+          e[who].customPersonality = Array.from(new Set(arr.map((x) => (x.toLowerCase() === name.toLowerCase() ? target : x))));
+          changed = true;
+        }
+      });
+      if (changed) syncPersonalityTags(e);
+    }
     if (changed) await saveEntry(e);
   }
   showToast(`Merged "${name}" into "${target}"`);
@@ -4640,10 +4913,25 @@ async function tagMergeFlow(name) {
 }
 async function tagDeleteFlow(name) {
   if (!await confirmModal('Delete tag "' + name + '" from every entry? This can\'t be undone.')) return false;
+  // #426: if this is a managed Personality word, drop it from the pool and
+  // unpick it from every lead that had it, same as deleting any other tag.
+  const personalityMatch = findCustomPersonalityWord(name);
+  if (personalityMatch) await deleteCustomPersonalityWord(personalityMatch);
   for (const e of ALL_ENTRIES) {
     let changed = false;
     if ((e.tags || []).includes(name)) { e.tags = e.tags.filter((t) => t !== name); changed = true; }
     if ((e.customTags || []).includes(name)) { e.customTags = e.customTags.filter((t) => t !== name); changed = true; }
+    if (personalityMatch) {
+      ['uke', 'semi'].forEach((who) => {
+        if (!e[who]) return;
+        const arr = toPickArray(e[who].customPersonality);
+        if (arr.some((x) => x.toLowerCase() === name.toLowerCase())) {
+          e[who].customPersonality = arr.filter((x) => x.toLowerCase() !== name.toLowerCase());
+          changed = true;
+        }
+      });
+      if (changed) syncPersonalityTags(e);
+    }
     if (changed) await saveEntry(e);
   }
   await recordDeletedTag(name);
@@ -4757,7 +5045,20 @@ Object.assign(TAG_SECTIONS, {
 });
 function sectionForTag(t) {
   const key = normalizeTagKey(t);
-  if (/^(green|red|black) ?flag/.test(key) && !TAG_SECTION_OVERRIDES[key]) return 'Couple';
+  // #426: used to return 'Couple' here -- now that 'Couple' is gone from
+  // TAG_SECTION_ORDER, returning it directly (bypassing the fallback check
+  // below) would make newTagBuckets()-based code try to push into a bucket
+  // that no longer exists and throw. Flag tags themselves aren't part of
+  // what's migrating into Personality (that's the NSFW/On HD/Favorite/
+  // Artwork "flags" and the Couple-section tags respectively -- two
+  // different asks), so they just land in General now, same as everything
+  // else that used to resolve to the now-gone Couple section.
+  if (/^(green|red|black) ?flag/.test(key) && !TAG_SECTION_OVERRIDES[key]) return 'General';
+  // #426: a custom Personality word (migrated from Couple, or typed fresh
+  // into a Personality picker) defaults into the new Personality bucket --
+  // same as every other tag, an explicit override still wins if she's
+  // dragged it somewhere else on purpose.
+  if (!TAG_SECTION_OVERRIDES[key] && !TAG_SECTIONS[key] && findCustomPersonalityWord(t)) return 'Personality';
   const raw = TAG_SECTION_OVERRIDES[key] || TAG_SECTIONS[key] || 'General';
   const s = TAG_SECTION_ALIASES[raw] || raw;
   return tagSectionOrder().includes(s) ? s : 'General';
@@ -8486,11 +8787,20 @@ function renderLeadPickDropdown(who, title, groups, openKeySuffix) {
     const isOpen = OPEN_DROPDOWN_ID === openKey;
     const selected = items.filter((i) => i.on);
     const chips = selected.map((i) => `<div class="tag-chip" ${i.dataAttr} title="Tap to remove">${escapeHtml(i.label)}</div>`).join('');
-    const pool = items.map((i) => `<span class="tag-pool-chip ${i.on ? 'active' : ''}" ${i.dataAttr}>${escapeHtml(i.label)}</span>`).join('');
+    // #425: alphabetized (same ask as Playlist) + a search box that also
+    // doubles as "type a new word and press Enter" -- same shape as the
+    // Tags container's own add panel, since Personality words are now a
+    // growable, manageable list instead of a fixed 9-word preset.
+    const sortedItems = items.slice().sort((a, b) => a.label.localeCompare(b.label));
+    const pool = sortedItems.map((i) => `<span class="tag-pool-chip ${i.on ? 'active' : ''}" data-pick-label="${escapeHtml(i.label.toLowerCase())}" ${i.dataAttr}>${escapeHtml(i.label)}</span>`).join('');
+    const who = openKey.split(':')[1];
     return `<div class="tag-section-row dd-wrap">
       <button type="button" class="tag-section-header tag-section-header-toggle ${isOpen ? 'active' : ''}" data-dd-toggle="${escapeHtml(openKey)}">${escapeHtml(title)}</button>
       <div class="tag-section-tags">${chips}</div>
-      ${isOpen ? `<div class="dd-panel"><div class="tag-pool">${pool}</div></div>` : ''}
+      ${isOpen ? `<div class="dd-panel">
+        <div class="tag-picker-box"><input type="text" id="personality-input-${escapeHtml(who)}" class="tag-picker-input" data-personality-who="${escapeHtml(who)}" placeholder="Type a word and press Enter..." autocomplete="off"></div>
+        <div class="tag-pool" id="personality-pool-${escapeHtml(who)}">${pool}</div>
+      </div>` : ''}
     </div>`;
   }
   return renderDropdownToggle(openKey, title, items, { blankWhenEmpty: false, closeOnPick: openKeySuffix === 'flag' });
@@ -9033,6 +9343,7 @@ function renderDetail(e) {
                     { options: LEAD_TEMPERAMENTS, current: e.uke.temperament, dataAttr: 'temperament-pick' },
                     { options: LEAD_ARCHETYPES, current: e.uke.archetype, dataAttr: 'archetype-pick' },
                     { options: LEAD_ENERGY, current: e.uke.energy, dataAttr: 'energy-pick' },
+                    { options: Array.from(CUSTOM_PERSONALITY_WORDS), current: e.uke.customPersonality, dataAttr: 'custompers-pick' },
                   ], 'personality')}
                 </div>
               </div>
@@ -9065,6 +9376,7 @@ function renderDetail(e) {
                     { options: LEAD_TEMPERAMENTS, current: e.semi.temperament, dataAttr: 'temperament-pick' },
                     { options: LEAD_ARCHETYPES, current: e.semi.archetype, dataAttr: 'archetype-pick' },
                     { options: LEAD_ENERGY, current: e.semi.energy, dataAttr: 'energy-pick' },
+                    { options: Array.from(CUSTOM_PERSONALITY_WORDS), current: e.semi.customPersonality, dataAttr: 'custompers-pick' },
                   ], 'personality')}
                 </div>
               </div>
@@ -10241,20 +10553,10 @@ function attachRootHandlers() {
   root.querySelectorAll('[data-nav-back]').forEach((el) => {
     el.onclick = () => navigateBack();
   });
-  root.querySelectorAll('[data-nav-filter]').forEach((el) => {
-    el.onclick = () => {
-      const which = el.getAttribute('data-nav-filter');
-      STATE.showFavoritesOnly = which === 'favorites';
-      STATE.showOnDriveOnly = which === 'onDrive';
-      STATE.showHentaiOnly = which === 'hentai';
-      STATE.showArtworkOnly = which === 'artwork';
-      // Every filter chip in this row should behave the same way — results
-      // appear below the filter container, which stays put. Favorites/On HD
-      // used to force the whole filter section closed, which was jarring and
-      // inconsistent with every other filter (hentai, shelf, tags, ratings).
-      navigate('home');
-    };
-  });
+  // #424: [data-nav-filter] (the old separate Favorites/On HD/NSFW/Artwork
+  // "Flag" dropdown) retired -- those four now live in the Playlist dropdown
+  // above, wired through [data-home-playlist-pick]/[data-toggle-coll] like
+  // every other playlist, so there's no handler left to attach here.
   const searchInput = root.querySelector('#search-input');
   if (searchInput) {
     searchInput.oninput = (ev) => {
@@ -10274,7 +10576,7 @@ function attachRootHandlers() {
         // Search lives in the global header now, reachable from any screen —
         // typing while elsewhere jumps to Journal to show results, then
         // restores focus/cursor so the jump doesn't interrupt typing.
-        STATE.showFavoritesOnly = false; STATE.showOnDriveOnly = false; STATE.showHentaiOnly = false; STATE.showArtworkOnly = false; FILTERS_COLLAPSED = true;
+        FILTERS_COLLAPSED = true;
         SEARCH_INPUT_SHOULD_FOCUS = true;
         navigate('home');
       }
@@ -10360,6 +10662,7 @@ function attachRootHandlers() {
   };
   const tagMsClear = root.querySelector('[data-tag-ms-clear]');
   if (tagMsClear) tagMsClear.onclick = () => { STATE.tagFilters = []; render(); };
+  wireSearchablePickPanel(root, 'home-playlist-search', 'home-playlist-pool');
   const filtersToggleBtn = root.querySelector('[data-toggle-filters]');
   if (filtersToggleBtn) filtersToggleBtn.onclick = () => {
     FILTERS_COLLAPSED = !FILTERS_COLLAPSED;
@@ -10490,6 +10793,7 @@ function attachRootHandlers() {
   // the front of Currently Reading. Capturing the entry id once, when this
   // handler is bound (while this page's own entry is still the current
   // one), fixes it regardless of how the field loses focus.
+  wireSearchablePickPanel(root, 'coll-playlist-search', 'coll-playlist-pool');
   const chapterEntryId = STATE.entryId;
   if (currentChapterInput) currentChapterInput.onblur = async () => {
     const e = getEntry(chapterEntryId);
@@ -10716,6 +11020,12 @@ function attachRootHandlers() {
   // #398/#400: one shared wiring loop for every multi-select lead-attribute
   // row (position, bodyType, dynamic, temperament, archetype, energy) --
   // each toggles membership in its own array field on e.semi/e.uke.
+  // #427: of these, temperament/archetype/energy/customPersonality are the
+  // Personality fields -- a pick on either of those also needs
+  // syncPersonalityTags() so it shows up in the homepage's regular Tags
+  // filter (her request), same one-way field->tag sync flagTagName() does
+  // for Flag. Position/bodyType/dynamic are untouched by that.
+  const PERSONALITY_FIELDS = new Set(['temperament', 'archetype', 'energy', 'customPersonality']);
   [
     ['data-position-pick', 'position'],
     ['data-bodytype-pick', 'bodyType'],
@@ -10723,6 +11033,11 @@ function attachRootHandlers() {
     ['data-temperament-pick', 'temperament'],
     ['data-archetype-pick', 'archetype'],
     ['data-energy-pick', 'energy'],
+    // #425: free-typed/migrated Personality words (see CUSTOM_PERSONALITY_WORDS
+    // and renderLeadPickDropdown's personality branch below) -- same toggle
+    // mechanics as temperament/archetype/energy, just backed by a per-lead
+    // array that isn't a fixed hardcoded list.
+    ['data-custompers-pick', 'customPersonality'],
   ].forEach(([attr, field]) => {
     root.querySelectorAll(`[${attr}]`).forEach((el) => {
       el.onclick = async () => {
@@ -10730,9 +11045,54 @@ function attachRootHandlers() {
         const e = getEntry(STATE.entryId);
         const arr = toPickArray(e[who][field]);
         e[who][field] = arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val];
+        if (PERSONALITY_FIELDS.has(field)) syncPersonalityTags(e);
         await saveEntry(e); render();
       };
     });
+  });
+  // #425: Personality's search-and-add box, one per lead (uke/semi), wired
+  // the same way as the Tags container's own "Type a tag and press Enter..."
+  // box: typing filters the pool chips client-side, Enter adds a brand-new
+  // word to the shared, managed CUSTOM_PERSONALITY_WORDS list (persisted/
+  // synced, not a hardcoded const) and turns it on for whichever lead this
+  // box belongs to. Entry id captured once up front, same stale-id guard as
+  // every other field on this page.
+  const personalityEntryId = STATE.entryId;
+  root.querySelectorAll('[data-personality-who]').forEach((input) => {
+    const who = input.getAttribute('data-personality-who');
+    input.oninput = () => {
+      const q = input.value.toLowerCase();
+      const pool = root.querySelector('#personality-pool-' + who);
+      if (!pool) return;
+      pool.querySelectorAll('.tag-pool-chip').forEach((chip) => {
+        chip.style.display = (chip.getAttribute('data-pick-label') || '').includes(q) ? '' : 'none';
+      });
+    };
+    input.onkeydown = async (ev) => {
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      const raw = input.value.trim();
+      if (!raw) return;
+      const e = getEntry(personalityEntryId);
+      if (!e) return;
+      // #425: LEAD_ENERGY holds {value,label} objects, not plain strings
+      // like the other two presets -- flatten to label text before
+      // comparing, or this throws on energy's entries.
+      const presetLabels = [...LEAD_TEMPERAMENTS, ...LEAD_ARCHETYPES]
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .concat(LEAD_ENERGY.map((o) => o.label));
+      const canonical = Array.from(CUSTOM_PERSONALITY_WORDS).find((w) => w.toLowerCase() === raw.toLowerCase())
+        || presetLabels.find((w) => w.toLowerCase() === raw.toLowerCase());
+      const val = canonical || raw;
+      if (!canonical) await addCustomPersonalityWord(val);
+      const arr = toPickArray(e[who].customPersonality);
+      if (!arr.some((x) => x.toLowerCase() === val.toLowerCase())) {
+        e[who].customPersonality = [...arr, val];
+        syncPersonalityTags(e);
+        await saveEntry(e);
+      }
+      render();
+    };
   });
   // #410: Notes-container lead-attribute dropdowns (Flag, Position, 2nd
   // Gender, Physique, Personality) now open/close via the generic
@@ -11873,7 +12233,7 @@ function renderHomeInPlace() {
   const main = root.querySelector('main');
   const entries = filteredEntries();
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.showFavoritesOnly && !STATE.showOnDriveOnly && !STATE.showHentaiOnly && !STATE.showArtworkOnly && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter && !STATE.playlistFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter && !STATE.playlistFilter) {
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
       body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)));
@@ -12709,6 +13069,8 @@ async function boot() {
     if (savedTagHideTs && savedTagHideTs.value && typeof savedTagHideTs.value === 'object') TAG_HIDE_TS = savedTagHideTs.value;
     const savedTagSectionOverrides = await idbGet(STORE_META, 'tagSectionOverrides');
     if (savedTagSectionOverrides && savedTagSectionOverrides.value && typeof savedTagSectionOverrides.value === 'object') TAG_SECTION_OVERRIDES = savedTagSectionOverrides.value;
+    const savedCustomPersonalityWords = await idbGet(STORE_META, 'customPersonalityWords');
+    if (savedCustomPersonalityWords && Array.isArray(savedCustomPersonalityWords.value)) CUSTOM_PERSONALITY_WORDS = new Set(savedCustomPersonalityWords.value);
     const savedCustomTagSections = await idbGet(STORE_META, 'customTagSections');
     if (savedCustomTagSections && Array.isArray(savedCustomTagSections.value)) CUSTOM_TAG_SECTIONS = savedCustomTagSections.value;
     const savedTagSectionCustomOrder = await idbGet(STORE_META, 'tagSectionCustomOrder');
@@ -12822,6 +13184,7 @@ async function boot() {
         // MangaDex (Anime-Planet blocks Apps Script), which gave poor matches.
         runFavoriteTagMigrationOnce();
         runFlagTagBackfillOnce();
+        runCoupleToPersonalityMigrationOnce();
       }
       render();
       // A genuinely brand-new account (no entries/reactions/H images ever
