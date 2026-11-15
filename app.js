@@ -611,14 +611,28 @@ async function saveEntry(entry, opts) {
 }
 
 // #370/#371: force whatever field is currently focused on the detail page
-// to save right now, by blurring it (which fires that field's own onblur
-// handler) and then saving the entry once more directly. Used both by the
-// visibilitychange/pagehide safety net below.
-async function forceSaveActiveField() {
+// to save right now, by blurring it -- which fires that field's own onblur
+// handler, the thing that actually knows whether anything changed and which
+// entry it belongs to. Used by the visibilitychange/pagehide safety net
+// below, which fires on every single tab-switch/app-background while any
+// detail page is open, edited or not.
+// #423: this used to ALSO call saveEntry(e) once more itself, unconditionally,
+// after the blur -- on top of whatever the field's own onblur handler did.
+// That meant simply backgrounding the app while just *viewing* an entry (no
+// edit, maybe no field even focused) re-saved -- and re-stamped with a brand
+// new updatedAt, and unconditionally pushed to Firestore -- the WHOLE entry
+// currently sitting in memory. If this device's copy of that entry hadn't
+// yet picked up a newer edit from elsewhere (tags, images, notes added on
+// another device/session), that stale copy got the freshest timestamp and
+// silently overwrote the real thing everywhere once synced -- exactly the
+// "disappeared in real time" reports. Every field's own onblur handler
+// (chapter, reading link, lead name/age, title/author/etc., notes) now
+// already skips its save when nothing actually changed, so blurring is
+// enough on its own -- this no longer needs (or should do) a second,
+// unconditional resave of its own.
+function forceSaveActiveField() {
   if (STATE.view !== 'detail' || !STATE.entryId) return;
   if (document.activeElement && typeof document.activeElement.blur === 'function') document.activeElement.blur();
-  const e = getEntry(STATE.entryId);
-  if (e) await saveEntry(e);
 }
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) forceSaveActiveField();
@@ -10435,12 +10449,18 @@ function attachRootHandlers() {
     await saveEntry(e); render();
   };
   const readingLinkInput = root.querySelector('#reading-link-input');
+  const readingLinkEntryId = STATE.entryId;
   if (readingLinkInput) readingLinkInput.onblur = async () => {
     let val = readingLinkInput.value.trim();
     if (!val) return;
     if (!/^https?:\/\//i.test(val)) val = 'https://' + val;
-    const e = getEntry(STATE.entryId);
+    const e = getEntry(readingLinkEntryId);
     if (!e) return;
+    // #423: skip the save (and the stale-id risk of re-reading STATE.entryId
+    // here) when nothing actually changed -- same fix as the chapter input
+    // and notes box, same reason: saveEntry() unconditionally re-stamps and
+    // re-pushes the WHOLE entry, not just this field.
+    if (val === (e.readingLink || '')) return;
     e.readingLink = val;
     await saveEntry(e);
     render();
@@ -10475,10 +10495,14 @@ function attachRootHandlers() {
     const e = getEntry(chapterEntryId);
     if (!e) return;
     const newVal = currentChapterInput.value.trim();
-    if (newVal !== (e.currentChapter || '')) {
-      e.currentChapter = newVal;
-      e.chapterUpdatedAt = Date.now();
-    }
+    // #423: this used to call saveEntry(e) unconditionally below even when
+    // newVal matched the existing value -- so just tapping into this box
+    // and away again re-saved (and re-stamped) the WHOLE entry, same root
+    // cause as #422. Skipping the save entirely on a no-op blur, like the
+    // notes box now does, is what actually stops the resave.
+    if (newVal === (e.currentChapter || '')) return;
+    e.currentChapter = newVal;
+    e.chapterUpdatedAt = Date.now();
     await saveEntry(e);
   };
   const hdBtn = root.querySelector('[data-toggle-hd]');
@@ -10720,19 +10744,33 @@ function attachRootHandlers() {
   root.querySelectorAll('[data-char-photo]').forEach((el) => {
     el.onchange = () => applyCharPhotoFile(el.getAttribute('data-char-photo'), el.files[0]);
   });
+  // #423: same unconditional-resave fix as the chapter/reading-link/notes
+  // fields -- capture this page's entry id once at bind time instead of
+  // reading STATE.entryId inside the handler (it can point at a different
+  // screen by the time blur fires), and skip saveEntry() entirely when the
+  // value didn't actually change, so an idle tap into/out of these boxes
+  // can't re-stamp and re-push the whole entry.
   root.querySelectorAll('[data-lead-name]').forEach((el) => {
+    const leadEntryId = STATE.entryId;
     el.onblur = async () => {
       const who = el.getAttribute('data-lead-name');
-      const e = getEntry(STATE.entryId);
-      e[who].name = el.value.trim();
+      const e = getEntry(leadEntryId);
+      if (!e) return;
+      const newVal = el.value.trim();
+      if (newVal === (e[who].name || '')) return;
+      e[who].name = newVal;
       await saveEntry(e);
     };
   });
   root.querySelectorAll('[data-lead-age]').forEach((el) => {
+    const leadEntryId = STATE.entryId;
     el.onblur = async () => {
       const who = el.getAttribute('data-lead-age');
-      const e = getEntry(STATE.entryId);
-      e[who].age = el.value.trim();
+      const e = getEntry(leadEntryId);
+      if (!e) return;
+      const newVal = el.value.trim();
+      if (newVal === (e[who].age || '')) return;
+      e[who].age = newVal;
       await saveEntry(e);
     };
   });
@@ -10757,13 +10795,27 @@ function attachRootHandlers() {
       ['edit-chapters', 'totalChapters', (v) => (v ? Number(v) : null)],
       ['edit-seasons', 'totalSeasons', (v) => (v ? Number(v) : null)],
     ];
+    // #423: captured once, before the per-field loop below, so every one of
+    // these fields saves to the entry this page actually belongs to even if
+    // STATE.entryId has already moved on to a different screen by blur time
+    // -- same root cause/fix as the chapter/reading-link/lead fields and the
+    // notes box (#422).
+    const detailFieldsEntryId = STATE.entryId;
     autoSaveDetailFields.forEach(([id, field, transform]) => {
       const el = document.getElementById(id);
       if (!el) return;
       el.onblur = async () => {
-        const e = getEntry(STATE.entryId);
+        const e = getEntry(detailFieldsEntryId);
+        if (!e) return;
         const val = transform(el.value);
-        e[field] = (field === 'title' && !val) ? e.title : val;
+        const nextVal = (field === 'title' && !val) ? e.title : val;
+        // Skip entirely on a no-op blur (tapped in, tapped out, nothing
+        // typed) -- saveEntry() always re-stamps AND re-pushes the whole
+        // entry to Firestore, not just this one field, so doing that on
+        // every idle blur is what was silently overwriting tags/images/notes
+        // elsewhere with a stale local copy.
+        if (nextVal === e[field]) return;
+        e[field] = nextVal;
         // Filling in Novel (author) means she's just told the app this is
         // adapted from a web novel -- tag it the same way she'd tag it by
         // hand instead of leaving her to remember to do it separately.
