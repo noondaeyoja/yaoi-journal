@@ -338,6 +338,13 @@ let STATE = {
   // #419: Awards merged into Playlists (redundant kinds) -- awardFilter
   // removed, playlistFilter is now the only collection filter.
   playlistFilter: null,     // null or a collection id — only show entries belonging to this playlist
+  // #434: separate Main Character/Main Lead filter boxes, per her request --
+  // each is its own Flag/Position/2nd Gender/Physique dropdown so e.g. "MC
+  // is a Green Flag" and "ML is a Pretty Bottom" can be searched independently
+  // (distinct from the older combined STATE.flagFilter above, which matches
+  // either lead and isn't exposed on this filter row).
+  mcFlagFilter: null, mcPositionFilter: null, mcDynamicFilter: null, mcBodyTypeFilter: null,
+  mlFlagFilter: null, mlPositionFilter: null, mlDynamicFilter: null, mlBodyTypeFilter: null,
 };
 
 // Shared by both paths back to a completely clean homepage — the footer
@@ -360,6 +367,8 @@ function resetHomeFiltersClean() {
   STATE.storyStatusFilter = null;
   STATE.mediaFormatFilter = null;
   STATE.playlistFilter = null;
+  STATE.mcFlagFilter = null; STATE.mcPositionFilter = null; STATE.mcDynamicFilter = null; STATE.mcBodyTypeFilter = null;
+  STATE.mlFlagFilter = null; STATE.mlPositionFilter = null; STATE.mlDynamicFilter = null; STATE.mlBodyTypeFilter = null;
   FILTERS_COLLAPSED = false;
 }
 
@@ -2328,7 +2337,10 @@ function detailBrowseNeighbors(id) {
     || STATE.flagFilter || STATE.linkFilter || STATE.noLinkFilter || STATE.storyStatusFilter
     // #424: Favorites/On HD/NSFW/Artwork no longer have their own STATE
     // booleans -- they're playlistFilter picks now, already covered below.
-    || STATE.playlistFilter;
+    || STATE.playlistFilter
+    // #434: Main Character/Main Lead filter boxes.
+    || STATE.mcFlagFilter || STATE.mcPositionFilter || STATE.mcDynamicFilter || STATE.mcBodyTypeFilter
+    || STATE.mlFlagFilter || STATE.mlPositionFilter || STATE.mlDynamicFilter || STATE.mlBodyTypeFilter;
   if (!activeFilter) return { prev: null, next: null };
   const list = filteredEntries().map((x) => x.id);
   return mediaModalNavNeighbors(list, id);
@@ -3294,6 +3306,17 @@ function filteredEntries() {
     }
     if (STATE.linkFilter && !e.readingLink) return false;
     if (STATE.noLinkFilter && e.readingLink) return false;
+    // #434: Main Character (e.uke) / Main Lead (e.semi) filter boxes --
+    // each is independent of the other, so a read has to match ALL of the
+    // ones she's actually picked, same AND logic as every other filter here.
+    if (STATE.mcFlagFilter && (!e.uke || e.uke.flag !== STATE.mcFlagFilter)) return false;
+    if (STATE.mcPositionFilter && (!e.uke || e.uke.position !== STATE.mcPositionFilter)) return false;
+    if (STATE.mcDynamicFilter && (!e.uke || e.uke.dynamic !== STATE.mcDynamicFilter)) return false;
+    if (STATE.mcBodyTypeFilter && (!e.uke || e.uke.bodyType !== STATE.mcBodyTypeFilter)) return false;
+    if (STATE.mlFlagFilter && (!e.semi || e.semi.flag !== STATE.mlFlagFilter)) return false;
+    if (STATE.mlPositionFilter && (!e.semi || e.semi.position !== STATE.mlPositionFilter)) return false;
+    if (STATE.mlDynamicFilter && (!e.semi || e.semi.dynamic !== STATE.mlDynamicFilter)) return false;
+    if (STATE.mlBodyTypeFilter && (!e.semi || e.semi.bodyType !== STATE.mlBodyTypeFilter)) return false;
     if (playlistIds && !playlistIds.has(e.id)) return false;
     if (q) {
       const hay = normalizeSearchText([e.title, e.altTitle, e.author, e.artist, e.notes, ...(e.tags || []), ...(e.customTags || [])]
@@ -3552,13 +3575,14 @@ function tagSectionOrder() {
     ordered = TAG_SECTION_CUSTOM_ORDER.filter((s) => baseSet.has(s));
     base.forEach((s) => { if (!ordered.includes(s)) ordered.push(s); });
   }
-  // #402: "Non Human" always sits directly under "Smut" per her request --
-  // enforced here (not persisted) so it holds regardless of creation order
-  // or how the built-in/custom sections otherwise get rearranged.
-  if (ordered.includes('Non Human') && ordered.includes('Smut') && ordered[ordered.indexOf('Smut') + 1] !== 'Non Human') {
-    ordered = ordered.filter((s) => s !== 'Non Human');
-    ordered.splice(ordered.indexOf('Smut') + 1, 0, 'Non Human');
-  }
+  // #402 used to force "Non Human" to always sit directly under "Smut"
+  // here, recomputed on every call -- but that fought her manual Manage
+  // Sections reordering: any up/down move that touched the Smut/Non Human
+  // pair (or anything that would land right after Smut) got silently
+  // snapped back on the very next render, which is the "can't move the
+  // sections like intended" bug she reported (#430). Removed so a manual
+  // reorder actually sticks; TAG_SECTION_CUSTOM_ORDER is the only source
+  // of truth for section order now.
   return ordered;
 }
 // Moves a section one slot earlier (-1) or later (+1) in the Manage
@@ -4092,8 +4116,18 @@ function renderCollectionPage() {
         <button type="button" class="ref-btn ${COLL_EDIT_MODE ? 'active' : ''}" data-coll-edit-toggle="1">${COLL_EDIT_MODE ? 'Done' : 'Remove reads'}</button>
         <button type="button" class="ref-btn" data-coll-move="-1" ${idx <= 0 ? 'disabled' : ''}>▲ Move up</button>
         <button type="button" class="ref-btn" data-coll-move="1" ${idx >= siblings.length - 1 ? 'disabled' : ''}>▼ Move down</button>
-        ${isSys ? '' : `<button type="button" class="ref-btn" data-coll-rename="1">Rename</button>
-        <button type="button" class="ref-btn" data-coll-delete="1">Delete</button>`}
+        <!-- #433: Rename and Merge now work for built-in playlists too
+             (On HD, Artwork, etc.), per her request -- renaming only
+             changes c.name (display label), and merging moves members via
+             the same tag-aware helpers as everywhere else, so neither one
+             risks the underlying toggle logic. Delete stays regular-only:
+             a built-in collection isn't a row that can go away, it's a
+             permanent toggle (Flags/cover quick actions still reference it
+             directly), so "deleting" it would only orphan it from this
+             list while leaving the toggle itself live and confusing. -->
+        <button type="button" class="ref-btn" data-coll-rename="1">Rename</button>
+        <button type="button" class="ref-btn" data-coll-merge="1">🔀 Merge duplicate</button>
+        ${isSys ? '' : `<button type="button" class="ref-btn" data-coll-delete="1">Delete</button>`}
       </div>
     </div>
     <main><div class="panel coll-panel"><div class="cover-grid">${collAddTileHtml(c)}${cards}</div></div></main>
@@ -4245,20 +4279,6 @@ function statsCollectionRowHtml(e, kind) {
   }));
 }
 
-// #408/#410: Stats container's Flags row -- same shared dropdown as
-// everything else in this container now; each flag keeps its own existing
-// boolean toggle handler (data-toggle-hentai/-hd/-fav/-artwork) completely
-// unchanged, only the surrounding markup is shared now. Blank when nothing's
-// active, per her rule for this container.
-function statsFlagsRowHtml(e) {
-  const items = [
-    { value: 'hentai', icon: '💦', label: 'NSFW', on: isHentai(e), dataAttr: 'data-toggle-hentai="1"', show: !isSFW() },
-    { value: 'hd', icon: '💾', label: 'On HD', on: isOnDrive(e), dataAttr: 'data-toggle-hd="1"', show: true },
-    { value: 'fav', icon: e.favorite ? '💜' : '🤍', label: 'Favorite', on: !!e.favorite, dataAttr: 'data-toggle-fav="1"', show: true },
-    { value: 'artwork', icon: '🎨', label: 'Artwork', on: isArtwork(e), dataAttr: 'data-toggle-artwork="1"', show: true },
-  ].filter((i) => i.show);
-  return statsRowHtml('Flags', 'stats-flags', renderDropdownToggle('stats-flags', 'Flags', items, { blankWhenEmpty: true, closeOnPick: false }));
-}
 function openCreatePlaylistModal() {
   openModal(`
     <h3>Create playlist</h3>
@@ -4384,6 +4404,14 @@ function attachCollectionHandlers(root) {
     });
     const renameBtn = root.querySelector('[data-coll-rename]');
     if (renameBtn) renameBtn.onclick = () => openRenameCollectionModal(c);
+    const mergeBtn = root.querySelector('[data-coll-merge]');
+    if (mergeBtn) mergeBtn.onclick = async () => {
+      const target = await pickCollectionMergeTarget(c);
+      if (!target || target.id === c.id) return;
+      await mergeCollections(c, target);
+      showToast(`Merged "${c.name}" into "${target.name}"`);
+      if (systemDef(c.id)) render(); else navigate('home');
+    };
     const delBtn = root.querySelector('[data-coll-delete]');
     if (delBtn) delBtn.onclick = async () => {
       if (await deleteCollectionFlow(c)) navigate('home'); else render();
@@ -4440,7 +4468,7 @@ function renderHome() {
   const tags = topTags(ALL_ENTRIES.filter((e) => !STATE.format || e.format === STATE.format));
 
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter && !STATE.playlistFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter && !STATE.playlistFilter && !STATE.mcFlagFilter && !STATE.mcPositionFilter && !STATE.mcDynamicFilter && !STATE.mcBodyTypeFilter && !STATE.mlFlagFilter && !STATE.mlPositionFilter && !STATE.mlDynamicFilter && !STATE.mlBodyTypeFilter) {
     // Suggested-matches row sits above the shelf rows, same section-title +
     // horizontal-scroll treatment, so unconfirmed matches are easy to spot
     // and jump into without leaving the homepage.
@@ -4556,7 +4584,6 @@ function renderHome() {
   const playlistChips = `<div class="filter-dropdown-col">${renderSearchablePickDropdown('home-playlist', 'Playlist', playlistOptions.map((c) => ({
     value: c.id, label: c.name, on: STATE.playlistFilter === c.id, dataAttr: `data-home-playlist-pick="${escapeHtml(c.id)}"`,
   })), { blankWhenEmpty: false, closeOnPick: true, searchInputId: 'home-playlist-search', poolId: 'home-playlist-pool', placeholder: 'Type to find a playlist…' })}</div>`;
-  const collectionFilterRow = `<div class="filter-dropdown-row">${playlistChips}</div>`;
 
   // #399: Overall/Smut/Crying/WTF/Darkness dropdowns dropped from the
   // homepage filter row per her request -- same as #395's Laughing removal,
@@ -4569,17 +4596,73 @@ function renderHome() {
   // so they stack with whatever else is already filtered. #416: now sharing
   // Tags' row (she asked for this once Tags became a compact dropdown);
   // still plain buttons, so still pink, not cyan/blue like the dropdowns.
-  const linkChip = `<div class="filter-dropdown-col"><span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.linkFilter ? 'active' : ''}" data-link-filter="1" title="Has a reading link attached"><span class="ffb-icon">🔗</span><span class="ffb-label">Linked</span></span></div>`;
-  const noLinkChip = `<div class="filter-dropdown-col"><span class="rating-pick-icon flag-filter-icon flag-filter-btn ${STATE.noLinkFilter ? 'active' : ''}" data-no-link-filter="1" title="No reading link attached"><span class="ffb-icon">⛓️‍💥</span><span class="ffb-label">Unlinked</span></span></div>`;
+  // #429: Linked/Unlinked merged into one "Link Status" dropdown, same cyan
+  // single-select pattern as Shelf/Story Status/Format -- her rule that
+  // dropdowns are blue/cyan and only buttons are pink, so these two
+  // mutually-exclusive-in-practice pink buttons become one dropdown.
+  // STATE.linkFilter/noLinkFilter are kept as the two underlying booleans
+  // (filteredEntries() already checks both) -- this dropdown just always
+  // sets at most one of them true at a time instead of each toggling
+  // independently.
+  const linkStatusChip = `<div class="filter-dropdown-col">${renderDropdownToggle('home-linkstatus', 'Link Status', [
+    { value: 'linked', label: 'Linked', on: STATE.linkFilter, dataAttr: 'data-home-linkstatus-pick="linked"' },
+    { value: 'unlinked', label: 'Unlinked', on: STATE.noLinkFilter, dataAttr: 'data-home-linkstatus-pick="unlinked"' },
+  ], { blankWhenEmpty: false, closeOnPick: true })}</div>`;
+
+  // #434: Main Character/Main Lead filter boxes -- separate Flag/Position/
+  // 2nd Gender/Physique dropdowns per lead, so "MC is a Green Flag" and "ML
+  // is a Pretty Bottom" can be picked independently (her call, over one
+  // shared set). Kept out of the 2-row filter box above (which stays
+  // exactly as #1 redid it) in their own collapsible panel below it, using
+  // the same [data-collapsible] whole-title-click pattern as every other
+  // container (#431) instead of a one-off toggle.
+  const leadFilterRowHtml = (prefix, who) => {
+    const flagRow = !isSFW() ? `<div class="filter-dropdown-row">
+      <div class="filter-dropdown-col">${renderDropdownToggle('home-' + prefix + 'flag', 'Flag', FLAG_COLORS.map((v) => ({
+        value: v, label: v, on: STATE[prefix + 'FlagFilter'] === v, dataAttr: `data-home-${prefix}flag-pick="${escapeHtml(v)}"`,
+      })), { blankWhenEmpty: true, closeOnPick: true })}</div>
+      <div class="filter-dropdown-col">${renderDropdownToggle('home-' + prefix + 'position', 'Position', LEAD_POSITIONS.map((v) => ({
+        value: v, label: v, on: STATE[prefix + 'PositionFilter'] === v, dataAttr: `data-home-${prefix}position-pick="${escapeHtml(v)}"`,
+      })), { blankWhenEmpty: true, closeOnPick: true })}</div>
+    </div>` : `<div class="filter-dropdown-row">
+      <div class="filter-dropdown-col">${renderDropdownToggle('home-' + prefix + 'position', 'Position', LEAD_POSITIONS.map((v) => ({
+        value: v, label: v, on: STATE[prefix + 'PositionFilter'] === v, dataAttr: `data-home-${prefix}position-pick="${escapeHtml(v)}"`,
+      })), { blankWhenEmpty: true, closeOnPick: true })}</div>
+    </div>`;
+    const secondRow = `<div class="filter-dropdown-row">
+      <div class="filter-dropdown-col">${renderDropdownToggle('home-' + prefix + 'dynamic', '2nd Gender', LEAD_DYNAMICS.map((v) => ({
+        value: v, label: v, on: STATE[prefix + 'DynamicFilter'] === v, dataAttr: `data-home-${prefix}dynamic-pick="${escapeHtml(v)}"`,
+      })), { blankWhenEmpty: true, closeOnPick: true })}</div>
+      <div class="filter-dropdown-col">${renderDropdownToggle('home-' + prefix + 'bodytype', 'Physique', LEAD_BODY_TYPES.map((v) => ({
+        value: v, label: v, on: STATE[prefix + 'BodyTypeFilter'] === v, dataAttr: `data-home-${prefix}bodytype-pick="${escapeHtml(v)}"`,
+      })), { blankWhenEmpty: true, closeOnPick: true })}</div>
+    </div>`;
+    return flagRow + secondRow;
+  };
+  const mcFilterBox = `
+    <div class="panel" style="margin-top:12px;">
+      <div class="panel-title-row" data-collapsible="1" style="margin-bottom:10px;">
+        <div class="panel-title" style="margin:0;">Main Character</div>
+      </div>
+      ${leadFilterRowHtml('mc', 'uke')}
+    </div>`;
+  const mlFilterBox = `
+    <div class="panel" style="margin-top:12px;">
+      <div class="panel-title-row" data-collapsible="1" style="margin-bottom:10px;">
+        <div class="panel-title" style="margin:0;">Main Lead</div>
+      </div>
+      ${leadFilterRowHtml('ml', 'semi')}
+    </div>`;
 
   return `
     <div class="app-header">
       <button class="filters-toggle-btn" data-toggle-filters="1">${FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
       <div class="filters-collapsible ${FILTERS_COLLAPSED ? 'collapsed' : ''}" id="filters-collapsible">
         <div class="filter-dropdown-row">${shelfChips}${storyStatusChips}${mediaFormatChips}</div>
-        <div class="filter-dropdown-row">${tagMultiselect}${linkChip}${noLinkChip}</div>
-        ${collectionFilterRow}
+        <div class="filter-dropdown-row">${tagMultiselect}${linkStatusChip}${playlistChips}</div>
         <div class="create-playlist-row"><button type="button" class="create-playlist-btn" data-create-playlist="1">+ Create playlist</button></div>
+        ${mcFilterBox}
+        ${mlFilterBox}
       </div>
     </div>
     <main>${body}</main>
@@ -4789,22 +4872,29 @@ function pickMergeTarget(name) {
   });
 }
 // Same searchable merge-target picker as pickMergeTarget above, just over
-// COLLECTIONS (awards/playlists) instead of tags. System collections
-// (Favorites/Artwork/Funny) are left out of the candidate list -- they're
-// live tag views, not a real membership list, so merging into one doesn't
-// mean anything.
+// COLLECTIONS (awards/playlists) instead of tags.
+// #433: system collections (On HD, Artwork, etc.) used to be excluded
+// entirely -- as both source and target -- because the old mergeCollections
+// only ever touched the `collections` array, which doesn't mean anything
+// for a tag-backed system collection. Now that mergeCollections goes
+// through addEntryToCollection/removeEntryFromCollection (tag-aware either
+// way), they're valid on both sides: merging INTO one tags every moved
+// read with that system flag, and merging one AWAY moves its members and
+// clears their tag, but the built-in collection itself stays (it's a
+// permanent toggle, never actually deletable -- see mergeCollections).
 function pickCollectionMergeTarget(c) {
   return new Promise((resolve) => {
-    const candidates = collectionsOfKind(c.kind).filter((x) => x.id !== c.id && !systemDef(x.id));
+    const candidates = collectionsOfKind(c.kind).filter((x) => x.id !== c.id);
     const ov = document.createElement('div');
     ov.style.cssText = 'position:fixed;inset:0;background:rgba(11,15,43,.55);z-index:100000;display:flex;align-items:center;justify-content:center;padding:16px;';
     const title = escapeHtml(c.name);
     const label = c.kind === 'award' ? 'award' : 'playlist';
     const article = c.kind === 'award' ? 'an' : 'a';
+    const disappearNote = systemDef(c.id) ? ('Its reads move to the ' + label + ' you pick; "' + title + '" is built in, so it stays (just empty until something new qualifies).') : ('Its reads move to the ' + label + ' you pick, and "' + title + '" disappears.');
     ov.innerHTML =
       '<div style="background:var(--card);border:3px solid var(--border);box-shadow:7px 7px 0 var(--border);width:100%;max-width:420px;max-height:80vh;display:flex;flex-direction:column;">' +
       '<div style="background:var(--pink);border-bottom:3px solid var(--border);padding:10px 14px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;font-size:13px;color:var(--text);">Merge "' + title + '" into…</div>' +
-      '<div style="padding:12px 14px 6px;font-size:12px;color:var(--text-dim);">Its reads move to the ' + label + ' you pick, and "' + title + '" disappears.</div>' +
+      '<div style="padding:12px 14px 6px;font-size:12px;color:var(--text-dim);">' + disappearNote + '</div>' +
       '<div style="padding:0 14px 10px;"><input type="text" id="coll-merge-pick-input" placeholder="Start typing ' + article + ' ' + label + '…" autocomplete="off" style="width:100%;box-sizing:border-box;padding:10px;border:2px solid var(--border);font-size:16px;background:var(--card);color:var(--text);"></div>' +
       '<div id="coll-merge-pick-list" style="overflow-y:auto;flex:1 1 auto;border-top:2px solid var(--border);min-height:80px;"></div>' +
       '<div style="padding:10px 14px;border-top:2px solid var(--border);text-align:right;"><button type="button" id="coll-merge-pick-cancel" class="ref-btn" style="padding:8px 14px;">Cancel</button></div>' +
@@ -4843,19 +4933,26 @@ function pickCollectionMergeTarget(c) {
     input.focus();
   });
 }
-// Merges c into target: every entry carrying c's id in its `collections`
-// array gets target's id added (deduped) and c's removed, then c itself is
-// deleted. Mirrors tag-merge semantics (pickMergeTarget's handler above).
+// Merges c into target: every member of c (via collectionMembers, which
+// already knows how to read a system collection's tag-based membership vs
+// a regular one's `collections` array) is moved over using the same
+// addEntryToCollection/removeEntryFromCollection helpers everything else
+// uses -- so this is correct whether c or target is a built-in collection
+// (On HD, Artwork, etc.) or a regular one, instead of only ever touching
+// the `collections` array directly, which silently did nothing for a
+// system source/target. #433: built-in collections are never actually
+// deleted here (they're permanent toggles, not registry rows that can go
+// away) -- only a regular playlist is removed once its members are moved.
 async function mergeCollections(c, target) {
-  for (const e of ALL_ENTRIES) {
-    const cols = e.collections || [];
-    if (!cols.includes(c.id)) continue;
-    e.collections = cols.filter((id) => id !== c.id);
-    if (!e.collections.includes(target.id)) e.collections.push(target.id);
-    await saveEntry(e);
+  const members = collectionMembers(c);
+  for (const e of members) {
+    await removeEntryFromCollection(e, c);
+    await addEntryToCollection(e, target);
   }
-  c.deleted = true;
-  await persistCollections([c.id]);
+  if (!systemDef(c.id)) {
+    c.deleted = true;
+    await persistCollections([c.id]);
+  }
 }
 // Shared tag-action flows -- the actual logic behind hide/merge/rename/
 // delete, factored out so both the Active/Hidden tab's inline icon buttons
@@ -5324,12 +5421,18 @@ function tagSortSelectHtml() {
     <option value="recent" ${TAG_MGR_SORT === 'recent' ? 'selected' : ''}>Sort: Recently added</option>
   </select>`;
 }
+// #433: the "Playlists" tab is removed per her request -- playlist
+// management (including merge/rename, now also available on built-in
+// collections) lives on each playlist's own "Open ›" page from the
+// homepage instead, same as "originally designed". TAG_MGR_KIND can no
+// longer become 'playlist' from here, so this is always just the one Tags
+// tab now (kept as a function/tab-row shell in case another kind is added
+// later).
 function tagsKindSwitchHtml() {
   return `
     <div class="tagmgr-tabs" style="margin-bottom:8px;">
       <button class="tagmgr-tab ${TAG_MGR_KIND === 'tags' ? 'active' : ''}" data-tagmgr-kind="tags">🏷️ Tags</button>
       ${TAG_MGR_KIND === 'tags' ? `<button class="tagmgr-tab ${TAG_MGR_TAB === 'manage' ? 'active' : ''}" data-tagmgr-tab="manage">🗂️ Manage Sections</button>` : ''}
-      <button class="tagmgr-tab ${TAG_MGR_KIND === 'playlist' ? 'active' : ''}" data-tagmgr-kind="playlist">📜 Playlists</button>
     </div>`;
 }
 
@@ -6554,9 +6657,8 @@ function renderReactionsLibrary() {
     </div>
       ${IMAGES_TAB !== 'duplicates' ? `
         <div class="panel" style="margin-bottom:16px;">
-          <div class="panel-title-row" style="margin-bottom:12px;">
+          <div class="panel-title-row" data-images-toggle-filters="1" style="margin-bottom:12px;">
             <div class="panel-title" style="margin:0;">Mood Tags</div>
-            <span class="panel-triangles" data-images-toggle-filters="1" style="cursor:pointer;"><span class="tri-up"></span><span class="tri-down"></span></span>
           </div>
           <div class="filters-collapsible" id="images-filters-collapsible">
             <div class="group-chip-row">
@@ -6568,7 +6670,7 @@ function renderReactionsLibrary() {
           </div>
         </div>
       ` : ''}
-    <div class="panel"><div class="panel-title-row" style="margin-bottom:10px;"><div class="panel-title" style="margin:0;">Images</div><span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span></div><div class="gallery-dropzone" style="margin:0;">${tabBody}</div></div>
+    <div class="panel"><div class="panel-title-row" data-collapsible="1" style="margin-bottom:10px;"><div class="panel-title" style="margin:0;">Images</div></div><div class="gallery-dropzone" style="margin:0;">${tabBody}</div></div>
     </main>
     ${renderBottomNav('reactions')}
   `;
@@ -7117,9 +7219,8 @@ function renderMemeLibrary() {
       </div>
       ${!MEME_SHOWING_DUPLICATES ? `
         <div class="panel" style="margin-bottom:16px;">
-          <div class="panel-title-row" style="margin-bottom:12px;">
+          <div class="panel-title-row" data-meme-toggle-filters="1" style="margin-bottom:12px;">
             <div class="panel-title" style="margin:0;">Mood Tags</div>
-            <span class="panel-triangles" data-meme-toggle-filters="1" style="cursor:pointer;"><span class="tri-up"></span><span class="tri-down"></span></span>
           </div>
           <div class="filters-collapsible" id="meme-filters-collapsible">
             <div class="group-chip-row">
@@ -7130,7 +7231,7 @@ function renderMemeLibrary() {
         </div>
       ` : ''}
     </div>
-    <div class="panel"><div class="panel-title-row" style="margin-bottom:10px;"><div class="panel-title" style="margin:0;">Reactions</div><span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span></div><div class="gallery-dropzone" style="margin:0;">${memeMainBody()}</div></div>
+    <div class="panel"><div class="panel-title-row" data-collapsible="1" style="margin-bottom:10px;"><div class="panel-title" style="margin:0;">Reactions</div></div><div class="gallery-dropzone" style="margin:0;">${memeMainBody()}</div></div>
     </main>
     ${renderBottomNav('meme')}
   `;
@@ -8492,9 +8593,8 @@ function renderHLibrary() {
       </div>
       ${!H_SHOWING_DUPLICATES ? `
         <div class="panel" style="margin-bottom:16px;">
-          <div class="panel-title-row" style="margin-bottom:12px;">
+          <div class="panel-title-row" data-h-toggle-filters="1" style="margin-bottom:12px;">
             <div class="panel-title" style="margin:0;">Mood Tags</div>
-            <span class="panel-triangles" data-h-toggle-filters="1" style="cursor:pointer;"><span class="tri-up"></span><span class="tri-down"></span></span>
           </div>
           <div class="filters-collapsible" id="h-filters-collapsible">
             <div class="group-chip-row">
@@ -8505,7 +8605,7 @@ function renderHLibrary() {
         </div>
       ` : ''}
     </div>
-    <div class="panel"><div class="panel-title-row" style="margin-bottom:10px;"><div class="panel-title" style="margin:0;">NSFW</div><span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span></div><div class="gallery-dropzone" style="margin:0;">${hMainBody()}</div></div>
+    <div class="panel"><div class="panel-title-row" data-collapsible="1" style="margin-bottom:10px;"><div class="panel-title" style="margin:0;">NSFW</div></div><div class="gallery-dropzone" style="margin:0;">${hMainBody()}</div></div>
     </main>
     ${renderBottomNav('h')}
   `;
@@ -9043,7 +9143,12 @@ function renderTagChipsInline(e) {
     .concat((e.customTags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: true })));
   const bySection = newTagBuckets();
   all.forEach((item) => { bySection[sectionForTag(item.t)].push(item); });
-  const sectionOrder = tagSectionOrder();
+  // #431: Personality is excluded from THIS container only -- it's its own
+  // tag bank now, already shown under the Main Character/Main Lead sections
+  // of Notes, so it shouldn't also show up as a bucket here. Manage
+  // Sections still lists it (that page calls tagSectionOrder() directly,
+  // unfiltered) so she can still manage the Personality tags themselves.
+  const sectionOrder = tagSectionOrder().filter((sec) => sec !== 'Personality');
   return sectionOrder.map((sec) => {
     const chips = bySection[sec].map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}" data-remove-tag="${escapeHtml(t)}" title="Click to remove">${escapeHtml(capTag(t))}</div>`).join('');
     const ddKey = 'tag:' + sec;
@@ -9257,11 +9362,8 @@ function renderDetail(e) {
 
       <!-- 1. Cover + details -->
       <div class="panel">
-        <div class="panel-title-row" style="margin-bottom:8px;">
+        <div class="panel-title-row" data-collapsible="1" style="margin-bottom:8px;">
           <div class="panel-title" style="margin:0;">Details</div>
-          <span style="display:flex;align-items:center;gap:10px;">
-            <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
-          </span>
         </div>
         <div class="split-row">
           <div>
@@ -9295,9 +9397,8 @@ function renderDetail(e) {
 
       <!-- 1c. Stats -->
       <div class="panel">
-        <div class="panel-title-row" style="margin-bottom:10px;">
+        <div class="panel-title-row" data-collapsible="1" style="margin-bottom:10px;">
           <div class="panel-title" style="margin:0;">Stats</div>
-          <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
         </div>
         <div class="stats-rows">
         <!-- #402/#408: Shelf/Story Status/Format/Style/Flags all converted
@@ -9307,25 +9408,22 @@ function renderDetail(e) {
         ${statsRowHtml('Story Status', 'stats-status', statusSelect, 'stats-row-label-compact')}
         ${statsRowHtml('Format', 'stats-format', mediaFormatSelect)}
         ${statsRowHtml('Style', 'stats-style', styleSelect)}
-        ${statsFlagsRowHtml(e)}
         ${statsCollectionRowHtml(e, 'playlist')}
         </div>
       </div>
 
       <!-- 1a2. Tags -->
       <div class="panel">
-        <div class="panel-title-row" style="margin-bottom:10px;">
+        <div class="panel-title-row" data-collapsible="1" style="margin-bottom:10px;">
           <div class="panel-title" style="margin:0;">Tags</div>
-          <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
         </div>
         <div class="tag-sections">${renderTagChipsInline(e)}</div>
       </div>
 
       <!-- 2. Ratings -->
       <div class="panel">
-        <div class="panel-title-row" style="margin-bottom:14px;">
+        <div class="panel-title-row" data-collapsible="1" style="margin-bottom:14px;">
           <div class="panel-title" style="margin:0;">Rating</div>
-          <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
         </div>
         <!-- #402: reoriented horizontal, matching the Stats container's
              row style, per her request -- same .stats-row/.stats-row-label
@@ -9347,90 +9445,76 @@ function renderDetail(e) {
 
       <!-- 3. Notes -->
       <div class="panel">
-        <div class="panel-title-row" style="margin-bottom:10px;">
+        <div class="panel-title-row" data-collapsible="1" style="margin-bottom:10px;">
           <div class="panel-title" style="margin:0;">Notes</div>
-          <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
         </div>
-        <!-- #402: Main Lead/Main Character stack full-width instead of
-             sitting side-by-side, each laid out horizontally per her
-             mockup -- title+name/age fill the top line item, a tall photo
-             on the left spans the dropdown rows. notes-lead-col/-head
-             classes kept alongside the new ones purely for the data-flag
-             border-color CSS below.
-             #405: the Flag/Position/2nd Gender/Physique/Temperament/
-             Archetype/Energy button rows are now dropdowns
-             (renderLeadPickDropdown), condensed into 3 line items per her
-             follow-up request -- Flag+Position, 2nd Gender(dynamic)+
-             Physique(bodyType), and a single merged "Personality" dropdown
-             covering Temperament+Archetype+Energy together (all three read
-             as "personality" to her). Each dropdown still toggles the
-             exact same e.semi/e.uke field array as the old buttons did.
-             #406: Main Character now renders above Main Lead, per her
-             follow-up. -->
-        <div class="notes-lead-cols-h">
-          <div class="notes-lead-block-h" data-flag="${e.uke.flag || ''}">
-            <div class="notes-lead-top-row">
-              <div class="notes-lead-title-h">MAIN CHARACTER</div>
-              <div class="notes-lead-nameage-row-h">
-                <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="uke" value="${escapeHtml(e.uke.name || '')}">
-                <input type="text" class="lead-age-input" placeholder="age" data-lead-age="uke" value="${escapeHtml(e.uke.age || '')}">
-              </div>
+        <!-- #432: back to the pre-#402 side-by-side two-column orientation
+             per her follow-up request -- she wants Main Character/Main Lead
+             as vertical columns again, not stacked horizontal line items.
+             Reuses the original .notes-lead-cols/-col/-head classes (never
+             removed from the CSS) for the outer layout; the #405 dropdown
+             pickers (renderLeadPickDropdown, condensed into Flag+Position /
+             2nd Gender+Physique / Personality rows) are kept exactly as
+             she asked for separately -- only the outer orientation reverts,
+             stacked vertically within each column now via .flag-picker-h
+             (reused here purely for its row layout, not its old horizontal
+             container). -->
+        <div class="notes-lead-cols">
+          <div class="notes-lead-col" data-flag="${e.uke.flag || ''}">
+            <div class="notes-lead-head">MAIN CHARACTER</div>
+            <div class="lead-name-row">
+              <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="uke" value="${escapeHtml(e.uke.name || '')}">
+              <input type="text" class="lead-age-input" placeholder="age" data-lead-age="uke" value="${escapeHtml(e.uke.age || '')}">
             </div>
-            <div class="notes-lead-body-h">
-              <label class="char-photo-slot polaroid-frame notes-lead-photo-h" style="cursor:pointer;">
-                ${renderCharPhoto(e.uke.photo)}
-                <input type="file" accept="image/*" style="display:none" data-char-photo="uke">
-              </label>
-              <div class="notes-lead-buttons-h">
-                <div class="flag-picker-h">
-                  ${!isSFW() ? renderLeadPickDropdown('uke', 'Flag', [{ options: FLAG_COLORS, current: e.uke.flag, dataAttr: 'flag-pick' }], 'flag') : ''}
-                  ${renderLeadPickDropdown('uke', 'Position', [{ options: LEAD_POSITIONS, current: e.uke.position, dataAttr: 'position-pick' }], 'position')}
-                </div>
-                <div class="flag-picker-h">
-                  ${renderLeadPickDropdown('uke', '2nd Gender', [{ options: LEAD_DYNAMICS, current: e.uke.dynamic, dataAttr: 'dynamic-pick' }], 'dynamic')}
-                  ${renderLeadPickDropdown('uke', 'Physique', [{ options: LEAD_BODY_TYPES, current: e.uke.bodyType, dataAttr: 'bodytype-pick' }], 'bodytype')}
-                </div>
-                <div class="flag-picker-h">
-                  ${renderLeadPickDropdown('uke', 'Personality', [
-                    { options: LEAD_TEMPERAMENTS, current: e.uke.temperament, dataAttr: 'temperament-pick' },
-                    { options: LEAD_ARCHETYPES, current: e.uke.archetype, dataAttr: 'archetype-pick' },
-                    { options: LEAD_ENERGY, current: e.uke.energy, dataAttr: 'energy-pick' },
-                    { options: Array.from(CUSTOM_PERSONALITY_WORDS), current: e.uke.customPersonality, dataAttr: 'custompers-pick' },
-                  ], 'personality')}
-                </div>
+            <label class="char-photo-slot polaroid-frame" style="cursor:pointer;display:inline-block;">
+              ${renderCharPhoto(e.uke.photo)}
+              <input type="file" accept="image/*" style="display:none" data-char-photo="uke">
+            </label>
+            <div class="notes-lead-buttons-v">
+              <div class="flag-picker-h">
+                ${!isSFW() ? renderLeadPickDropdown('uke', 'Flag', [{ options: FLAG_COLORS, current: e.uke.flag, dataAttr: 'flag-pick' }], 'flag') : ''}
+                ${renderLeadPickDropdown('uke', 'Position', [{ options: LEAD_POSITIONS, current: e.uke.position, dataAttr: 'position-pick' }], 'position')}
+              </div>
+              <div class="flag-picker-h">
+                ${renderLeadPickDropdown('uke', '2nd Gender', [{ options: LEAD_DYNAMICS, current: e.uke.dynamic, dataAttr: 'dynamic-pick' }], 'dynamic')}
+                ${renderLeadPickDropdown('uke', 'Physique', [{ options: LEAD_BODY_TYPES, current: e.uke.bodyType, dataAttr: 'bodytype-pick' }], 'bodytype')}
+              </div>
+              <div class="flag-picker-h">
+                ${renderLeadPickDropdown('uke', 'Personality', [
+                  { options: LEAD_TEMPERAMENTS, current: e.uke.temperament, dataAttr: 'temperament-pick' },
+                  { options: LEAD_ARCHETYPES, current: e.uke.archetype, dataAttr: 'archetype-pick' },
+                  { options: LEAD_ENERGY, current: e.uke.energy, dataAttr: 'energy-pick' },
+                  { options: Array.from(CUSTOM_PERSONALITY_WORDS), current: e.uke.customPersonality, dataAttr: 'custompers-pick' },
+                ], 'personality')}
               </div>
             </div>
           </div>
-          <div class="notes-lead-block-h" data-flag="${e.semi.flag || ''}">
-            <div class="notes-lead-top-row">
-              <div class="notes-lead-title-h">MAIN LEAD</div>
-              <div class="notes-lead-nameage-row-h">
-                <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="semi" value="${escapeHtml(e.semi.name || '')}">
-                <input type="text" class="lead-age-input" placeholder="age" data-lead-age="semi" value="${escapeHtml(e.semi.age || '')}">
-              </div>
+          <div class="notes-lead-col" data-flag="${e.semi.flag || ''}">
+            <div class="notes-lead-head">MAIN LEAD</div>
+            <div class="lead-name-row">
+              <input type="text" class="lead-name-input" placeholder="name text field" data-lead-name="semi" value="${escapeHtml(e.semi.name || '')}">
+              <input type="text" class="lead-age-input" placeholder="age" data-lead-age="semi" value="${escapeHtml(e.semi.age || '')}">
             </div>
-            <div class="notes-lead-body-h">
-              <label class="char-photo-slot polaroid-frame notes-lead-photo-h" style="cursor:pointer;">
-                ${renderCharPhoto(e.semi.photo)}
-                <input type="file" accept="image/*" style="display:none" data-char-photo="semi">
-              </label>
-              <div class="notes-lead-buttons-h">
-                <div class="flag-picker-h">
-                  ${!isSFW() ? renderLeadPickDropdown('semi', 'Flag', [{ options: FLAG_COLORS, current: e.semi.flag, dataAttr: 'flag-pick' }], 'flag') : ''}
-                  ${renderLeadPickDropdown('semi', 'Position', [{ options: LEAD_POSITIONS, current: e.semi.position, dataAttr: 'position-pick' }], 'position')}
-                </div>
-                <div class="flag-picker-h">
-                  ${renderLeadPickDropdown('semi', '2nd Gender', [{ options: LEAD_DYNAMICS, current: e.semi.dynamic, dataAttr: 'dynamic-pick' }], 'dynamic')}
-                  ${renderLeadPickDropdown('semi', 'Physique', [{ options: LEAD_BODY_TYPES, current: e.semi.bodyType, dataAttr: 'bodytype-pick' }], 'bodytype')}
-                </div>
-                <div class="flag-picker-h">
-                  ${renderLeadPickDropdown('semi', 'Personality', [
-                    { options: LEAD_TEMPERAMENTS, current: e.semi.temperament, dataAttr: 'temperament-pick' },
-                    { options: LEAD_ARCHETYPES, current: e.semi.archetype, dataAttr: 'archetype-pick' },
-                    { options: LEAD_ENERGY, current: e.semi.energy, dataAttr: 'energy-pick' },
-                    { options: Array.from(CUSTOM_PERSONALITY_WORDS), current: e.semi.customPersonality, dataAttr: 'custompers-pick' },
-                  ], 'personality')}
-                </div>
+            <label class="char-photo-slot polaroid-frame" style="cursor:pointer;display:inline-block;">
+              ${renderCharPhoto(e.semi.photo)}
+              <input type="file" accept="image/*" style="display:none" data-char-photo="semi">
+            </label>
+            <div class="notes-lead-buttons-v">
+              <div class="flag-picker-h">
+                ${!isSFW() ? renderLeadPickDropdown('semi', 'Flag', [{ options: FLAG_COLORS, current: e.semi.flag, dataAttr: 'flag-pick' }], 'flag') : ''}
+                ${renderLeadPickDropdown('semi', 'Position', [{ options: LEAD_POSITIONS, current: e.semi.position, dataAttr: 'position-pick' }], 'position')}
+              </div>
+              <div class="flag-picker-h">
+                ${renderLeadPickDropdown('semi', '2nd Gender', [{ options: LEAD_DYNAMICS, current: e.semi.dynamic, dataAttr: 'dynamic-pick' }], 'dynamic')}
+                ${renderLeadPickDropdown('semi', 'Physique', [{ options: LEAD_BODY_TYPES, current: e.semi.bodyType, dataAttr: 'bodytype-pick' }], 'bodytype')}
+              </div>
+              <div class="flag-picker-h">
+                ${renderLeadPickDropdown('semi', 'Personality', [
+                  { options: LEAD_TEMPERAMENTS, current: e.semi.temperament, dataAttr: 'temperament-pick' },
+                  { options: LEAD_ARCHETYPES, current: e.semi.archetype, dataAttr: 'archetype-pick' },
+                  { options: LEAD_ENERGY, current: e.semi.energy, dataAttr: 'energy-pick' },
+                  { options: Array.from(CUSTOM_PERSONALITY_WORDS), current: e.semi.customPersonality, dataAttr: 'custompers-pick' },
+                ], 'personality')}
               </div>
             </div>
           </div>
@@ -9447,9 +9531,8 @@ function renderDetail(e) {
 
       <!-- 7. Images (screencaps, character photos — always attached to this read) -->
       <div class="panel">
-        <div class="panel-title-row" style="margin-bottom:10px;">
+        <div class="panel-title-row" data-collapsible="1" style="margin-bottom:10px;">
           <div class="panel-title" style="margin:0;">Images</div>
-          <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
           <label class="upload-btn" style="flex:1;">📎 Add photo(s)<input type="file" accept="image/*" multiple id="screencap-input"></label>
@@ -9472,9 +9555,8 @@ function renderDetail(e) {
       </div>
 
       <div class="panel">
-        <div class="panel-title-row" style="margin-bottom:10px;">
+        <div class="panel-title-row" data-collapsible="1" style="margin-bottom:10px;">
           <div class="panel-title" style="margin:0;">Similar</div>
-          <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
         </div>
         <div style="position:relative;margin-bottom:10px;">
           <input type="text" id="similar-search-input" class="tag-picker-input" placeholder="Search your library to link a similar read..." autocomplete="off">
@@ -9545,9 +9627,8 @@ function renderDatabase() {
     </div>
     <main>
       <div class="panel" style="margin-bottom:14px;">
-        <div class="panel-title-row" style="margin-bottom:10px;">
+        <div class="panel-title-row" data-collapsible="1" style="margin-bottom:10px;">
           <div class="panel-title" style="margin:0;">Account Information</div>
-          <span class="panel-triangles"><span class="tri-up"></span><span class="tri-down"></span></span>
         </div>
         <div class="account-panel" style="border:none;box-shadow:none;padding:0;background:none;">
         <div class="account-info">
@@ -10533,25 +10614,22 @@ const PANEL_COLLAPSE_STATE = {};
 function attachRootHandlers() {
   const root = document.getElementById('view-root');
 
-  // Generic panel collapse (Vice City card style): any .panel-triangles
-  // pair that ISN'T one of the dedicated mood/group filter toggles above
-  // collapses the whole surrounding .panel when clicked. The two triangles
-  // act as one button visually, so the whole element is the click target.
-  root.querySelectorAll('.panel-triangles').forEach((tri) => {
-    if (tri.hasAttribute('data-images-toggle-filters') || tri.hasAttribute('data-meme-toggle-filters') || tri.hasAttribute('data-h-toggle-filters')) return;
-    // Triangles are purely visual -- the whole pink header row is the
-    // click target, consistent with the app-wide container aesthetic.
-    const row = tri.closest('.panel-title-row');
-    if (!row) return;
+  // Generic panel collapse (Vice City card style): the whole pink title
+  // row of any [data-collapsible] panel toggles its surrounding .panel.
+  // #431: the yellow triangle carats that used to mark this are removed --
+  // the pink title bar itself is the only visual cue and the whole row was
+  // already the click target (the triangles were purely decorative), so
+  // dropping them changes nothing about the open/close behavior.
+  root.querySelectorAll('.panel-title-row[data-collapsible]').forEach((row) => {
     row.style.cursor = 'pointer';
-    const _pnl = tri.closest('.panel');
+    const _pnl = row.closest('.panel');
     const _ttl = row.querySelector('.panel-title');
     const _pkey = (STATE.view || '') + '|' + (STATE.entryId || '') + '|' + (_ttl ? _ttl.textContent.trim() : '');
     if (_pnl && Object.prototype.hasOwnProperty.call(PANEL_COLLAPSE_STATE, _pkey)) {
       _pnl.classList.toggle('panel-collapsed', !!PANEL_COLLAPSE_STATE[_pkey]);
     }
     row.onclick = () => {
-      const panel = tri.closest('.panel');
+      const panel = row.closest('.panel');
       if (panel) {
         panel.classList.toggle('panel-collapsed');
         PANEL_COLLAPSE_STATE[_pkey] = panel.classList.contains('panel-collapsed');
@@ -10748,17 +10826,32 @@ function attachRootHandlers() {
       render();
     };
   });
-  root.querySelectorAll('[data-link-filter]').forEach((el) => {
+  // #429: single Link Status dropdown replaces the separate Linked/Unlinked
+  // buttons -- picking one turns the other off, since a read can't be both.
+  root.querySelectorAll('[data-home-linkstatus-pick]').forEach((el) => {
     el.onclick = () => {
-      STATE.linkFilter = !STATE.linkFilter;
+      const v = el.getAttribute('data-home-linkstatus-pick');
+      if (v === 'linked') {
+        STATE.linkFilter = !STATE.linkFilter;
+        STATE.noLinkFilter = false;
+      } else {
+        STATE.noLinkFilter = !STATE.noLinkFilter;
+        STATE.linkFilter = false;
+      }
       render();
     };
   });
-  root.querySelectorAll('[data-no-link-filter]').forEach((el) => {
-    el.onclick = () => {
-      STATE.noLinkFilter = !STATE.noLinkFilter;
-      render();
-    };
+  // #434: Main Character/Main Lead filter box dropdowns -- same toggle-off-
+  // on-repick pattern as Story Status/Format above.
+  [['mcflag', 'mcFlagFilter'], ['mcposition', 'mcPositionFilter'], ['mcdynamic', 'mcDynamicFilter'], ['mcbodytype', 'mcBodyTypeFilter'],
+   ['mlflag', 'mlFlagFilter'], ['mlposition', 'mlPositionFilter'], ['mldynamic', 'mlDynamicFilter'], ['mlbodytype', 'mlBodyTypeFilter']].forEach(([attr, field]) => {
+    root.querySelectorAll(`[data-home-${attr}-pick]`).forEach((el) => {
+      el.onclick = () => {
+        const val = el.getAttribute(`data-home-${attr}-pick`);
+        STATE[field] = STATE[field] === val ? null : val;
+        render();
+      };
+    });
   });
   const addBtn = root.querySelector('[data-add-entry]');
   if (addBtn) addBtn.onclick = openAddModal;
@@ -12285,7 +12378,7 @@ function renderHomeInPlace() {
   const main = root.querySelector('main');
   const entries = filteredEntries();
   let body = '';
-  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter && !STATE.playlistFilter) {
+  if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter && !STATE.playlistFilter && !STATE.mcFlagFilter && !STATE.mcPositionFilter && !STATE.mcDynamicFilter && !STATE.mcBodyTypeFilter && !STATE.mlFlagFilter && !STATE.mlPositionFilter && !STATE.mlDynamicFilter && !STATE.mlBodyTypeFilter) {
     const suggestedGroup = entries.filter((e) => e.suggestedMatch);
     if (suggestedGroup.length > 0) {
       body += homeSectionHtml('row-suggested', '🔎 Suggested Matches', suggestedGroup.length, suggestedGroup.map((e) => renderCoverCard(e, true)));
