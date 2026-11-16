@@ -9479,7 +9479,10 @@ function renderDetail(e) {
                   { options: LEAD_TEMPERAMENTS, current: e.uke.temperament, dataAttr: 'temperament-pick' },
                   { options: LEAD_ARCHETYPES, current: e.uke.archetype, dataAttr: 'archetype-pick' },
                   { options: LEAD_ENERGY, current: e.uke.energy, dataAttr: 'energy-pick' },
-                  { options: Array.from(CUSTOM_PERSONALITY_WORDS), current: e.uke.customPersonality, dataAttr: 'custompers-pick' },
+                  // #436: custom Personality words are a separate pool from the
+                  // regular tag hide/delete system, so they never got checked
+                  // against it -- hidden/deleted words were still showing up here.
+                  { options: Array.from(CUSTOM_PERSONALITY_WORDS).filter((w) => !isHiddenTag(w) || w === e.uke.customPersonality), current: e.uke.customPersonality, dataAttr: 'custompers-pick' },
                 ], 'personality')}
               </div>
             </div>
@@ -9508,7 +9511,7 @@ function renderDetail(e) {
                   { options: LEAD_TEMPERAMENTS, current: e.semi.temperament, dataAttr: 'temperament-pick' },
                   { options: LEAD_ARCHETYPES, current: e.semi.archetype, dataAttr: 'archetype-pick' },
                   { options: LEAD_ENERGY, current: e.semi.energy, dataAttr: 'energy-pick' },
-                  { options: Array.from(CUSTOM_PERSONALITY_WORDS), current: e.semi.customPersonality, dataAttr: 'custompers-pick' },
+                  { options: Array.from(CUSTOM_PERSONALITY_WORDS).filter((w) => !isHiddenTag(w) || w === e.semi.customPersonality), current: e.semi.customPersonality, dataAttr: 'custompers-pick' },
                 ], 'personality')}
               </div>
             </div>
