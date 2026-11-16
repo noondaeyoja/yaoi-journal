@@ -607,6 +607,16 @@ padding: 8px 4px; cursor: pointer; border-radius: 0; opacity: .6;
    Personality dropdown rows (added in #405) stack under the photo instead
    of beside it, reusing .flag-picker-h purely for its row layout. */
 .notes-lead-buttons-v { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; text-align: left; }
+/* #435: Main Lead/Main Character homepage filter boxes, side by side per
+   her mockup -- tighter than a standard .panel (less padding/margin, no
+   outer shadow offset doubled up between the two) since this is a compact
+   filter control, not a content container. Not collapsible on purpose. */
+.lead-filter-cols { display: flex; gap: 8px; margin-top: 8px; }
+.lead-filter-panel { flex: 1; min-width: 0; padding: 10px; margin-bottom: 0; }
+.lead-filter-title-row { margin: -10px -10px 8px; padding: 9px 12px; cursor: default; }
+.lead-filter-grid .filter-dropdown-row { margin-bottom: 6px; }
+.lead-filter-grid .filter-dropdown-row:last-child { margin-bottom: 0; }
+.lead-filter-grid .dd-toggle { font-size: 11.5px; padding: 8px 6px; }
 .notes-lead-head {
 display: inline-block; background: var(--pink); color: var(--text); border: 2px solid var(--border);
 font-size: 13px; font-weight: 800; letter-spacing: .03em; padding: 6px 14px; margin-bottom: 10px;
