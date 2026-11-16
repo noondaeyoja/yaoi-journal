@@ -1194,8 +1194,19 @@ body[data-bg="grid"] .app-header, body[data-bg="grid-blue"] .app-header, body[da
    the bottom (her "distribute more evenly" report); space-between spreads
    the 3 rows evenly across the box's full height, flush with the photo's
    top and bottom, in both blocks identically. */
-.notes-lead-buttons-h { min-width: 0; display: flex; flex-direction: column; gap: 8px; justify-content: space-between; }
+/* #428: space-between was spreading the 3 rows evenly across the photo's
+   full height, which read as literal gaps of white space between the
+   dropdowns once the photo got taller than the rows' own content -- her
+   report. flex-start packs them tight against each other instead (just the
+   8px gap, no stretched-out spacing), and the Personality row (always
+   last) gets flex: 1 below so any leftover vertical space goes to IT
+   specifically rather than becoming a gap -- which also happens to be
+   exactly the room it needs as she adds more Personality tags while
+   reading and its chip box grows taller. */
+.notes-lead-buttons-h { min-width: 0; display: flex; flex-direction: column; gap: 8px; justify-content: flex-start; }
 .flag-picker-h { display: flex; gap: 8px; width: 100%; margin: 0; }
+.flag-picker-h:last-child { flex: 1; align-items: stretch; }
+.flag-picker-h:last-child .tag-section-tags { align-content: flex-start; }
 .flag-picker-h .lead-flag-btn { flex: 1; min-width: 0; }
 /* #403: her standing rule -- a button filling a line item never shows "...";
    fitFlagButtonRows() in app.js measures each row after render and shrinks

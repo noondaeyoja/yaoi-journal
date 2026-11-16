@@ -68,6 +68,19 @@ const LEAD_ENERGY = [
 // and its meta-sync counterpart in applyMetaSnapshot() for how it's kept in
 // sync across devices, same mechanism as USER_HIDDEN_TAG_KEYS etc.
 let CUSTOM_PERSONALITY_WORDS = new Set();
+// #427: tombstone for words removed (or renamed away) from the pool above,
+// same forever-growing-union idea as DELETED_TAG_KEYS. Plain union-merging
+// CUSTOM_PERSONALITY_WORDS across devices (as #425 originally did) means a
+// delete/rename made on one device can never actually stick everywhere --
+// a device that hasn't made the same edit keeps re-contributing the old
+// word every time its own (stale) snapshot gets pushed or merged in. Every
+// delete or rename-away adds the old word's key here; applyMetaSnapshot
+// unions this set in exactly like CUSTOM_PERSONALITY_WORDS itself, then
+// filters the word pool against it, so once any device has tombstoned a
+// word it can't silently resurrect via another device's lagging state.
+// addCustomPersonalityWord() clears a word's tombstone on the way back in,
+// so deliberately re-adding a previously-deleted word still works.
+let DELETED_PERSONALITY_WORD_KEYS = new Set();
 // #345: shared name-builder for the auto-tag each flag button keeps in
 // sync with the tag box (one-way: flag -> tag only). "who" is 'semi'
 // (Main Lead) or 'uke' (Main Character), matching the notes-lead-head
@@ -985,14 +998,28 @@ async function applyMetaSnapshot(data) {
     if (IGNORED_TAG_SUGGESTIONS.size !== before) changed = true;
     await idbPut(STORE_META, { key: 'ignoredTagSuggestions', value: Array.from(IGNORED_TAG_SUGGESTIONS) });
   }
-  // #425: union merge, same shape as ignoredTagSuggestions above -- a word
-  // added/renamed/deleted elsewhere only ever needs the union pulled in here;
-  // renameCustomPersonalityWord/deleteCustomPersonalityWord already pushed
-  // their own trimmed-down array from whichever device made that change, so
-  // this device's next boot/listener tick adopts it the same way.
+  // #427: a plain union merge here (as #425 originally did) can't actually
+  // make a delete or rename stick -- a device that hasn't made the same
+  // edit keeps re-contributing the old word every time its own lagging
+  // snapshot gets merged in or pushed back out, overwriting the delete.
+  // Fix: union-merge the tombstone set too (it only ever grows, same as
+  // DELETED_TAG_KEYS), then filter the word pool against it on every
+  // merge. A word only survives here if nothing, anywhere, has ever
+  // tombstoned it -- and deliberately re-adding one via
+  // addCustomPersonalityWord() clears its tombstone, so "undelete" still
+  // works. Tombstones must merge and filter BEFORE size-comparing against
+  // the word set, or a delete that races a merge could look like a no-op
+  // change and skip the idb write.
+  if (Array.isArray(data.deletedPersonalityWordKeys) && data.deletedPersonalityWordKeys.length) {
+    const beforeDel = DELETED_PERSONALITY_WORD_KEYS.size;
+    DELETED_PERSONALITY_WORD_KEYS = new Set([...DELETED_PERSONALITY_WORD_KEYS, ...data.deletedPersonalityWordKeys]);
+    if (DELETED_PERSONALITY_WORD_KEYS.size !== beforeDel) changed = true;
+    await idbPut(STORE_META, { key: 'deletedPersonalityWordKeys', value: Array.from(DELETED_PERSONALITY_WORD_KEYS) });
+  }
   if (Array.isArray(data.customPersonalityWords)) {
     const before = CUSTOM_PERSONALITY_WORDS.size;
-    CUSTOM_PERSONALITY_WORDS = new Set([...CUSTOM_PERSONALITY_WORDS, ...data.customPersonalityWords]);
+    const merged = new Set([...CUSTOM_PERSONALITY_WORDS, ...data.customPersonalityWords]);
+    CUSTOM_PERSONALITY_WORDS = new Set(Array.from(merged).filter((w) => !DELETED_PERSONALITY_WORD_KEYS.has(normalizeTagKey(w))));
     if (CUSTOM_PERSONALITY_WORDS.size !== before) changed = true;
     await idbPut(STORE_META, { key: 'customPersonalityWords', value: Array.from(CUSTOM_PERSONALITY_WORDS) });
   }
@@ -3394,31 +3421,46 @@ async function setTagSectionOverride(name, section) {
 // meta state here). Case-insensitive dedupe against what's already there --
 // callers are expected to have already checked the three hardcoded preset
 // lists themselves (see the personality-input Enter handler).
+// #427: persists + pushes both the word pool and the tombstone set in one
+// go -- every mutator below ends with this instead of repeating the same
+// four lines, so it's not possible to update one without the other.
+async function persistPersonalityWordState() {
+  await idbPut(STORE_META, { key: 'customPersonalityWords', value: Array.from(CUSTOM_PERSONALITY_WORDS) });
+  await idbPut(STORE_META, { key: 'deletedPersonalityWordKeys', value: Array.from(DELETED_PERSONALITY_WORD_KEYS) });
+  pushMetaField('customPersonalityWords', Array.from(CUSTOM_PERSONALITY_WORDS));
+  pushMetaField('deletedPersonalityWordKeys', Array.from(DELETED_PERSONALITY_WORD_KEYS));
+}
 async function addCustomPersonalityWord(word) {
   const w = word.trim();
   if (!w) return;
   if (Array.from(CUSTOM_PERSONALITY_WORDS).some((x) => x.toLowerCase() === w.toLowerCase())) return;
   CUSTOM_PERSONALITY_WORDS.add(w);
-  await idbPut(STORE_META, { key: 'customPersonalityWords', value: Array.from(CUSTOM_PERSONALITY_WORDS) });
-  pushMetaField('customPersonalityWords', Array.from(CUSTOM_PERSONALITY_WORDS));
+  // #427: deliberately re-adding a word that was previously deleted (on
+  // this device or any other) should actually bring it back, not have the
+  // tombstone immediately filter it right back out again.
+  DELETED_PERSONALITY_WORD_KEYS.delete(normalizeTagKey(w));
+  await persistPersonalityWordState();
 }
 // #426: renames (Manage Tags-style) or permanently removes one Personality
-// word from the shared pool. Renaming does NOT touch which reads/leads
-// currently have the OLD word picked (same limitation as a tag rename not
-// rewriting history would -- acceptable here since this is a small, curated
-// word list she edits deliberately, not a fast-moving tag cloud).
+// word from the shared pool. The per-lead picks on existing reads are
+// updated separately by tagRenameFlow/tagDeleteFlow (which call these) --
+// this function only ever owns the shared word-pool state itself.
 async function renameCustomPersonalityWord(oldWord, newWord) {
   const w = newWord.trim();
   if (!w) return;
   CUSTOM_PERSONALITY_WORDS.delete(oldWord);
   CUSTOM_PERSONALITY_WORDS.add(w);
-  await idbPut(STORE_META, { key: 'customPersonalityWords', value: Array.from(CUSTOM_PERSONALITY_WORDS) });
-  pushMetaField('customPersonalityWords', Array.from(CUSTOM_PERSONALITY_WORDS));
+  // #427: tombstone the old name so it can't resurrect from a device that
+  // hasn't made this rename yet, and clear any stale tombstone on the new
+  // name in case it happens to match a word deleted elsewhere previously.
+  DELETED_PERSONALITY_WORD_KEYS.add(normalizeTagKey(oldWord));
+  DELETED_PERSONALITY_WORD_KEYS.delete(normalizeTagKey(w));
+  await persistPersonalityWordState();
 }
 async function deleteCustomPersonalityWord(word) {
   CUSTOM_PERSONALITY_WORDS.delete(word);
-  await idbPut(STORE_META, { key: 'customPersonalityWords', value: Array.from(CUSTOM_PERSONALITY_WORDS) });
-  pushMetaField('customPersonalityWords', Array.from(CUSTOM_PERSONALITY_WORDS));
+  DELETED_PERSONALITY_WORD_KEYS.add(normalizeTagKey(word));
+  await persistPersonalityWordState();
 }
 // #425: every word she can currently pick from in a Personality dropdown --
 // the fixed Temperament/Archetype/Energy presets plus whatever she's typed
@@ -3678,10 +3720,7 @@ async function runCoupleToPersonalityMigrationOnce() {
       CUSTOM_PERSONALITY_WORDS.add(label);
       added.push(label);
     });
-    if (added.length) {
-      await idbPut(STORE_META, { key: 'customPersonalityWords', value: Array.from(CUSTOM_PERSONALITY_WORDS) });
-      pushMetaField('customPersonalityWords', Array.from(CUSTOM_PERSONALITY_WORDS));
-    }
+    if (added.length) await persistPersonalityWordState();
     await idbPut(STORE_META, { key: 'coupleToPersonalityMigrationDone', value: true });
     if (added.length) console.log(`Couple/Personality merge: migrated ${added.length} tag(s) into the Personality word pool.`, added);
   } catch (err) {
@@ -13082,8 +13121,16 @@ async function boot() {
     if (savedTagHideTs && savedTagHideTs.value && typeof savedTagHideTs.value === 'object') TAG_HIDE_TS = savedTagHideTs.value;
     const savedTagSectionOverrides = await idbGet(STORE_META, 'tagSectionOverrides');
     if (savedTagSectionOverrides && savedTagSectionOverrides.value && typeof savedTagSectionOverrides.value === 'object') TAG_SECTION_OVERRIDES = savedTagSectionOverrides.value;
+    const savedDeletedPersonalityWordKeys = await idbGet(STORE_META, 'deletedPersonalityWordKeys');
+    if (savedDeletedPersonalityWordKeys && Array.isArray(savedDeletedPersonalityWordKeys.value)) DELETED_PERSONALITY_WORD_KEYS = new Set(savedDeletedPersonalityWordKeys.value);
     const savedCustomPersonalityWords = await idbGet(STORE_META, 'customPersonalityWords');
-    if (savedCustomPersonalityWords && Array.isArray(savedCustomPersonalityWords.value)) CUSTOM_PERSONALITY_WORDS = new Set(savedCustomPersonalityWords.value);
+    // #427: filter against the tombstone set on load too, not just on
+    // incoming merges -- belt-and-suspenders in case this device's own
+    // locally-saved copy predates the tombstone system or somehow has a
+    // word that's since been deleted elsewhere but hasn't filtered out yet.
+    if (savedCustomPersonalityWords && Array.isArray(savedCustomPersonalityWords.value)) {
+      CUSTOM_PERSONALITY_WORDS = new Set(savedCustomPersonalityWords.value.filter((w) => !DELETED_PERSONALITY_WORD_KEYS.has(normalizeTagKey(w))));
+    }
     const savedCustomTagSections = await idbGet(STORE_META, 'customTagSections');
     if (savedCustomTagSections && Array.isArray(savedCustomTagSections.value)) CUSTOM_TAG_SECTIONS = savedCustomTagSections.value;
     const savedTagSectionCustomOrder = await idbGet(STORE_META, 'tagSectionCustomOrder');
