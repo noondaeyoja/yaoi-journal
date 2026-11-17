@@ -3556,6 +3556,75 @@ function syncPersonalityTags(e) {
     if (!e.customTags.some((t) => t.toLowerCase() === w.toLowerCase())) e.customTags.push(w);
   });
 }
+// #438: her "combo tag" rule for the Main Lead/Main Character Position,
+// Body Type, Dynamic, and Flag pickers -- same one-way field(s)->tag sync
+// flagTagName()/syncPersonalityTags() above already do, just across pairs
+// of fields instead of one. Body Type's "buff" always renders as "Muscle"
+// in these tags (her choice, matching her existing "Muscle Top"/"Muscle
+// Bottom" tags); "twink" stays as-is. Four combo shapes, requested
+// explicitly: Position x Body Type ("Muscle Top"), Position x Dynamic
+// ("Omega Top"), Position x Flag ("Green Top"), and Body Type x Dynamic
+// ("Muscle Omega"). Tags are never lead-qualified -- a combo is added to
+// the entry if EITHER lead currently has it, same as how a plain tag
+// doesn't say which lead it's about.
+function comboBodyTypeLabel(v) { return v === 'buff' ? 'Muscle' : 'Twink'; }
+function comboPositionLabel(v) { return v === 'top' ? 'Top' : 'Bottom'; }
+function comboDynamicLabel(v) { return v === 'alpha' ? 'Alpha' : 'Omega'; }
+function comboFlagLabel(v) { return v.charAt(0).toUpperCase() + v.slice(1); }
+// The fixed set of every combo string this feature can ever produce --
+// used to tell "a tag this feature manages" apart from any other tag
+// (including the many similarly-shaped tags she already has by hand, like
+// "Psycho Top" or "Yandere Top", which this must never touch) when
+// reconciling on every change.
+const COMBO_TAG_UNIVERSE = (() => {
+  const out = [];
+  LEAD_POSITIONS.forEach((pos) => {
+    LEAD_BODY_TYPES.forEach((bt) => out.push(`${comboBodyTypeLabel(bt)} ${comboPositionLabel(pos)}`));
+    LEAD_DYNAMICS.forEach((dyn) => out.push(`${comboDynamicLabel(dyn)} ${comboPositionLabel(pos)}`));
+    FLAG_COLORS.forEach((flag) => out.push(`${comboFlagLabel(flag)} ${comboPositionLabel(pos)}`));
+  });
+  LEAD_BODY_TYPES.forEach((bt) => {
+    LEAD_DYNAMICS.forEach((dyn) => out.push(`${comboBodyTypeLabel(bt)} ${comboDynamicLabel(dyn)}`));
+  });
+  return out;
+})();
+// Every combo tag ONE lead's current Position/Body Type/Dynamic/Flag picks
+// imply. Position/bodyType/dynamic are multi-select arrays (#397/#398), so
+// this is every value crossed against every other value currently picked --
+// e.g. a lead marked both Top and Bottom, and both Buff and Twink, yields
+// all four Position x Body Type combos, not just one.
+function leadComboTags(lead) {
+  const out = new Set();
+  if (!lead) return out;
+  const positions = toPickArray(lead.position);
+  const bodyTypes = toPickArray(lead.bodyType);
+  const dynamics = toPickArray(lead.dynamic);
+  const flag = lead.flag;
+  positions.forEach((pos) => {
+    bodyTypes.forEach((bt) => out.add(`${comboBodyTypeLabel(bt)} ${comboPositionLabel(pos)}`));
+    dynamics.forEach((dyn) => out.add(`${comboDynamicLabel(dyn)} ${comboPositionLabel(pos)}`));
+    if (flag) out.add(`${comboFlagLabel(flag)} ${comboPositionLabel(pos)}`);
+  });
+  bodyTypes.forEach((bt) => {
+    dynamics.forEach((dyn) => out.add(`${comboBodyTypeLabel(bt)} ${comboDynamicLabel(dyn)}`));
+  });
+  return out;
+}
+// Reconciles e.customTags against what Position/Body Type/Dynamic/Flag
+// currently imply across BOTH leads -- drops any managed combo tag that no
+// longer applies to either lead, adds any that now do. Call after any
+// change to either lead's position/bodyType/dynamic/flag.
+function syncComboTags(e) {
+  const target = new Set([...leadComboTags(e.semi), ...leadComboTags(e.uke)]);
+  e.customTags = (e.customTags || []).filter((t) => {
+    const isManaged = COMBO_TAG_UNIVERSE.some((u) => u.toLowerCase() === t.toLowerCase());
+    if (!isManaged) return true;
+    return Array.from(target).some((tn) => tn.toLowerCase() === t.toLowerCase());
+  });
+  target.forEach((tn) => {
+    if (!e.customTags.some((t) => t.toLowerCase() === tn.toLowerCase())) e.customTags.push(tn);
+  });
+}
 // Lets her add her own Manage Sections buckets (e.g. "Non Human", "Romance")
 // beyond the 6 built-in ones. Case-insensitive dedupe against both the
 // built-ins and any custom sections already created. Returns true on
@@ -3692,6 +3761,32 @@ async function runFlagTagBackfillOnce() {
     if (touched) console.log('Flag tag backfill: updated ' + touched + ' entries.');
   } catch (err) {
     console.error('Flag tag backfill failed:', err);
+  }
+}
+
+// #438: one-time backfill (idempotent, same pattern as the flag backfill
+// above) that adds every combo tag already implied by Position/Body
+// Type/Dynamic/Flag picks made before this feature existed, so searching
+// for e.g. "Muscle Top" or "Buff Omega" (now "Muscle Omega" per her call)
+// works across her whole library immediately instead of only for picks
+// made after today.
+async function runComboTagBackfillOnce() {
+  try {
+    const done = await idbGet(STORE_META, 'comboTagBackfillDone');
+    if (done && done.value) return;
+    let touched = 0;
+    for (const e of ALL_ENTRIES) {
+      const before = (e.customTags || []).slice();
+      e.customTags = e.customTags || [];
+      syncComboTags(e);
+      const after = e.customTags;
+      const changed = before.length !== after.length || before.some((t, i) => t !== after[i]);
+      if (changed) { await saveEntry(e, { silent: true }); touched++; }
+    }
+    await idbPut(STORE_META, { key: 'comboTagBackfillDone', value: true });
+    if (touched) console.log('Combo tag backfill: updated ' + touched + ' entries.');
+  } catch (err) {
+    console.error('Combo tag backfill failed:', err);
   }
 }
 
@@ -11171,6 +11266,8 @@ function attachRootHandlers() {
         const tn = flagTagName(newColor, who);
         if (!e.customTags.some((t) => t.toLowerCase() === tn.toLowerCase())) e.customTags.push(tn);
       }
+      // #438: Flag feeds into the Position x Flag combo tags too.
+      syncComboTags(e);
       await saveEntry(e); render();
     };
   });
@@ -11183,6 +11280,8 @@ function attachRootHandlers() {
   // filter (her request), same one-way field->tag sync flagTagName() does
   // for Flag. Position/bodyType/dynamic are untouched by that.
   const PERSONALITY_FIELDS = new Set(['temperament', 'archetype', 'energy', 'customPersonality']);
+  // #438: position/bodyType/dynamic feed the combo tags (see syncComboTags).
+  const COMBO_FIELDS = new Set(['position', 'bodyType', 'dynamic']);
   [
     ['data-position-pick', 'position'],
     ['data-bodytype-pick', 'bodyType'],
@@ -11203,6 +11302,7 @@ function attachRootHandlers() {
         const arr = toPickArray(e[who][field]);
         e[who][field] = arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val];
         if (PERSONALITY_FIELDS.has(field)) syncPersonalityTags(e);
+        if (COMBO_FIELDS.has(field)) syncComboTags(e);
         await saveEntry(e); render();
       };
     });
@@ -13349,6 +13449,7 @@ async function boot() {
         // MangaDex (Anime-Planet blocks Apps Script), which gave poor matches.
         runFavoriteTagMigrationOnce();
         runFlagTagBackfillOnce();
+        runComboTagBackfillOnce();
         runCoupleToPersonalityMigrationOnce();
       }
       render();
