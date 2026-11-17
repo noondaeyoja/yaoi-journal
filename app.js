@@ -1082,7 +1082,12 @@ async function applyMetaSnapshot(data) {
     let imageTagMapChanged = false;
     Object.keys(data.imageTagMap).forEach((k) => {
       const remoteTs = incomingTs[k] || 0;
-      if (remoteTs > (IMAGE_TAG_MAP_TS[k] || 0)) {
+      // #437: same missing-local-key gap as H_TAG_MAP below -- a remote
+      // entry with no recorded timestamp could never win against a local
+      // key that also had none (0 is never > 0), even when this device had
+      // no value for that key at all. Missing local data always loses to
+      // ANY remote data.
+      if (!Object.prototype.hasOwnProperty.call(IMAGE_TAG_MAP, k) || remoteTs > (IMAGE_TAG_MAP_TS[k] || 0)) {
         IMAGE_TAG_MAP[k] = data.imageTagMap[k];
         IMAGE_TAG_MAP_TS[k] = remoteTs;
         imageTagMapChanged = true;
@@ -1149,7 +1154,15 @@ async function applyMetaSnapshot(data) {
     let hTagChanged = false;
     Object.keys(data.hTagMap).forEach((k) => {
       const remoteTs = incomingTs[k] || 0;
-      if (remoteTs > (H_TAG_MAP_TS[k] || 0)) {
+      // #437: a remote entry with no recorded timestamp (mood tags saved
+      // before per-key LWW timestamps existed) always lost this comparison
+      // on a device that had never seen that key before either -- 0 is
+      // never > 0 -- so hundreds of pre-existing mood matches could never
+      // sync down to a device that didn't already have them cached locally.
+      // Missing local data always loses to ANY remote data, timestamped or
+      // not; only a key THIS device already has falls back to the
+      // timestamp comparison.
+      if (!Object.prototype.hasOwnProperty.call(H_TAG_MAP, k) || remoteTs > (H_TAG_MAP_TS[k] || 0)) {
         H_TAG_MAP[k] = data.hTagMap[k];
         H_TAG_MAP_TS[k] = remoteTs;
         hTagChanged = true;
@@ -1178,7 +1191,8 @@ async function applyMetaSnapshot(data) {
     let hNoteChanged = false;
     Object.keys(data.hNoteMap).forEach((k) => {
       const remoteTs = incomingTs[k] || 0;
-      if (remoteTs > (H_NOTE_MAP_TS[k] || 0)) {
+      // #437: same missing-local-key gap as H_TAG_MAP/IMAGE_TAG_MAP above.
+      if (!Object.prototype.hasOwnProperty.call(H_NOTE_MAP, k) || remoteTs > (H_NOTE_MAP_TS[k] || 0)) {
         H_NOTE_MAP[k] = data.hNoteMap[k];
         H_NOTE_MAP_TS[k] = remoteTs;
         hNoteChanged = true;
