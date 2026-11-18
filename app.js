@@ -4718,54 +4718,18 @@ function renderHome() {
     { value: 'unlinked', label: 'Unlinked', on: STATE.noLinkFilter, dataAttr: 'data-home-linkstatus-pick="unlinked"' },
   ], { blankWhenEmpty: false, closeOnPick: true })}</div>`;
 
-  // #435: Main Character/Main Lead filter boxes -- separate Flag/Position/
-  // 2nd Gender/Physique dropdowns per lead, so "MC is a Green Flag" and "ML
-  // is a Pretty Bottom" can be picked independently. Per her follow-up,
-  // restyled side-by-side (Main Lead left, Main Character right, matching
-  // her mockup) instead of stacked, each a plain non-collapsible pink
-  // header -- not [data-collapsible] like every other container, since she
-  // specifically asked these two stay fixed open.
-  const leadFilterGridHtml = (prefix) => {
-    const flagCell = !isSFW() ? `<div class="filter-dropdown-col">${renderDropdownToggle('home-' + prefix + 'flag', 'Flag', FLAG_COLORS.map((v) => ({
-      value: v, label: v, on: STATE[prefix + 'FlagFilter'] === v, dataAttr: `data-home-${prefix}flag-pick="${escapeHtml(v)}"`,
-    })), { blankWhenEmpty: true, closeOnPick: true })}</div>` : '';
-    const positionCell = `<div class="filter-dropdown-col">${renderDropdownToggle('home-' + prefix + 'position', 'Position', LEAD_POSITIONS.map((v) => ({
-      value: v, label: v, on: STATE[prefix + 'PositionFilter'] === v, dataAttr: `data-home-${prefix}position-pick="${escapeHtml(v)}"`,
-    })), { blankWhenEmpty: true, closeOnPick: true })}</div>`;
-    const dynamicCell = `<div class="filter-dropdown-col">${renderDropdownToggle('home-' + prefix + 'dynamic', '2nd Gender', LEAD_DYNAMICS.map((v) => ({
-      value: v, label: v, on: STATE[prefix + 'DynamicFilter'] === v, dataAttr: `data-home-${prefix}dynamic-pick="${escapeHtml(v)}"`,
-    })), { blankWhenEmpty: true, closeOnPick: true })}</div>`;
-    const bodyTypeCell = `<div class="filter-dropdown-col">${renderDropdownToggle('home-' + prefix + 'bodytype', 'Physique', LEAD_BODY_TYPES.map((v) => ({
-      value: v, label: v, on: STATE[prefix + 'BodyTypeFilter'] === v, dataAttr: `data-home-${prefix}bodytype-pick="${escapeHtml(v)}"`,
-    })), { blankWhenEmpty: true, closeOnPick: true })}</div>`;
-    return `<div class="lead-filter-grid">
-      <div class="filter-dropdown-row">${flagCell}${positionCell}</div>
-      <div class="filter-dropdown-row">${dynamicCell}${bodyTypeCell}</div>
-    </div>`;
-  };
-  const leadFilterColsHtml = `
-    <div class="lead-filter-cols">
-      <div class="panel lead-filter-panel">
-        <div class="panel-title-row lead-filter-title-row">
-          <div class="panel-title" style="margin:0;">Main Lead</div>
-        </div>
-        ${leadFilterGridHtml('ml')}
-      </div>
-      <div class="panel lead-filter-panel">
-        <div class="panel-title-row lead-filter-title-row">
-          <div class="panel-title" style="margin:0;">Main Character</div>
-        </div>
-        ${leadFilterGridHtml('mc')}
-      </div>
-    </div>`;
-
+  // #439: the Main Character/Main Lead filter boxes (#435) were removed
+  // per her request -- the #438 combo tags (Muscle Top, Omega Top, Green
+  // Top, Muscle Omega, etc.) now cover the same ground through the regular
+  // Tags filter above, so a separate Flag/Position/Dynamic/Physique picker
+  // per lead was redundant. Filter box is back to the two dropdown rows
+  // plus Create Playlist.
   return `
     <div class="app-header">
       <button class="filters-toggle-btn" data-toggle-filters="1">${FILTERS_COLLAPSED ? '▸ Show Filters' : '▴ Hide Filters'}</button>
       <div class="filters-collapsible ${FILTERS_COLLAPSED ? 'collapsed' : ''}" id="filters-collapsible">
         <div class="filter-dropdown-row">${shelfChips}${storyStatusChips}${mediaFormatChips}</div>
         <div class="filter-dropdown-row">${tagMultiselect}${linkStatusChip}${playlistChips}</div>
-        ${leadFilterColsHtml}
         <div class="create-playlist-row"><button type="button" class="create-playlist-btn" data-create-playlist="1">+ Create playlist</button></div>
       </div>
     </div>

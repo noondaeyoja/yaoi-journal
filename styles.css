@@ -280,6 +280,12 @@ display: flex; align-items: center; justify-content: space-between;
    centered flow and pinned to the right edge instead. */
 .dd-toggle {
   position: relative; justify-content: center; text-align: center; padding-right: 26px;
+  /* #440: a long playlist/collection name as one of several selected .dd-chip
+     pills (see .dd-chip-wrap below) could push wider than this box and spill
+     out past the filter column's edge on mobile -- this is the clip that
+     stops that overflow from ever escaping the toggle's own bounds, same as
+     any other box on the page. */
+  overflow: hidden; width: 100%; box-sizing: border-box;
 }
 .dd-toggle .chevron {
   position: absolute; right: 10px; top: 50%; transform: translateY(-50%); opacity: .8;
@@ -288,10 +294,16 @@ display: flex; align-items: center; justify-content: space-between;
 /* Multiple selections shown as pink pill chips sitting inside the toggle's
    own blue/cyan box (her reference images), instead of a separate row of
    chips underneath it. */
-.dd-chip-wrap { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
+.dd-chip-wrap { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; max-width: 100%; }
 .dd-chip {
   background: var(--pink-soft); color: var(--text); border: 1px solid var(--pink); border-radius: 0;
-  padding: 2px 7px; font-size: 10.5px; font-weight: 700; white-space: nowrap;
+  padding: 2px 7px; font-size: 10.5px; font-weight: 700;
+  /* #440: was nowrap -- a single long chip (a playlist name especially)
+     would rather blow out past the edge of its box than wrap, which is
+     exactly the overflow she reported. A chip now wraps its own text onto a
+     second line inside the pill instead of forcing the whole toggle wider
+     than its container. */
+  white-space: normal; word-break: break-word; max-width: 100%;
 }
 /* Floats over the page -- positioned relative to its own .dd-wrap, so it
    never affects that wrap's height/layout while it's open. */
@@ -1244,6 +1256,21 @@ body[data-bg="grid"] .app-header, body[data-bg="grid-blue"] .app-header, body[da
 @media (max-width: 640px) {
   .notes-lead-top-row, .notes-lead-body-h { grid-template-columns: 110px 1fr; }
   .notes-lead-title-h { font-size: 10.5px; }
+  /* #440: the Notes container's Personality row (renderLeadPickDropdown's
+     pink-header-plus-chip-box layout, same shape as the Tags container's
+     own sections) sits the "PERSONALITY" header beside the chip pool on
+     desktop, with .flag-picker-h:last-child's align-items:stretch making
+     that fixed 100px-wide header match the chip box's full height -- on a
+     narrow phone screen that chip box is routinely much taller than the
+     header's own text needs, so most of that pink block ends up as her
+     reported "negative pink space." Stacking header-above-chips here
+     instead lets the header shrink to just its own content height, same
+     fix already applied to Manage Sections' .tag-section-header-manage.
+     Scoped to just this one Personality instance (.flag-picker-h:last-child)
+     so the regular Tags container's own sections keep their side-by-side
+     look, which she hasn't asked to change. */
+  .flag-picker-h:last-child .tag-section-row { flex-direction: column; align-items: stretch; }
+  .flag-picker-h:last-child .tag-section-header { flex: 0 0 auto; width: 100%; box-sizing: border-box; }
 }
 
 /* Rating container: 10 categories, 5 per row */
