@@ -81,6 +81,20 @@ let CUSTOM_PERSONALITY_WORDS = new Set();
 // addCustomPersonalityWord() clears a word's tombstone on the way back in,
 // so deliberately re-adding a previously-deleted word still works.
 let DELETED_PERSONALITY_WORD_KEYS = new Set();
+// #444: per-key timestamp for the tombstone set above. The comment right
+// above explains why tombstones union-merge instead of plain-overwriting --
+// but a PURE forever-growing union also means an undelete can never
+// actually stick: the moment any device's lagging snapshot (even this same
+// device's own queued write, mid-flight) gets merged in again, the old
+// tombstone silently comes right back and wipes the restored word back out
+// -- "Gangs / Mafia / Paid Killers" (and friends) kept disappearing from the
+// Personality pool/dropdown after being restored, exactly because of this.
+// Same fix shape as #437 (H_TAG_MAP_TS): record when a key's tombstone
+// state last changed (added OR cleared), and let a merge only apply an
+// incoming tombstone when it's actually newer than whatever this device
+// last did to that same key -- so a deliberate addCustomPersonalityWord()
+// undelete, which bumps this to "now", wins over a stale incoming delete.
+let DELETED_PERSONALITY_WORD_TS = {};
 // #345: shared name-builder for the auto-tag each flag button keeps in
 // sync with the tag box (one-way: flag -> tag only). "who" is 'semi'
 // (Main Lead) or 'uke' (Main Character), matching the notes-lead-head
@@ -1019,11 +1033,31 @@ async function applyMetaSnapshot(data) {
   // works. Tombstones must merge and filter BEFORE size-comparing against
   // the word set, or a delete that races a merge could look like a no-op
   // change and skip the idb write.
+  // #444: per-key LWW against DELETED_PERSONALITY_WORD_TS instead of a blind
+  // union -- see that variable's declaration for why the plain union above
+  // broke undelete (a restored word kept getting silently re-tombstoned by a
+  // lagging snapshot/echo, even one from this same device). An incoming
+  // tombstone is only adopted when it's actually newer than whatever this
+  // device last did to that same key; data with no recorded timestamp
+  // (anything written before this fix) defaults to 0, which loses to any
+  // real local timestamp -- same "missing never beats real data" shape #437
+  // used for the mood-tag maps.
   if (Array.isArray(data.deletedPersonalityWordKeys) && data.deletedPersonalityWordKeys.length) {
+    const incomingTs = (data.deletedPersonalityWordTs && typeof data.deletedPersonalityWordTs === 'object') ? data.deletedPersonalityWordTs : {};
     const beforeDel = DELETED_PERSONALITY_WORD_KEYS.size;
-    DELETED_PERSONALITY_WORD_KEYS = new Set([...DELETED_PERSONALITY_WORD_KEYS, ...data.deletedPersonalityWordKeys]);
-    if (DELETED_PERSONALITY_WORD_KEYS.size !== beforeDel) changed = true;
+    let tsChanged = false;
+    data.deletedPersonalityWordKeys.forEach((k) => {
+      const remoteTs = incomingTs[k] || 0;
+      const localTs = DELETED_PERSONALITY_WORD_TS[k] || 0;
+      if (remoteTs > localTs) {
+        DELETED_PERSONALITY_WORD_KEYS.add(k);
+        DELETED_PERSONALITY_WORD_TS[k] = remoteTs;
+        tsChanged = true;
+      }
+    });
+    if (DELETED_PERSONALITY_WORD_KEYS.size !== beforeDel || tsChanged) changed = true;
     await idbPut(STORE_META, { key: 'deletedPersonalityWordKeys', value: Array.from(DELETED_PERSONALITY_WORD_KEYS) });
+    await idbPut(STORE_META, { key: 'deletedPersonalityWordTs', value: DELETED_PERSONALITY_WORD_TS });
   }
   if (Array.isArray(data.customPersonalityWords)) {
     const before = CUSTOM_PERSONALITY_WORDS.size;
@@ -3464,8 +3498,12 @@ async function setTagSectionOverride(name, section) {
 async function persistPersonalityWordState() {
   await idbPut(STORE_META, { key: 'customPersonalityWords', value: Array.from(CUSTOM_PERSONALITY_WORDS) });
   await idbPut(STORE_META, { key: 'deletedPersonalityWordKeys', value: Array.from(DELETED_PERSONALITY_WORD_KEYS) });
+  // #444: persist/push the per-key tombstone timestamps alongside the sets
+  // themselves -- see DELETED_PERSONALITY_WORD_TS's declaration.
+  await idbPut(STORE_META, { key: 'deletedPersonalityWordTs', value: DELETED_PERSONALITY_WORD_TS });
   pushMetaField('customPersonalityWords', Array.from(CUSTOM_PERSONALITY_WORDS));
   pushMetaField('deletedPersonalityWordKeys', Array.from(DELETED_PERSONALITY_WORD_KEYS));
+  pushMetaField('deletedPersonalityWordTs', DELETED_PERSONALITY_WORD_TS);
 }
 async function addCustomPersonalityWord(word) {
   const w = word.trim();
@@ -3475,7 +3513,13 @@ async function addCustomPersonalityWord(word) {
   // #427: deliberately re-adding a word that was previously deleted (on
   // this device or any other) should actually bring it back, not have the
   // tombstone immediately filter it right back out again.
+  // #444: bump this key's timestamp to now EVERY time its tombstone state
+  // changes, delete or undelete -- this is what lets a merge recognize this
+  // undelete as newer than some other device's (or this device's own
+  // lagging) stale copy of the old tombstone, instead of that stale copy
+  // silently winning and wiping the word back out again.
   DELETED_PERSONALITY_WORD_KEYS.delete(normalizeTagKey(w));
+  DELETED_PERSONALITY_WORD_TS[normalizeTagKey(w)] = Date.now();
   await persistPersonalityWordState();
 }
 // #426: renames (Manage Tags-style) or permanently removes one Personality
@@ -3490,13 +3534,17 @@ async function renameCustomPersonalityWord(oldWord, newWord) {
   // #427: tombstone the old name so it can't resurrect from a device that
   // hasn't made this rename yet, and clear any stale tombstone on the new
   // name in case it happens to match a word deleted elsewhere previously.
+  const now = Date.now(); // #444
   DELETED_PERSONALITY_WORD_KEYS.add(normalizeTagKey(oldWord));
+  DELETED_PERSONALITY_WORD_TS[normalizeTagKey(oldWord)] = now;
   DELETED_PERSONALITY_WORD_KEYS.delete(normalizeTagKey(w));
+  DELETED_PERSONALITY_WORD_TS[normalizeTagKey(w)] = now;
   await persistPersonalityWordState();
 }
 async function deleteCustomPersonalityWord(word) {
   CUSTOM_PERSONALITY_WORDS.delete(word);
   DELETED_PERSONALITY_WORD_KEYS.add(normalizeTagKey(word));
+  DELETED_PERSONALITY_WORD_TS[normalizeTagKey(word)] = Date.now(); // #444
   await persistPersonalityWordState();
 }
 // #425: every word she can currently pick from in a Personality dropdown --
@@ -4080,7 +4128,15 @@ function openRenameCollectionModal(c, onBeforeRender) {
   };
   document.getElementById('coll-rename-save').onclick = save;
   inp.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); save(); } };
-  setTimeout(() => inp.focus(), 50);
+  // #443: openModal() sets the modal's innerHTML synchronously, so the input
+  // already exists the instant this line runs -- focusing it right here,
+  // still inside the original tap's own handler, is what actually gets the
+  // keyboard to pop up on her phone. The old setTimeout(...,50) pushed the
+  // focus() call out past the tap's own call stack, which iOS Safari quietly
+  // refuses to treat as "the result of a user gesture" -- it would set
+  // document.activeElement but never raise the keyboard, which is exactly
+  // the "cursor isn't actually in the text box" she kept running into.
+  inp.focus();
 }
 async function deleteCollectionFlow(c) {
   if (!(await confirmModal('Delete "' + c.name + '"? The reads themselves stay in your journal.', 'DELETE'))) return false;
@@ -4407,7 +4463,11 @@ function openCreatePlaylistModal() {
   };
   document.getElementById('new-playlist-create').onclick = go;
   input.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); go(); } };
-  setTimeout(() => input.focus(), 50);
+  // #443: see openRenameCollectionModal's comment -- a deferred setTimeout
+  // focus() is what was leaving the cursor out of the box on her phone;
+  // focusing synchronously, still inside the tap that opened this modal,
+  // is what actually raises the keyboard.
+  input.focus();
 }
 
 function openAddReadToCollectionModal(collId) {
@@ -4438,7 +4498,10 @@ function openAddReadToCollectionModal(collId) {
       };
     });
   };
-  setTimeout(() => input.focus(), 50);
+  // #443: same fix as openCreatePlaylistModal/openRenameCollectionModal --
+  // this is specifically the "adding item to a playlist" box she flagged,
+  // since this modal is what opens from the Playlist page's own add button.
+  input.focus();
 }
 
 function attachCollectionHandlers(root) {
@@ -9957,6 +10020,15 @@ function mergeEntryData(target, source) {
 
   target.tags = Array.from(new Set([...(target.tags || []), ...(source.tags || [])]));
   target.customTags = Array.from(new Set([...(target.customTags || []), ...(source.customTags || [])]));
+  // #442: regular (non-system) playlist/award membership lives in e.collections
+  // -- a plain array of collection ids, same field used for both kinds (see
+  // collectionMembers/entryCollections) -- and this merge never touched it at
+  // all, so a source entry's playlist/award memberships were silently dropped
+  // the moment it got merged into another entry and deleted. System playlists
+  // (Artwork/Favorites/On HD/etc.) are tag-backed, not array-backed, so those
+  // were already safe via the tags/customTags union right above; this is the
+  // same safety net for her own custom playlists and awards.
+  target.collections = Array.from(new Set([...(target.collections || []), ...(source.collections || [])]));
   // Screenshots: keep each image paired with its Drive id (arrays are index-aligned).
   {
     const caps = (target.screencaps || []).slice();
@@ -12240,7 +12312,8 @@ function attachRootHandlers() {
     };
     document.getElementById('new-collmgr-create').onclick = go;
     inp.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); go(); } };
-    setTimeout(() => inp.focus(), 50);
+    // #443: same fix as the other playlist/award modals above.
+    inp.focus();
   };
   // #367: Manage Sections tab drag-and-drop wiring, plus a plain click (as
   // opposed to a drag) on the same chip opening the quick-actions popup --
@@ -13292,6 +13365,10 @@ async function boot() {
     if (savedTagSectionOverrides && savedTagSectionOverrides.value && typeof savedTagSectionOverrides.value === 'object') TAG_SECTION_OVERRIDES = savedTagSectionOverrides.value;
     const savedDeletedPersonalityWordKeys = await idbGet(STORE_META, 'deletedPersonalityWordKeys');
     if (savedDeletedPersonalityWordKeys && Array.isArray(savedDeletedPersonalityWordKeys.value)) DELETED_PERSONALITY_WORD_KEYS = new Set(savedDeletedPersonalityWordKeys.value);
+    // #444: this device's own record of when each tombstone last changed --
+    // see DELETED_PERSONALITY_WORD_TS's declaration.
+    const savedDeletedPersonalityWordTs = await idbGet(STORE_META, 'deletedPersonalityWordTs');
+    if (savedDeletedPersonalityWordTs && savedDeletedPersonalityWordTs.value && typeof savedDeletedPersonalityWordTs.value === 'object') DELETED_PERSONALITY_WORD_TS = savedDeletedPersonalityWordTs.value;
     const savedCustomPersonalityWords = await idbGet(STORE_META, 'customPersonalityWords');
     // #427: filter against the tombstone set on load too, not just on
     // incoming merges -- belt-and-suspenders in case this device's own

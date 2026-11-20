@@ -312,6 +312,19 @@ display: flex; align-items: center; justify-content: space-between;
   background: var(--card-2); border: 2px solid var(--border); border-radius: 0;
   box-shadow: 4px 4px 0 var(--border); padding: 6px;
 }
+/* #441: the homepage's bottom filter row packs 3 dropdowns side by side
+   (Tags / Link status / Playlist), so each one's own .dd-wrap column is only
+   about a third of the screen wide on mobile -- and since .dd-panel's
+   left:0;right:0 above just spans its own column, the Playlist panel's
+   search box and every playlist name were crammed into that same narrow
+   width, with longer names wrapping onto 2-3 lines per row. That's what made
+   it fiddly to land a tap on the right one. This lets just that one panel
+   (it's the rightmost of the 3, so anchoring from the right keeps it from
+   running off the edge of the screen) grow wider than its own column,
+   without touching the Tags/Link status dropdowns' layout at all. */
+.dd-wrap:has(> [data-dd-toggle="home-playlist"]) .dd-panel {
+  left: auto; right: 0; width: max(100%, 220px); max-width: 92vw;
+}
 /* #412: Award/Playlist/the homepage's new Flag dropdown are blue (her
    "they're dropdowns" rule), same cyan-fill-adjacent blue used for user-
    made collections elsewhere, not the pink filter row above them. */
