@@ -1774,6 +1774,20 @@ async function tryUploadImageToDrive(dataUrl, filename, kind) {
 // exists — nothing else has to change.
 async function hydrateDriveImages(entry) {
   if (!entry) return;
+  // #445: every other Drive-hydration loop in this file (hydrateMissingEntryImages,
+  // the reactions/H-image hydrators, etc.) checks driveTokenValid() before doing
+  // any work -- but THIS function, which is the one called directly on every
+  // single render() of a detail page (and on sync/patch), never did. Once the
+  // Drive token goes stale, this was reattempting the cover + semi + uke photo +
+  // every missing screencap for the open entry, sequentially, on every re-render
+  // -- which is exactly what was flooding the console with repeated "No valid
+  // Google Drive access token" errors and causing the "lag when clicking on a
+  // different menu item" (each click re-renders, each re-render re-ran this
+  // whole doomed-to-fail loop). Bailing out immediately once the token's already
+  // known bad -- same guard the other hydrators use -- stops the storm; it
+  // starts hydrating again on its own the moment she reconnects Drive, since
+  // driveTokenValid() goes back to true then.
+  if (!driveTokenValid()) { DRIVE_NEEDS_RECONNECT = true; return; }
   const jobs = [];
   if (entry.coverDriveId && !entry.coverUrl) {
     jobs.push(downloadFromDrive(entry.coverDriveId).then((url) => { entry.coverUrl = url; }).catch((err) => console.error('Cover hydrate failed:', err)));
@@ -9053,7 +9067,14 @@ function renderLeadPickDropdown(who, title, groups, openKeySuffix) {
     const arr = toPickArray(g.current);
     g.options.forEach((opt) => {
       const value = typeof opt === 'string' ? opt : opt.value;
-      const label = typeof opt === 'string' ? `${opt[0].toUpperCase()}${opt.slice(1)}` : opt.label;
+      // #445: this used to only capitalize the very first letter of the whole
+      // string (opt[0].toUpperCase()+opt.slice(1)), so a custom Personality
+      // word typed in lowercase -- like "unrequited love" -- rendered as
+      // "Unrequited love" instead of "Unrequited Love". The word wasn't
+      // hidden or missing at all; it just didn't read as the thing she was
+      // scanning for. capTag() is the same word-by-word title-caser the rest
+      // of the app's tags already use, so Personality pool labels now match.
+      const label = typeof opt === 'string' ? capTag(opt) : opt.label;
       items.push({ value, label, on: arr.includes(value), dataAttr: `data-${g.dataAttr}="${who}:${value}"` });
     });
   });
@@ -11503,11 +11524,23 @@ function attachRootHandlers() {
     newTagInput.onkeydown = (ev) => {
       if (ev.key !== 'Enter') return;
       ev.preventDefault();
-      const val = newTagInput.value.trim();
-      if (!val) return;
-      if (isHiddenTag(val)) { showToast("That tag is blocked or was deleted before \u2014 it's hidden on purpose"); return; }
+      const raw = newTagInput.value.trim();
+      if (!raw) return;
+      if (isHiddenTag(raw)) { showToast("That tag is blocked or was deleted before \u2014 it's hidden on purpose"); return; }
       const ts = getTagEditState(STATE.entryId);
       const e = getEntry(STATE.entryId);
+      // #446: this box let a typed casing variant ("golden retriever energy")
+      // slip through as a brand-new, separately-cased tag whenever this
+      // particular entry didn't already happen to carry the existing-cased
+      // version ("Golden Retriever Energy") -- that's exactly how the
+      // Golden Retriever Energy / handicapped duplicates got created in the
+      // first place. The newer inline add-tag box (new-tag-input-inline)
+      // already snaps to whatever casing is already in use anywhere in the
+      // app (same idea as tagRenameFlow's #384 fix); doing the same lookup
+      // here closes this box's copy of the same gap.
+      const allGlobalTags = Object.keys(allTagCounts());
+      const canonical = [...(e.tags || []), ...(e.customTags || []), ...ts.added, ...allGlobalTags].find((t) => t.toLowerCase() === raw.toLowerCase());
+      const val = canonical || raw;
       const already = [...(e.tags || []), ...(e.customTags || []), ...ts.added].some((t) => t.toLowerCase() === val.toLowerCase());
       if (!already) ts.added.push(val);
       newTagInput.value = '';
