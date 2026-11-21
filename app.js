@@ -9323,8 +9323,18 @@ function renderTagChipsInline(e) {
     .filter((item) => sectionForTag(item.t) !== 'Personality')
     .sort((a, b) => a.t.localeCompare(b.t));
   const isAddOpen = OPEN_DROPDOWN_ID === TAG_ADD_ALL_KEY;
+  // #451: styled like an actual search bar now (not a solid pink "+ Add
+  // Tag" block) per her follow-up, so it reads as something to click into
+  // and start typing right away -- same white/bordered look as the real
+  // search input that appears once it's open (.tag-picker-input), just a
+  // <button> until then since clicking it is what opens the dropdown. The
+  // document-level [data-dd-toggle] click handler flags TAG_ADD_AUTOFOCUS
+  // when THIS key is the one being opened, so the real input underneath
+  // gets focus() the instant it exists -- no second click needed to start
+  // typing, matching "when the user clicks in that space they can start
+  // adding tags".
   const addRow = `<div class="tag-section-row dd-wrap">
-      <button type="button" class="tag-section-header tag-section-header-toggle tag-section-header-full ${isAddOpen ? 'active' : ''}" data-dd-toggle="${escapeHtml(TAG_ADD_ALL_KEY)}">🔍 Add Tag</button>
+      <button type="button" class="tag-add-search-toggle ${isAddOpen ? 'active' : ''}" data-dd-toggle="${escapeHtml(TAG_ADD_ALL_KEY)}">🔍 Search or add a tag…</button>
       ${isAddOpen ? renderTagAddPanelForSection(e, null) : ''}
     </div>`;
   const chips = all.map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}" data-remove-tag="${escapeHtml(t)}" title="Click to remove">${escapeHtml(capTag(t))}</div>`).join('');
@@ -12652,7 +12662,13 @@ document.addEventListener('click', async (ev) => {
   const ddToggle = t.closest('[data-dd-toggle]');
   if (ddToggle) {
     const key = ddToggle.getAttribute('data-dd-toggle');
-    OPEN_DROPDOWN_ID = OPEN_DROPDOWN_ID === key ? null : key;
+    const wasOpening = OPEN_DROPDOWN_ID !== key;
+    OPEN_DROPDOWN_ID = wasOpening ? key : null;
+    // #451: the Tags container's search-bar-styled toggle should drop her
+    // straight into typing the instant she clicks it -- same autofocus
+    // mechanism the "Tag added" chain-add flow already uses, just fired on
+    // open instead of after a save.
+    if (wasOpening && key === TAG_ADD_ALL_KEY) TAG_ADD_AUTOFOCUS = true;
     render();
     return;
   }

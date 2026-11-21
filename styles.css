@@ -715,6 +715,18 @@ padding: 8px 4px; letter-spacing: .02em;
    fixed 100px box floating alone -- stretch it to fill the row instead,
    closer to how she described it ("search bar and then the dropdown"). */
 .tag-section-header-full { flex: 1; }
+/* #451: the shared tag-add toggle restyled to actually look like a search
+   bar (white/bordered, left-aligned, dimmed placeholder text) instead of a
+   solid pink "+ Add Tag" block -- same look as .tag-picker-input, the real
+   search box that replaces this once it's open, so the two read as the
+   same element rather than a button that reveals an unrelated-looking
+   input underneath it. */
+.tag-add-search-toggle {
+  width: 100%; text-align: left; background: #ffffff; border: 2px solid var(--border); border-radius: 0;
+  box-shadow: 3px 3px 0 var(--border); padding: 9px 12px; font-size: 13px; font-weight: 600;
+  color: var(--text-dim); cursor: pointer; font-family: inherit;
+}
+.tag-add-search-toggle.active { color: var(--text); }
 .tag-section-tags {
 flex: 1; display: flex; flex-wrap: wrap; align-content: flex-start; align-items: flex-start; gap: 6px;
 background: var(--card-2); border-radius: 0; padding: 8px; min-height: 20px;
