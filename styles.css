@@ -710,6 +710,11 @@ padding: 8px 4px; letter-spacing: .02em;
    reset since it's no longer a div) with a chevron so it reads as a
    dropdown like the rest of the detail page's pickers. */
 .tag-section-header-toggle { cursor: pointer; font-family: inherit; }
+/* #449: the one shared "+ Add Tag" row (replacing the old per-section add
+   toggles) has no tags div sitting next to it, so it reads oddly as a
+   fixed 100px box floating alone -- stretch it to fill the row instead,
+   closer to how she described it ("search bar and then the dropdown"). */
+.tag-section-header-full { flex: 1; }
 .tag-section-tags {
 flex: 1; display: flex; flex-wrap: wrap; align-content: flex-start; align-items: flex-start; gap: 6px;
 background: var(--card-2); border-radius: 0; padding: 8px; min-height: 20px;

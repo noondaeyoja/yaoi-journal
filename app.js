@@ -4668,7 +4668,13 @@ function attachDetailNavHandlers(root) {
 
 function renderHome() {
   const entries = filteredEntries();
-  const tags = topTags(ALL_ENTRIES.filter((e) => !STATE.format || e.format === STATE.format));
+  // #449: this used to only pull tags from entries matching whatever format
+  // tab is currently selected (anime vs. manhwa, etc.), so a tag that only
+  // ever got used on the "other" format's entries silently never showed up
+  // in the Tags filter dropdown while that tab was active. Per her request
+  // the homepage Tags filter should offer every tag in the whole library
+  // regardless of which format she happens to be browsing right now.
+  const tags = topTags(ALL_ENTRIES);
 
   let body = '';
   if (STATE.shelf === 'ALL' && !STATE.tagFilters.length && !STATE.search && !STATE.smutFilter && !STATE.qualityFilter && !STATE.lolFilter && !STATE.cryFilter && !STATE.flagFilter && !STATE.linkFilter && !STATE.noLinkFilter && !STATE.storyStatusFilter && !STATE.playlistFilter && !STATE.mcFlagFilter && !STATE.mcPositionFilter && !STATE.mcDynamicFilter && !STATE.mcBodyTypeFilter && !STATE.mlFlagFilter && !STATE.mlPositionFilter && !STATE.mlDynamicFilter && !STATE.mlBodyTypeFilter) {
@@ -9286,57 +9292,57 @@ function renderTagCloudReadOnly(e) {
   return all.map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}">${escapeHtml(t)}</div>`).join('');
 }
 
+// #449: she no longer wants to have to know/open the right section just to
+// add a tag ("the user can just start typing the tags they know...they
+// don't need to know sections") -- so the per-section "+ add" dropdown
+// (one pool per section, filtered to that section's own tags) is replaced
+// by ONE shared search+dropdown covering every tag at once, alphabetical,
+// full list visible the moment it opens, narrowing live as she types --
+// same interaction every other searchable dropdown in the app already
+// uses. Sections are KEPT, but now purely for display/organization: each
+// one still shows its own already-applied chips underneath its pink
+// header (that's real backend structure she still wants, for Manage
+// Sections to stay useful), the header just isn't a toggle anymore since
+// there's nothing per-section left to open. The shared picker opens off
+// its own dedicated row (TAG_ADD_ALL_KEY) placed first, so it reads as
+// "search bar, then the dropdown" ahead of the organized sections below.
+const TAG_ADD_ALL_KEY = 'tag:__ALL__';
 function renderTagChipsInline(e) {
-  // #361: group the entry's tags into the fixed sections (Couple/Smut/
-  // General/etc.) per the confirmed tag-categorization mapping, each with
-  // its own pink section-header, a borderless bunch of that section's
-  // tags, and its own add-panel (all wired to the same shared
-  // OPEN_DROPDOWN_ID add-panel below).
-  // #407: the section header is now the dropdown toggle itself (her
-  // "make the tags drop down instead of the tag box" follow-up -- the
-  // original #361 "+ NEW TAG" chip already opened an alphabetical pool to
-  // pick from, but it sat as a small chip among the tags rather than
-  // reading as a dropdown; this reuses the exact same add panel/pool,
-  // just moves its open/close affordance onto the section header button
-  // itself). The section's own already-added tags stay visible underneath
-  // as chips at all times (that's the entry's actual data, not something
-  // to hide behind a toggle) -- only the "pick another tag" pool is what
-  // opens/closes.
-  // #408/#410: no chevron on this one, per her follow-up -- it stays the
-  // plain pink section-header block she already had, just clickable now;
-  // the open-key lives in the same shared OPEN_DROPDOWN_ID as every other
-  // dropdown (key 'tag:<section>'), and the panel is the same absolutely-
-  // positioned popup (.dd-wrap/.dd-panel) everything else uses now, so it
-  // floats over whatever's below instead of pushing it down.
   const all = (e.tags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: false }))
     .concat((e.customTags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: true })));
   const bySection = newTagBuckets();
   all.forEach((item) => { bySection[sectionForTag(item.t)].push(item); });
   // #431: Personality is excluded from THIS container only -- it's its own
   // tag bank now, already shown under the Main Character/Main Lead sections
-  // of Notes, so it shouldn't also show up as a bucket here. Manage
+  // of Notes, so it shouldn't also show up as a bucket here (or in the
+  // shared "all tags" picker below -- see renderDetailTagPool). Manage
   // Sections still lists it (that page calls tagSectionOrder() directly,
   // unfiltered) so she can still manage the Personality tags themselves.
   const sectionOrder = tagSectionOrder().filter((sec) => sec !== 'Personality');
-  return sectionOrder.map((sec) => {
+  const isAddOpen = OPEN_DROPDOWN_ID === TAG_ADD_ALL_KEY;
+  const addRow = `<div class="tag-section-row dd-wrap">
+      <button type="button" class="tag-section-header tag-section-header-toggle tag-section-header-full ${isAddOpen ? 'active' : ''}" data-dd-toggle="${escapeHtml(TAG_ADD_ALL_KEY)}">🔍 Add Tag</button>
+      ${isAddOpen ? renderTagAddPanelForSection(e, null) : ''}
+    </div>`;
+  const sectionRows = sectionOrder.map((sec) => {
     const chips = bySection[sec].map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}" data-remove-tag="${escapeHtml(t)}" title="Click to remove">${escapeHtml(capTag(t))}</div>`).join('');
-    const ddKey = 'tag:' + sec;
-    const isOpen = OPEN_DROPDOWN_ID === ddKey;
-    return `<div class="tag-section-row dd-wrap">
-      <button type="button" class="tag-section-header tag-section-header-toggle ${isOpen ? 'active' : ''}" data-dd-toggle="${escapeHtml(ddKey)}">${sec}</button>
+    return `<div class="tag-section-row">
+      <div class="tag-section-header">${sec}</div>
       <div class="tag-section-tags">${chips}</div>
-      ${isOpen ? renderTagAddPanelForSection(e, sec) : ''}
     </div>`;
   }).join('');
+  return addRow + sectionRows;
 }
 
-// #369: the "+ NEW TAG" add panel for one specific Tags-container section --
-// its existing-tag pool is filtered to that section's own tags only, so
-// e.g. opening it from Couple only offers Couple tags (Muscle Top, etc.)
-// instead of the whole 240-tag pool. A brand-new tag typed here (one that
-// doesn't already exist anywhere) gets pinned to this section via
-// setTagSectionOverride so it shows up here next render instead of
-// defaulting to General.
+// #369/#449: the "+ Add Tag" panel -- `sec` null (the only way this is
+// called now) means the shared, unsectioned pool: every tag in the app
+// except Personality's (those stay in their own bank -- see
+// renderDetailTagPool), alphabetical, searchable. A brand-new tag typed
+// here (one that doesn't exist anywhere yet) is intentionally left
+// unassigned rather than guessed into a section -- see the
+// new-tag-input-inline handler's comment -- so it shows up flagged in
+// Manage Sections' "Unassigned" bucket for her to sort into a real
+// section whenever she gets to it.
 function renderTagAddPanelForSection(e, sec) {
   return `
     <div class="dd-panel">
@@ -9353,7 +9359,13 @@ function renderDetailTagPool(e, sec) {
   const existingLower = new Set([...(e.tags || []), ...(e.customTags || [])].map((t) => t.toLowerCase()));
   const all = Object.keys(allTagCounts())
     .filter((t) => !isHiddenTag(t))
-    .filter((t) => !sec || sectionForTag(t) === sec)
+    // #449: a specific section (no longer used by the Tags container
+    // itself, but still here for anything else that calls this with a
+    // real section name) filters to just that section's tags, same as
+    // before; the shared "all tags" pool (sec === null) still always
+    // excludes Personality -- its own separate tag bank, never mixed in
+    // here regardless of section filtering.
+    .filter((t) => (sec ? sectionForTag(t) === sec : sectionForTag(t) !== 'Personality'))
     .sort((a, b) => a.localeCompare(b));
   return all.map((t) => `<span class="tag-pool-chip ${existingLower.has(t.toLowerCase()) ? 'active' : ''}" data-toggle-detail-tag="${escapeHtml(t)}">${escapeHtml(capTag(t))}</span>`).join('');
 }
@@ -9578,6 +9590,21 @@ function renderDetail(e) {
         ${statsRowHtml('Format', 'stats-format', mediaFormatSelect)}
         ${statsRowHtml('Style', 'stats-style', styleSelect)}
         ${statsCollectionRowHtml(e, 'playlist')}
+        <!-- #448: the old 10-category Rating panel (Overall/Visuals/Plot/
+             Ending/Romance/Smut/Crying/Laughing/WTF/Darkness) is shelved per
+             her request -- she's tracking reads with tags/playlists now, not
+             a rating system, and didn't want 9 of the 10 categories anymore.
+             Overall survives as this one row, moved up into Stats instead of
+             having its own panel -- same pink .stats-row-label + horizontal
+             rating-icons meter it always had (still backed by the same
+             qualityRating field, so nothing needed to migrate), just living
+             alongside Shelf/Format/Style now instead of under its own
+             "Rating" heading. The other 9 fields (visualsRating/plotRating/
+             endingRating/romanceRating/smutRating/cryRating/lolRating/
+             wtfRating/darknessRating) and every entry's existing saved
+             values are untouched -- only this panel's UI is gone, so
+             nothing is lost if she ever wants it back. -->
+        <div class="stats-row"><div class="stats-row-label">Overall</div><div class="stats-row-content"><div class="rating-icons" data-rating="qualityRating">${renderRatingIcons(e.qualityRating, '❤️')}</div></div></div>
         </div>
       </div>
 
@@ -9587,29 +9614,6 @@ function renderDetail(e) {
           <div class="panel-title" style="margin:0;">Tags</div>
         </div>
         <div class="tag-sections">${renderTagChipsInline(e)}</div>
-      </div>
-
-      <!-- 2. Ratings -->
-      <div class="panel">
-        <div class="panel-title-row" data-collapsible="1" style="margin-bottom:14px;">
-          <div class="panel-title" style="margin:0;">Rating</div>
-        </div>
-        <!-- #402: reoriented horizontal, matching the Stats container's
-             row style, per her request -- same .stats-row/.stats-row-label
-             classes, 5 boxes filling the content area to the end of the
-             line item instead of stacking as vertical bar-graph columns. -->
-        <div class="stats-rows">
-          <div class="stats-row"><div class="stats-row-label">Overall</div><div class="stats-row-content"><div class="rating-icons" data-rating="qualityRating">${renderRatingIcons(e.qualityRating, '❤️')}</div></div></div>
-          <div class="stats-row"><div class="stats-row-label">Visuals</div><div class="stats-row-content"><div class="rating-icons" data-rating="visualsRating">${renderRatingIcons(e.visualsRating, '🎨')}</div></div></div>
-          <div class="stats-row"><div class="stats-row-label">Plot</div><div class="stats-row-content"><div class="rating-icons" data-rating="plotRating">${renderRatingIcons(e.plotRating, '📖')}</div></div></div>
-          <div class="stats-row"><div class="stats-row-label">Ending</div><div class="stats-row-content"><div class="rating-icons" data-rating="endingRating">${renderRatingIcons(e.endingRating, '🎬')}</div></div></div>
-          <div class="stats-row"><div class="stats-row-label">Romance</div><div class="stats-row-content"><div class="rating-icons" data-rating="romanceRating">${renderRatingIcons(e.romanceRating, '💕')}</div></div></div>
-          <div class="stats-row"><div class="stats-row-label">${isSFW() ? 'Cute' : 'Smut'}</div><div class="stats-row-content"><div class="rating-icons" data-rating="smutRating">${renderRatingIcons(e.smutRating, themeIcon())}</div></div></div>
-          <div class="stats-row"><div class="stats-row-label">Crying</div><div class="stats-row-content"><div class="rating-icons" data-rating="cryRating">${renderRatingIcons(e.cryRating, '😭')}</div></div></div>
-          <div class="stats-row"><div class="stats-row-label">Laughing</div><div class="stats-row-content"><div class="rating-icons" data-rating="lolRating">${renderRatingIcons(e.lolRating, '😂')}</div></div></div>
-          <div class="stats-row"><div class="stats-row-label">WTF</div><div class="stats-row-content"><div class="rating-icons" data-rating="wtfRating">${renderRatingIcons(e.wtfRating, '🤯')}</div></div></div>
-          <div class="stats-row"><div class="stats-row-label">Darkness</div><div class="stats-row-content"><div class="rating-icons" data-rating="darknessRating">${renderRatingIcons(e.darknessRating, '🌑')}</div></div></div>
-        </div>
       </div>
 
       <!-- 3. Notes -->
@@ -11674,11 +11678,19 @@ function attachRootHandlers() {
         return;
       }
       e.customTags = [...(e.customTags || []), val];
-      // #369: a brand-new tag (never used anywhere before) gets pinned to
-      // whichever section box its "+ NEW TAG" was opened from, so it shows
-      // up there instead of defaulting to General.
+      // #369/#449: a brand-new tag (never used anywhere before) used to get
+      // pinned to whichever section box its "+ NEW TAG" was opened from.
+      // Now that adding goes through the one shared, unsectioned "+ Add
+      // Tag" box (TAG_ADD_ALL_KEY) instead, there's no section context to
+      // pin to -- tagSectionOrder() won't contain the sentinel key's
+      // "__ALL__" suffix, so this naturally no-ops and the new tag is left
+      // unassigned (falls into General for display, flagged in Manage
+      // Sections' "Unassigned" bucket) for her to sort into a real section
+      // herself, per her explicit request. A real section name would still
+      // take this branch correctly if anything else ever opens this panel
+      // with one again.
       const openTagSection = OPEN_DROPDOWN_ID && OPEN_DROPDOWN_ID.startsWith('tag:') ? OPEN_DROPDOWN_ID.slice(4) : null;
-      if (!canonical && openTagSection) {
+      if (!canonical && openTagSection && tagSectionOrder().includes(openTagSection)) {
         await setTagSectionOverride(val, openTagSection);
       }
       await saveEntry(e);
