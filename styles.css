@@ -820,6 +820,27 @@ display: block; padding: 8px 12px 4px; font-size: 10.5px; font-weight: 800; lett
 text-transform: uppercase; color: var(--text-dim); background: var(--card-2);
 border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
 }
+/* #453: the Tags container's own "add a tag" pool goes back to wrapped
+   boxes (multiple per row) instead of one-per-row, per her request --
+   shorter scroll to get through the whole list. Scoped to this one pool by
+   id (not the shared .tag-pool/.tag-pool-chip classes every other dropdown
+   in the app still uses as a plain row list) so Position/Dynamic/Flag/
+   Playlist pickers etc. are untouched. Boxes are sized roomy on purpose --
+   the whole reason the add-tag pool went to rows in the first place (#408)
+   was that small pill buttons were error-prone to tap, so going back to
+   boxes only works if each one stays a comfortably large target. */
+#detail-tag-pool.tag-pool { padding: 2px; }
+#detail-tag-pool .tag-pool-section {
+display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 6px;
+}
+#detail-tag-pool .tag-pool-section-divider { flex: 0 0 100%; padding: 6px 6px 0; margin: -8px -6px 0; }
+#detail-tag-pool .tag-pool-chip {
+display: inline-flex; align-items: center; width: auto; flex: 0 0 auto; box-sizing: border-box;
+border: 1.5px solid var(--border); border-bottom: 1.5px solid var(--border); border-radius: 999px;
+padding: 11px 16px; background: #ffffff; font-size: 12.5px;
+}
+#detail-tag-pool .tag-pool-chip:hover { background: var(--card-2); }
+#detail-tag-pool .tag-pool-chip.active { background: var(--pink-soft); border-color: var(--pink-soft); font-weight: 800; }
 
 textarea {
 width: 100%; background: var(--navy-2); color: var(--text); border: 1px solid var(--border);

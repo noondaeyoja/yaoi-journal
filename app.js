@@ -705,6 +705,9 @@ async function deleteEntry(id) {
   ALL_ENTRIES = ALL_ENTRIES.filter((e) => e.id !== id);
   await recordDeletedEntryId(id);
   deleteEntryFromFirestore(id);
+  // #453: deleting the whole entry can be the thing that drops a custom
+  // Personality word's usage to zero, same as un-picking it on a live one.
+  await pruneUnusedCustomPersonalityWords();
 }
 
 /* ---------------------------------------------------------------------- */
@@ -3639,6 +3642,40 @@ async function deleteCustomPersonalityWord(word) {
   CUSTOM_PERSONALITY_WORDS.delete(word);
   DELETED_PERSONALITY_WORD_KEYS.add(normalizeTagKey(word));
   DELETED_PERSONALITY_WORD_TS[normalizeTagKey(word)] = Date.now(); // #444
+  await persistPersonalityWordState();
+}
+// #453: a custom Personality word that's no longer picked by ANY entry
+// shouldn't keep sitting in the pool as a ghost option forever -- regular
+// tags already get this for free (Manage Tags and the add-tag pool are both
+// computed live from allTagCounts(), so an untagged regular tag just
+// vanishes on its own), but CUSTOM_PERSONALITY_WORDS is its own separate,
+// explicitly-added list that nothing ever pruned, which is exactly how
+// "gang" ended up sitting there forever, picked by nobody, invisible to
+// Manage Tags and only discoverable by scrolling the Personality dropdown.
+// Called after anything that can drop a custom word's usage to zero:
+// toggling it off a lead (see the custompers-pick handler) or deleting an
+// entry that had it picked. Deliberately NOT the same as
+// deleteCustomPersonalityWord() above -- this is a quiet removal, not a
+// tombstoned delete, so a word that drops to zero and gets typed back in
+// later just works, instead of looking "blocked/deleted before" the way a
+// deliberate Manage Tags delete should. Scans every entry rather than
+// tracking counts incrementally -- simplest to keep correct, and cheap
+// enough (a few thousand entries x well under a hundred words) to run on
+// every personality edit. Never touches the fixed Temperament/Archetype/
+// Energy presets -- those aren't in this pool and always exist regardless
+// of usage.
+async function pruneUnusedCustomPersonalityWords() {
+  if (!CUSTOM_PERSONALITY_WORDS.size) return;
+  const used = new Set();
+  ALL_ENTRIES.forEach((e) => {
+    ['uke', 'semi'].forEach((who) => {
+      if (!e[who]) return;
+      toPickArray(e[who].customPersonality).forEach((v) => used.add(normalizeTagKey(v)));
+    });
+  });
+  const orphans = Array.from(CUSTOM_PERSONALITY_WORDS).filter((w) => !used.has(normalizeTagKey(w)));
+  if (!orphans.length) return;
+  orphans.forEach((w) => CUSTOM_PERSONALITY_WORDS.delete(w));
   await persistPersonalityWordState();
 }
 // #425: every word she can currently pick from in a Personality dropdown --
@@ -11470,10 +11507,16 @@ function attachRootHandlers() {
         const [who, val] = el.getAttribute(attr).split(':');
         const e = getEntry(STATE.entryId);
         const arr = toPickArray(e[who][field]);
+        // #453: only customPersonality draws from the prunable pool --
+        // track whether this click is turning one OFF, so an orphaned
+        // custom word gets cleaned up right away instead of lingering.
+        const unpickingCustom = field === 'customPersonality' && arr.includes(val);
         e[who][field] = arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val];
         if (PERSONALITY_FIELDS.has(field)) syncPersonalityTags(e);
         if (COMBO_FIELDS.has(field)) syncComboTags(e);
-        await saveEntry(e); render();
+        await saveEntry(e);
+        if (unpickingCustom) await pruneUnusedCustomPersonalityWords();
+        render();
       };
     });
   });
