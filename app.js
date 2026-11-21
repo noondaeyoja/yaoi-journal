@@ -2393,6 +2393,19 @@ function mediaModalNavNeighbors(list, current) {
 // "is a filter active" check renderHome() uses to decide between its
 // sectioned view and the flat filtered grid, so the arrows only appear when
 // there's an actual flat list to step through (not the default homepage).
+// #447: this used to call filteredEntries() fresh on every single render,
+// which re-ran the live filter against this entry's CURRENT data every
+// time -- so changing something the active filter cares about (most
+// commonly the shelf/status, when she's browsing a shelf-filtered list)
+// made this entry fail its own filter the instant she saved, dropping it
+// out of `list` and killing both arrows mid-browse. The list she's
+// stepping through should be the snapshot from when she opened this entry
+// off the homepage, not a live re-filter -- same idea as DETAIL_NAV_LIST
+// above for the Missing Cover/Summary page. navigate() clears
+// DETAIL_BROWSE_SNAPSHOT the moment she leaves the detail view, so the
+// very next entry she opens from the homepage still gets a fresh list for
+// whatever filter is active then.
+let DETAIL_BROWSE_SNAPSHOT = null;
 function detailBrowseNeighbors(id) {
   const activeFilter = STATE.shelf !== 'ALL' || STATE.tagFilters.length || STATE.search
     || STATE.smutFilter || STATE.qualityFilter || STATE.lolFilter || STATE.cryFilter
@@ -2404,8 +2417,8 @@ function detailBrowseNeighbors(id) {
     || STATE.mcFlagFilter || STATE.mcPositionFilter || STATE.mcDynamicFilter || STATE.mcBodyTypeFilter
     || STATE.mlFlagFilter || STATE.mlPositionFilter || STATE.mlDynamicFilter || STATE.mlBodyTypeFilter;
   if (!activeFilter) return { prev: null, next: null };
-  const list = filteredEntries().map((x) => x.id);
-  return mediaModalNavNeighbors(list, id);
+  if (!DETAIL_BROWSE_SNAPSHOT) DETAIL_BROWSE_SNAPSHOT = filteredEntries().map((x) => x.id);
+  return mediaModalNavNeighbors(DETAIL_BROWSE_SNAPSHOT, id);
 }
 // Builds the actual prev/next chevron buttons, keyed to whichever gallery's
 // data-*-nav-prev/next attribute the global click handler listens for.
@@ -2814,6 +2827,10 @@ function navigate(view, entryId, opts) {
   // The side-arrow list only survives while moving between the Missing
   // cover/summary page and reads opened from it.
   if (view !== 'detail' && view !== 'missingInfo') DETAIL_NAV_LIST = null;
+  // #447: leaving the detail view entirely drops the homepage-filter browse
+  // snapshot too, so the next entry she opens from the homepage picks up
+  // whatever filter is active THEN -- see detailBrowseNeighbors()'s comment.
+  if (view !== 'detail') DETAIL_BROWSE_SNAPSHOT = null;
   window.scrollTo(0, 0);
   persistNavState();
   if (!(opts && opts.fromPop) && !isBack) {
