@@ -9299,39 +9299,37 @@ function renderTagCloudReadOnly(e) {
 // by ONE shared search+dropdown covering every tag at once, alphabetical,
 // full list visible the moment it opens, narrowing live as she types --
 // same interaction every other searchable dropdown in the app already
-// uses. Sections are KEPT, but now purely for display/organization: each
-// one still shows its own already-applied chips underneath its pink
-// header (that's real backend structure she still wants, for Manage
-// Sections to stay useful), the header just isn't a toggle anymore since
-// there's nothing per-section left to open. The shared picker opens off
-// its own dedicated row (TAG_ADD_ALL_KEY) placed first, so it reads as
-// "search bar, then the dropdown" ahead of the organized sections below.
+// uses. The shared picker opens off its own dedicated row (TAG_ADD_ALL_KEY)
+// placed first, so it reads as "search bar, then the dropdown".
+// #450: the already-applied tags below it were still grouped into their
+// own per-section pink-header rows at first, per her original "keep the
+// sections" request -- but seeing it rendered, she asked to drop that too:
+// the left column of section headers was eating most of the width and
+// leaving the actual tags cramped into a narrow strip (see her mockup).
+// Sections still exist on the backend exactly as before -- sectionForTag/
+// TAG_SECTION_OVERRIDES/Manage Sections are all untouched, so organizing
+// tags into sections there is still exactly as useful as it was -- this
+// function just no longer groups its OWN display by them. Already-applied
+// tags now render as one flat, alphabetical row filling the whole width.
 const TAG_ADD_ALL_KEY = 'tag:__ALL__';
 function renderTagChipsInline(e) {
   const all = (e.tags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: false }))
-    .concat((e.customTags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: true })));
-  const bySection = newTagBuckets();
-  all.forEach((item) => { bySection[sectionForTag(item.t)].push(item); });
-  // #431: Personality is excluded from THIS container only -- it's its own
-  // tag bank now, already shown under the Main Character/Main Lead sections
-  // of Notes, so it shouldn't also show up as a bucket here (or in the
-  // shared "all tags" picker below -- see renderDetailTagPool). Manage
-  // Sections still lists it (that page calls tagSectionOrder() directly,
-  // unfiltered) so she can still manage the Personality tags themselves.
-  const sectionOrder = tagSectionOrder().filter((sec) => sec !== 'Personality');
+    .concat((e.customTags || []).filter((t) => !isHiddenTag(t)).map((t) => ({ t, custom: true })))
+    // #431/#450: Personality tags stay excluded from this container -- they're
+    // their own tag bank, already shown under Main Character/Main Lead in
+    // Notes, so they shouldn't also show up (flattening the display doesn't
+    // change that; Manage Sections still lists Personality tags via
+    // tagSectionOrder() directly, unfiltered, so she can still manage them).
+    .filter((item) => sectionForTag(item.t) !== 'Personality')
+    .sort((a, b) => a.t.localeCompare(b.t));
   const isAddOpen = OPEN_DROPDOWN_ID === TAG_ADD_ALL_KEY;
   const addRow = `<div class="tag-section-row dd-wrap">
       <button type="button" class="tag-section-header tag-section-header-toggle tag-section-header-full ${isAddOpen ? 'active' : ''}" data-dd-toggle="${escapeHtml(TAG_ADD_ALL_KEY)}">🔍 Add Tag</button>
       ${isAddOpen ? renderTagAddPanelForSection(e, null) : ''}
     </div>`;
-  const sectionRows = sectionOrder.map((sec) => {
-    const chips = bySection[sec].map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}" data-remove-tag="${escapeHtml(t)}" title="Click to remove">${escapeHtml(capTag(t))}</div>`).join('');
-    return `<div class="tag-section-row">
-      <div class="tag-section-header">${sec}</div>
-      <div class="tag-section-tags">${chips}</div>
-    </div>`;
-  }).join('');
-  return addRow + sectionRows;
+  const chips = all.map(({ t, custom }) => `<div class="tag-chip readonly ${custom ? 'custom' : ''}" data-remove-tag="${escapeHtml(t)}" title="Click to remove">${escapeHtml(capTag(t))}</div>`).join('');
+  const flatRow = `<div class="tag-section-tags tag-section-tags-flat">${chips || '<span style="color:var(--text-dim);font-size:12.5px;">No tags yet.</span>'}</div>`;
+  return addRow + flatRow;
 }
 
 // #369/#449: the "+ Add Tag" panel -- `sec` null (the only way this is
