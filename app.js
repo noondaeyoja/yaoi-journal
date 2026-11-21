@@ -997,6 +997,23 @@ async function applyMetaSnapshot(data) {
     TAG_SECTION_OVERRIDES = merged;
     await idbPut(STORE_META, { key: 'tagSectionOverrides', value: TAG_SECTION_OVERRIDES });
   }
+  // #452: "first seen" should only ever move earlier, never later -- unlike
+  // tagSectionOverrides above (where the incoming value just wins), keep
+  // whichever of the two timestamps per tag is earlier.
+  if (data.tagFirstSeen && typeof data.tagFirstSeen === 'object') {
+    const merged = { ...TAG_FIRST_SEEN };
+    let touched = false;
+    Object.keys(data.tagFirstSeen).forEach((key) => {
+      const incoming = data.tagFirstSeen[key];
+      if (typeof incoming !== 'number') return;
+      if (!(key in merged) || incoming < merged[key]) { merged[key] = incoming; touched = true; }
+    });
+    if (touched) {
+      changed = true;
+      TAG_FIRST_SEEN = merged;
+      await idbPut(STORE_META, { key: 'tagFirstSeen', value: TAG_FIRST_SEEN });
+    }
+  }
   if (Array.isArray(data.customTagSections) && data.customTagSections.length) {
     const have = new Set(CUSTOM_TAG_SECTIONS.map((s) => s.toLowerCase()));
     const incoming = data.customTagSections.filter((s) => typeof s === 'string' && s.trim() && !have.has(s.trim().toLowerCase()));
@@ -3517,6 +3534,52 @@ async function setTagSectionOverride(name, section) {
   TAG_SECTION_OVERRIDES[key] = section;
   await idbPut(STORE_META, { key: 'tagSectionOverrides', value: TAG_SECTION_OVERRIDES });
   pushMetaField('tagSectionOverrides', TAG_SECTION_OVERRIDES);
+}
+// #452: when each tag was first added, so the new per-section dropdown
+// (renderDetailTagPool) can list tags in the order she added them instead
+// of alphabetically. Nothing tracked this before now, so existing tags are
+// backfilled once at startup (backfillTagFirstSeen()) using the oldest read
+// that already carries each one -- the closest available stand-in for "when
+// I first added this tag." A brand-new tag typed from here on gets stamped
+// the moment it's created instead (markTagFirstSeen(), called from the
+// new-tag-input-inline Enter handler and the legacy TAG_EDIT_MODE one).
+// Persisted (idb + Firestore meta) the same dual-write pattern as every
+// other piece of tag meta; merged on sync by keeping whichever timestamp is
+// EARLIER per tag (see the merge block near TAG_SECTION_OVERRIDES' own),
+// since "first seen" should only ever get earlier, never later.
+let TAG_FIRST_SEEN = {};
+async function persistTagFirstSeen() {
+  await idbPut(STORE_META, { key: 'tagFirstSeen', value: TAG_FIRST_SEEN });
+  pushMetaField('tagFirstSeen', TAG_FIRST_SEEN);
+}
+function markTagFirstSeen(name) {
+  const key = normalizeTagKey(name);
+  if (!(key in TAG_FIRST_SEEN)) {
+    TAG_FIRST_SEEN[key] = Date.now();
+    persistTagFirstSeen();
+  }
+}
+function backfillTagFirstSeen() {
+  const earliest = {};
+  ALL_ENTRIES.forEach((e) => {
+    const ts = e.createdAt ? new Date(e.createdAt).getTime() : Date.now();
+    [...(e.tags || []), ...(e.customTags || [])].forEach((t) => {
+      const key = normalizeTagKey(t);
+      if (!(key in earliest) || ts < earliest[key]) earliest[key] = ts;
+    });
+  });
+  let changed = false;
+  Object.keys(earliest).forEach((key) => {
+    if (!(key in TAG_FIRST_SEEN)) { TAG_FIRST_SEEN[key] = earliest[key]; changed = true; }
+  });
+  if (changed) persistTagFirstSeen();
+}
+// Sort key for "order added" -- a tag with no known first-seen time (just
+// typed, not yet saved, or a stray edge case) sorts last within its section
+// rather than crashing the comparator.
+function tagAddedOrder(t) {
+  const key = normalizeTagKey(t);
+  return key in TAG_FIRST_SEEN ? TAG_FIRST_SEEN[key] : Infinity;
 }
 // #425: adds a brand-new word to the shared Personality pool (persisted +
 // synced across devices, same dual-write pattern as every other piece of
@@ -9345,12 +9408,12 @@ function renderTagChipsInline(e) {
 // #369/#449: the "+ Add Tag" panel -- `sec` null (the only way this is
 // called now) means the shared, unsectioned pool: every tag in the app
 // except Personality's (those stay in their own bank -- see
-// renderDetailTagPool), alphabetical, searchable. A brand-new tag typed
-// here (one that doesn't exist anywhere yet) is intentionally left
-// unassigned rather than guessed into a section -- see the
-// new-tag-input-inline handler's comment -- so it shows up flagged in
-// Manage Sections' "Unassigned" bucket for her to sort into a real
-// section whenever she gets to it.
+// renderDetailTagPool), grouped into its Manage-Sections categories (#452),
+// searchable. A brand-new tag typed here (one that doesn't exist anywhere
+// yet) is intentionally left unassigned rather than guessed into a section
+// -- see the new-tag-input-inline handler's comment -- so it shows up
+// flagged in Manage Sections' "Unassigned" bucket for her to sort into a
+// real section whenever she gets to it.
 function renderTagAddPanelForSection(e, sec) {
   return `
     <div class="dd-panel">
@@ -9363,19 +9426,40 @@ function renderTagAddPanelForSection(e, sec) {
     </div>`;
 }
 
+// #452: per her request, the shared "all tags" pool (sec === null) is now
+// grouped into its Manage-Sections categories with a plain-text divider
+// between them -- no header button/dropdown-within-a-dropdown, just a
+// label row, same as a native grouped <select>. Sections themselves are
+// completely unchanged on the backend (sectionForTag/TAG_SECTION_OVERRIDES/
+// Manage Sections) -- this only changes how this one pool displays them.
+// Within each section/divider, tags sort by tagAddedOrder() (when she first
+// added that tag) instead of alphabetically, also per her request.
 function renderDetailTagPool(e, sec) {
   const existingLower = new Set([...(e.tags || []), ...(e.customTags || [])].map((t) => t.toLowerCase()));
+  const chipHtml = (t) => `<span class="tag-pool-chip ${existingLower.has(t.toLowerCase()) ? 'active' : ''}" data-toggle-detail-tag="${escapeHtml(t)}">${escapeHtml(capTag(t))}</span>`;
   const all = Object.keys(allTagCounts())
     .filter((t) => !isHiddenTag(t))
-    // #449: a specific section (no longer used by the Tags container
-    // itself, but still here for anything else that calls this with a
-    // real section name) filters to just that section's tags, same as
-    // before; the shared "all tags" pool (sec === null) still always
-    // excludes Personality -- its own separate tag bank, never mixed in
-    // here regardless of section filtering.
-    .filter((t) => (sec ? sectionForTag(t) === sec : sectionForTag(t) !== 'Personality'))
-    .sort((a, b) => a.localeCompare(b));
-  return all.map((t) => `<span class="tag-pool-chip ${existingLower.has(t.toLowerCase()) ? 'active' : ''}" data-toggle-detail-tag="${escapeHtml(t)}">${escapeHtml(capTag(t))}</span>`).join('');
+    // A specific section (no longer used by the Tags container itself, but
+    // still here for anything else that calls this with a real section
+    // name) filters to just that section's tags, same as before; the
+    // shared "all tags" pool (sec === null) still always excludes
+    // Personality -- its own separate tag bank, never mixed in here
+    // regardless of section filtering.
+    .filter((t) => (sec ? sectionForTag(t) === sec : sectionForTag(t) !== 'Personality'));
+  if (sec) {
+    return all.sort((a, b) => tagAddedOrder(a) - tagAddedOrder(b)).map(chipHtml).join('');
+  }
+  const bySection = {};
+  all.forEach((t) => { const s = sectionForTag(t); (bySection[s] = bySection[s] || []).push(t); });
+  return tagSectionOrder()
+    .filter((s) => s !== 'Personality' && bySection[s] && bySection[s].length)
+    .map((s) => {
+      const tags = bySection[s].slice().sort((a, b) => tagAddedOrder(a) - tagAddedOrder(b));
+      return `<div class="tag-pool-section" data-tag-pool-section="${escapeHtml(s)}">
+          <div class="tag-pool-section-divider">${escapeHtml(s)}</div>
+          ${tags.map(chipHtml).join('')}
+        </div>`;
+    }).join('');
 }
 
 // One-time, per-entry migration: the old per-character semi/uke note
@@ -11571,7 +11655,7 @@ function attachRootHandlers() {
       const canonical = [...(e.tags || []), ...(e.customTags || []), ...ts.added, ...allGlobalTags].find((t) => t.toLowerCase() === raw.toLowerCase());
       const val = canonical || raw;
       const already = [...(e.tags || []), ...(e.customTags || []), ...ts.added].some((t) => t.toLowerCase() === val.toLowerCase());
-      if (!already) ts.added.push(val);
+      if (!already) { ts.added.push(val); markTagFirstSeen(val); }
       newTagInput.value = '';
       render();
     };
@@ -11628,6 +11712,12 @@ function attachRootHandlers() {
   // Tracking touch movement and swallowing the click once it looks like a
   // drag stops that mis-click at the source, covering every .tag-pool box
   // (detail tags, playlist/award add panel, home tag filter) the same way.
+  // #452: the original 6px tolerance here turned out to be too tight the
+  // other direction -- normal finger jitter during an ordinary tap (no
+  // scrolling at all) was enough to cross it, so a deliberate tap on a tag
+  // got silently swallowed as a "drag" and nothing got added/removed, with
+  // no error shown. Raised to 10px, the more typical touch-slop tolerance,
+  // so it still catches a real scroll-drag but stops eating plain taps.
   root.querySelectorAll('.tag-pool').forEach((pool) => {
     let dragStart = null;
     pool.addEventListener('touchstart', (ev) => {
@@ -11638,7 +11728,7 @@ function attachRootHandlers() {
     pool.addEventListener('touchmove', (ev) => {
       if (!dragStart) return;
       const t = ev.touches[0];
-      if (Math.abs(t.clientX - dragStart.x) > 6 || Math.abs(t.clientY - dragStart.y) > 6) pool.dataset.dragged = '1';
+      if (Math.abs(t.clientX - dragStart.x) > 10 || Math.abs(t.clientY - dragStart.y) > 10) pool.dataset.dragged = '1';
     }, { passive: true });
     pool.addEventListener('click', (ev) => {
       if (pool.dataset.dragged === '1') {
@@ -11661,7 +11751,24 @@ function attachRootHandlers() {
     if (TAG_ADD_AUTOFOCUS) { newTagInputInline.focus(); TAG_ADD_AUTOFOCUS = false; }
     newTagInputInline.oninput = () => {
       const q = newTagInputInline.value.toLowerCase();
-      root.querySelectorAll('#detail-tag-pool .tag-pool-chip').forEach((chip) => {
+      // #452: chips are now wrapped in a per-section .tag-pool-section div
+      // (with the plain-text category divider as its first child) rather
+      // than sitting loose in #detail-tag-pool -- hide a whole section
+      // (divider included) once none of its chips match the search, so she
+      // never sees an empty "KINK" label with nothing matching underneath.
+      root.querySelectorAll('#detail-tag-pool .tag-pool-section').forEach((sectionEl) => {
+        let anyVisible = false;
+        sectionEl.querySelectorAll('.tag-pool-chip').forEach((chip) => {
+          const match = chip.getAttribute('data-toggle-detail-tag').toLowerCase().includes(q);
+          chip.style.display = match ? '' : 'none';
+          if (match) anyVisible = true;
+        });
+        sectionEl.style.display = anyVisible ? '' : 'none';
+      });
+      // A caller that passed a real single `sec` (not the grouped "all
+      // tags" pool) still renders its chips loose, with no wrapper -- cover
+      // that shape too.
+      root.querySelectorAll('#detail-tag-pool > .tag-pool-chip').forEach((chip) => {
         chip.style.display = chip.getAttribute('data-toggle-detail-tag').toLowerCase().includes(q) ? '' : 'none';
       });
     };
@@ -11686,6 +11793,10 @@ function attachRootHandlers() {
         return;
       }
       e.customTags = [...(e.customTags || []), val];
+      // #452: stamp this tag's first-added time now if it's genuinely new
+      // (markTagFirstSeen is itself a no-op if it's already tracked, e.g.
+      // an existing tag she typed the exact name of).
+      markTagFirstSeen(val);
       // #369/#449: a brand-new tag (never used anywhere before) used to get
       // pinned to whichever section box its "+ NEW TAG" was opened from.
       // Now that adding goes through the one shared, unsectioned "+ Add
@@ -13439,6 +13550,13 @@ async function boot() {
     if (savedTagHideTs && savedTagHideTs.value && typeof savedTagHideTs.value === 'object') TAG_HIDE_TS = savedTagHideTs.value;
     const savedTagSectionOverrides = await idbGet(STORE_META, 'tagSectionOverrides');
     if (savedTagSectionOverrides && savedTagSectionOverrides.value && typeof savedTagSectionOverrides.value === 'object') TAG_SECTION_OVERRIDES = savedTagSectionOverrides.value;
+    const savedTagFirstSeen = await idbGet(STORE_META, 'tagFirstSeen');
+    if (savedTagFirstSeen && savedTagFirstSeen.value && typeof savedTagFirstSeen.value === 'object') TAG_FIRST_SEEN = savedTagFirstSeen.value;
+    // #452: one-time (well, re-runs every load, but it's a no-op once every
+    // existing tag has a first-seen entry) backfill from the entries that
+    // just loaded above, so "order added" has something to sort by for her
+    // whole existing tag library, not just tags added from today forward.
+    backfillTagFirstSeen();
     const savedDeletedPersonalityWordKeys = await idbGet(STORE_META, 'deletedPersonalityWordKeys');
     if (savedDeletedPersonalityWordKeys && Array.isArray(savedDeletedPersonalityWordKeys.value)) DELETED_PERSONALITY_WORD_KEYS = new Set(savedDeletedPersonalityWordKeys.value);
     // #444: this device's own record of when each tombstone last changed --
